@@ -1,0 +1,941 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>CAST</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Crimson+Pro:wght@400;600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;touch-action:none;}
+html,body{width:100%;height:100%;overflow:hidden;}
+body{
+  background:#0a1628;
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Crimson Pro',serif;
+  user-select:none;-webkit-user-select:none;
+}
+#wrap{
+  position:relative;
+  width:min(100vw,calc(100dvh*.62));
+  height:min(100dvh,calc(100vw/.62));
+  max-width:420px;max-height:680px;
+  overflow:hidden;border-radius:4px;
+  box-shadow:0 8px 48px rgba(0,0,0,0.8);
+}
+canvas{display:block;width:100%;height:100%;}
+.screen{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;z-index:20;
+}
+.screen.hide{display:none;}
+
+/* START */
+#start-screen{background:linear-gradient(180deg,#0a1628 0%,#0d2040 40%,#0a3050 100%);}
+.game-title{
+  font-family:'Playfair Display',serif;font-weight:900;
+  font-size:clamp(72px,19vw,108px);
+  color:#f5c842;letter-spacing:6px;
+  text-shadow:2px 2px 0 #8a6a00,0 0 40px #f5c84233;
+  margin-bottom:4px;
+}
+.game-sub{
+  font-size:clamp(10px,2.8vw,13px);letter-spacing:6px;
+  color:#2a4a6a;text-transform:uppercase;margin-bottom:40px;
+  font-family:'Crimson Pro',serif;
+}
+.how{
+  font-size:clamp(13px,3.5vw,16px);color:#3a6a8a;
+  text-align:center;line-height:2.2;margin-bottom:36px;
+  max-width:260px;font-weight:600;
+}
+.how b{color:#f5c842;}
+.cast-btn{
+  font-family:'Playfair Display',serif;font-weight:700;font-style:italic;
+  font-size:clamp(17px,4.5vw,22px);letter-spacing:3px;
+  color:#0a1628;background:#f5c842;border:none;
+  padding:14px 52px;border-radius:2px;cursor:pointer;
+  box-shadow:0 3px 0 #8a6a00,0 0 20px #f5c84233;
+  transition:transform .1s,box-shadow .1s;
+  -webkit-tap-highlight-color:transparent;
+}
+.cast-btn:active{transform:translateY(2px);box-shadow:0 1px 0 #8a6a00;}
+
+/* HUD */
+#hud{
+  position:absolute;top:0;left:0;right:0;
+  display:flex;justify-content:space-between;align-items:flex-start;
+  padding:12px 16px 0;pointer-events:none;z-index:10;
+}
+#score-hud{
+  font-family:'Playfair Display',serif;font-weight:900;
+  font-size:clamp(18px,5vw,26px);color:#f5c842;
+  text-shadow:1px 1px 0 #8a6a00;
+}
+#time-hud{font-size:clamp(11px,3vw,14px);letter-spacing:3px;color:#2a4a6a;font-weight:600;}
+#best-hud{font-size:11px;letter-spacing:2px;color:#1a3050;text-align:right;}
+
+/* tension bar */
+#tension-wrap{
+  position:absolute;bottom:110px;left:50%;transform:translateX(-50%);
+  width:160px;pointer-events:none;z-index:10;opacity:0;transition:opacity .2s;
+}
+#tension-wrap.show{opacity:1;}
+#tension-label{font-size:10px;letter-spacing:3px;color:#8aaa6a;text-align:center;margin-bottom:4px;text-transform:uppercase;}
+#tension-bar-bg{background:rgba(0,0,0,0.4);height:8px;border-radius:4px;overflow:hidden;}
+#tension-bar{height:100%;border-radius:4px;width:0%;transition:background .2s;}
+
+/* catch message */
+#catch-msg{
+  position:absolute;top:44%;left:50%;transform:translate(-50%,-50%);
+  pointer-events:none;z-index:15;text-align:center;opacity:0;transition:opacity .12s;
+}
+#catch-msg.show{opacity:1;}
+#catch-emoji{font-size:clamp(40px,10vw,56px);}
+#catch-name{
+  font-family:'Playfair Display',serif;font-weight:900;font-style:italic;
+  font-size:clamp(22px,6vw,32px);
+  margin-top:4px;text-shadow:2px 2px 0 rgba(0,0,0,0.5);
+}
+#catch-pts{font-size:clamp(14px,4vw,18px);letter-spacing:3px;color:#f5c842;margin-top:2px;font-weight:600;}
+
+/* OVER */
+#over-screen{background:rgba(5,10,20,0.95);}
+.over-title{
+  font-family:'Playfair Display',serif;font-weight:900;font-style:italic;
+  font-size:clamp(38px,10vw,56px);color:#f5c842;
+  text-shadow:2px 2px 0 #8a6a00;margin-bottom:6px;
+}
+.over-score{font-family:'Playfair Display',serif;font-weight:900;font-size:clamp(52px,14vw,72px);color:#fff;margin-bottom:4px;}
+.over-lbl{font-size:11px;letter-spacing:4px;color:#2a4a6a;margin-bottom:8px;text-transform:uppercase;}
+.over-best{font-size:12px;letter-spacing:3px;color:#1a3050;margin-bottom:6px;}
+.over-catches{
+  display:flex;gap:8px;flex-wrap:wrap;justify-content:center;
+  margin-bottom:24px;max-width:280px;
+}
+.catch-badge{
+  font-size:clamp(22px,5.5vw,28px);
+  background:rgba(255,255,255,0.05);
+  padding:6px 10px;border-radius:6px;
+  border:1px solid rgba(255,255,255,0.08);
+}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="hud">
+    <div>
+      <div id="score-hud">0</div>
+      <div id="best-hud">BEST: 0</div>
+    </div>
+    <div id="time-hud">2:00</div>
+  </div>
+  <div id="tension-wrap">
+    <div id="tension-label">LINE TENSION</div>
+    <div id="tension-bar-bg"><div id="tension-bar"></div></div>
+  </div>
+  <div id="catch-msg">
+    <div id="catch-emoji">🐟</div>
+    <div id="catch-name">Bass</div>
+    <div id="catch-pts">+20</div>
+  </div>
+
+  <div class="screen" id="start-screen">
+    <div class="game-title">CAST</div>
+    <div class="game-sub">a fishing game</div>
+    <div class="how">
+      <b>HOLD</b> to charge your cast<br>
+      <b>RELEASE</b> to send the line<br>
+      Watch for the <b>tug</b> — then tap!<br>
+      Don't snap the line
+    </div>
+    <div class="cast-btn" id="start-btn">Fish On</div>
+  </div>
+
+  <div class="screen hide" id="over-screen">
+    <div class="over-title">Back to Shore</div>
+    <div class="over-score" id="over-score">0</div>
+    <div class="over-lbl">POINTS</div>
+    <div class="over-catches" id="over-catches"></div>
+    <div class="over-best" id="over-best">BEST: 0</div>
+    <div class="cast-btn" id="retry-btn">Cast Again</div>
+  </div>
+</div>
+
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+// Safe arc — never throws on negative/NaN radius
+const _arc=ctx.arc.bind(ctx);
+ctx.arc=(x,y,r,...args)=>{ if(r>0&&isFinite(r)&&isFinite(x)&&isFinite(y)) _arc(x,y,r,...args); };
+const _ellipse=ctx.ellipse.bind(ctx);
+ctx.ellipse=(x,y,rx,ry,...args)=>{ if(rx>0&&ry>0&&isFinite(rx)&&isFinite(ry)) _ellipse(x,y,rx,ry,...args); };
+const W=420,H=680;
+canvas.width=W;canvas.height=H;
+
+// ── FISH TYPES ──
+const FISH=[
+  {name:'Minnow',    emoji:'🐟',pts:5,  speed:0.8,depth:.08,size:8, rarity:1,  col:'#88bbff',pullStrength:.15,biteWindow:900},
+  {name:'Perch',     emoji:'🐠',pts:15, speed:0.6,depth:.12,size:11,rarity:.7, col:'#ff8844',pullStrength:.22,biteWindow:750},
+  {name:'Bass',      emoji:'🐡',pts:25, speed:0.5,depth:.15,size:13,rarity:.5, col:'#44cc88',pullStrength:.30,biteWindow:600},
+  {name:'Trout',     emoji:'🎣',pts:40, speed:0.7,depth:.18,size:12,rarity:.3, col:'#cc88ff',pullStrength:.35,biteWindow:500},
+  {name:'Salmon',    emoji:'🐙',pts:60, speed:0.9,depth:.10,size:15,rarity:.2, col:'#ff6688',pullStrength:.40,biteWindow:450},
+  {name:'Tuna',      emoji:'🦈',pts:100,speed:1.1,depth:.20,size:18,rarity:.1, col:'#4488ff',pullStrength:.50,biteWindow:350},
+  {name:'Golden Koi',emoji:'✨',pts:200,speed:0.4,depth:.08,size:20,rarity:.04,col:'#ffd700',pullStrength:.25,biteWindow:600},
+];
+
+// ── GAME STATE ──
+let state='menu',score=0,timeLeft=120,best=parseInt(localStorage.getItem('cast_best')||'0');
+let raf,gameInterval;
+let catches=[]; // caught fish this session
+
+// ── SCENE ──
+const WATER_Y=H*.38; // water surface
+const BOAT_X=W*.5;
+const BOAT_Y=WATER_Y-8;
+
+// ── FISH IN WATER ──
+let fishSchool=[];
+function spawnFish(){
+  const r=Math.random();
+  let cum=0;
+  let type=FISH[0];
+  for(const f of FISH){cum+=f.rarity;if(r<cum){type=f;break;}}
+  const dir=Math.random()<.5?1:-1;
+  return{
+    ...type,
+    x:dir>0?-30:W+30,
+    y:WATER_Y+type.depth*(H-WATER_Y)+(Math.random()-.5)*40,
+    vx:type.speed*dir,
+    vy:0,
+    wobble:Math.random()*Math.PI*2,
+    hooked:false,
+    visible:true,
+  };
+}
+
+// ── FISHING STATE ──
+// Phases: idle | charging | flying | sinking | waiting | biting | reeling | snapped | landing
+let phase='idle';
+let chargeStart=0,chargePower=0;
+let bobX=BOAT_X,bobY=WATER_Y;
+let linePoints=[]; // bezier control points
+let bobSink=0; // how deep the bob has sunk
+let waitTimer=0; // time until a fish bites
+let biteFish=null; // fish that's biting
+let biteTimer=0; // window to yank
+let tension=0; // 0-1 line tension
+let reelTimer=0;
+let particles=[];
+let splashParticles=[];
+let ripples=[];
+let waveOffset=0;
+let sunAngle=0;
+let clouds=[];
+let catchMsgTO;
+
+// ── INIT ──
+function initScene(){
+  clouds=[];
+  for(let i=0;i<5;i++) clouds.push({x:Math.random()*W,y:20+Math.random()*60,w:60+Math.random()*80,speed:.15+Math.random()*.2,opacity:.6+Math.random()*.3});
+  fishSchool=[];
+  for(let i=0;i<8;i++) fishSchool.push(spawnFish());
+}
+
+// ── WATER SURFACE LINE ──
+function waterY(x){return WATER_Y+Math.sin(x*.018+waveOffset)*4+Math.sin(x*.009+waveOffset*.7)*6;}
+
+// ── DRAW SKY ──
+function drawSky(){
+  // Gradient sky — warm golden hour
+  const sky=ctx.createLinearGradient(0,0,0,WATER_Y);
+  sky.addColorStop(0,'#0a1020');
+  sky.addColorStop(.4,'#0d2040');
+  sky.addColorStop(.7,'#1a3a60');
+  sky.addColorStop(1,'#2a5a80');
+  ctx.fillStyle=sky;ctx.fillRect(0,0,W,WATER_Y);
+
+  // Sun / moon glow
+  sunAngle+=.0002;
+  const sx=W*.75+Math.sin(sunAngle)*40,sy=80+Math.cos(sunAngle)*20;
+  const sunG=ctx.createRadialGradient(sx,sy,0,sx,sy,90);
+  sunG.addColorStop(0,'rgba(255,200,80,.7)');
+  sunG.addColorStop(.3,'rgba(255,140,40,.3)');
+  sunG.addColorStop(1,'rgba(255,100,0,0)');
+  ctx.fillStyle=sunG;ctx.beginPath();ctx.arc(sx,sy,90,0,Math.PI*2);ctx.fill();
+  // Sun disc
+  ctx.fillStyle='#ffcc44';ctx.beginPath();ctx.arc(sx,sy,14,0,Math.PI*2);ctx.fill();
+
+  // Clouds
+  ctx.fillStyle='rgba(255,220,150,.15)';
+  for(const c of clouds){
+    c.x+=c.speed;if(c.x>W+c.w)c.x=-c.w;
+    ctx.save();ctx.globalAlpha=c.opacity*.3;
+    ctx.beginPath();ctx.ellipse(c.x,c.y,c.w*.5,c.w*.22,0,0,Math.PI*2);
+    ctx.ellipse(c.x-c.w*.22,c.y+c.w*.06,c.w*.3,c.w*.18,0,0,Math.PI*2);
+    ctx.ellipse(c.x+c.w*.22,c.y+c.w*.04,c.w*.28,c.w*.16,0,0,Math.PI*2);
+    ctx.fill();ctx.restore();
+  }
+  // Stars
+  ctx.save();ctx.globalAlpha=.5;ctx.fillStyle='#fff';
+  for(let i=0;i<30;i++){
+    const sx2=(i*137)%W,sy2=(i*97)%WATER_Y*.7;
+    const twink=Math.sin(Date.now()*.002+i)*.3+.4;
+    ctx.globalAlpha=twink*.5;
+    ctx.beginPath();ctx.arc(sx2,sy2,i%3===0?1.2:.7,0,Math.PI*2);ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ── DRAW WATER ──
+function drawWater(){
+  waveOffset+=.018;
+  // Deep water gradient
+  const wg=ctx.createLinearGradient(0,WATER_Y,0,H);
+  wg.addColorStop(0,'#0d3a5a');
+  wg.addColorStop(.3,'#0a2a48');
+  wg.addColorStop(.7,'#061828');
+  wg.addColorStop(1,'#030c18');
+  ctx.fillStyle=wg;
+  ctx.beginPath();
+  ctx.moveTo(0,waterY(0));
+  for(let x=0;x<=W;x+=4) ctx.lineTo(x,waterY(x));
+  ctx.lineTo(W,H);ctx.lineTo(0,H);ctx.closePath();ctx.fill();
+
+  // Surface shimmer
+  ctx.save();ctx.globalAlpha=.25;
+  ctx.strokeStyle='#aaddff';ctx.lineWidth=1.2;
+  ctx.beginPath();
+  for(let x=0;x<=W;x+=4) ctx.lineTo(x,waterY(x));
+  ctx.stroke();
+  // Secondary ripple
+  ctx.globalAlpha=.1;ctx.strokeStyle='#88ccff';ctx.lineWidth=.8;
+  ctx.beginPath();
+  for(let x=0;x<=W;x+=4) ctx.lineTo(x,waterY(x)+Math.sin(x*.025+waveOffset*1.3)*3);
+  ctx.stroke();
+  ctx.restore();
+
+  // Sun reflection on water
+  ctx.save();ctx.globalAlpha=.12;
+  ctx.fillStyle='#ffcc44';
+  ctx.beginPath();
+  ctx.ellipse(W*.75,WATER_Y+20,25,H*.15,0,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+
+// ── DRAW BOAT ──
+function drawBoat(){
+  const bob=Math.sin(waveOffset*.5)*2;
+  const tilt=Math.sin(waveOffset*.3)*.012;
+  ctx.save();ctx.translate(BOAT_X,BOAT_Y+bob);ctx.rotate(tilt);
+
+  // === HULL ===
+  // Main hull body - classic wooden dinghy shape
+  const hullGrad=ctx.createLinearGradient(-52,0,52,0);
+  hullGrad.addColorStop(0,'#3a1e08');hullGrad.addColorStop(.35,'#6b3a1a');
+  hullGrad.addColorStop(.65,'#7a4422');hullGrad.addColorStop(1,'#3a1e08');
+  ctx.fillStyle=hullGrad;
+  ctx.beginPath();
+  ctx.moveTo(-52,2);
+  ctx.bezierCurveTo(-52,2,-50,22,52,2); // hull line curves slightly
+  ctx.bezierCurveTo(50,22,-50,22,-52,2);
+  ctx.closePath();ctx.fill();
+
+  // Hull planks (horizontal wood lines)
+  ctx.save();ctx.globalAlpha=0.22;ctx.strokeStyle='#1a0a00';ctx.lineWidth=1;
+  for(let i=0;i<4;i++){
+    const yy=6+i*4;
+    ctx.beginPath();ctx.moveTo(-50+i*2,yy);ctx.lineTo(50-i*2,yy);ctx.stroke();
+  }
+  ctx.restore();
+
+  // Hull top rim / gunwale
+  const rimGrad=ctx.createLinearGradient(0,-2,0,6);
+  rimGrad.addColorStop(0,'#c8a060');rimGrad.addColorStop(1,'#8a6030');
+  ctx.fillStyle=rimGrad;
+  ctx.beginPath();ctx.moveTo(-54,0);ctx.bezierCurveTo(-40,-3,40,-3,54,0);
+  ctx.lineTo(52,5);ctx.bezierCurveTo(38,2,-38,2,-52,5);ctx.closePath();ctx.fill();
+
+  // Hull white waterline stripe
+  ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.moveTo(-52,18);ctx.bezierCurveTo(-40,21,40,21,52,18);ctx.stroke();
+
+  // Hull bottom reflection
+  ctx.save();ctx.globalAlpha=.12;ctx.fillStyle='#4488aa';
+  ctx.beginPath();ctx.moveTo(-48,18);ctx.bezierCurveTo(-30,26,30,26,48,18);
+  ctx.lineTo(44,22);ctx.bezierCurveTo(28,28,-28,28,-44,22);ctx.closePath();ctx.fill();
+  ctx.restore();
+
+  // === SEAT / THWART ===
+  ctx.fillStyle='#a06830';ctx.beginPath();ctx.roundRect(-20,-2,40,5,2);ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,0.1)';ctx.beginPath();ctx.roundRect(-20,-2,40,2,2);ctx.fill();
+
+  // === OUTBOARD MOTOR ===
+  // Motor mount
+  ctx.fillStyle='#2a2a2a';ctx.beginPath();ctx.roundRect(42,-4,8,18,2);ctx.fill();
+  ctx.fillStyle='#1a1a1a';ctx.beginPath();ctx.roundRect(50,4,10,10,3);ctx.fill();
+  // Motor body
+  const mGrad=ctx.createLinearGradient(50,0,62,0);
+  mGrad.addColorStop(0,'#555');mGrad.addColorStop(.5,'#888');mGrad.addColorStop(1,'#444');
+  ctx.fillStyle=mGrad;ctx.beginPath();ctx.roundRect(50,-2,14,16,4);ctx.fill();
+  // Prop shaft going into water
+  ctx.strokeStyle='#666';ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(57,14);ctx.lineTo(57,24);ctx.stroke();
+  // Prop
+  ctx.strokeStyle='#aaa';ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.moveTo(53,24);ctx.lineTo(61,24);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(57,20);ctx.lineTo(57,28);ctx.stroke();
+  // Motor brand stripe
+  ctx.fillStyle='#cc3322';ctx.fillRect(51,2,12,3);
+
+  // === FISHING ROD ===
+  // Rod holder / base
+  ctx.fillStyle='#8a6030';ctx.beginPath();ctx.roundRect(16,-8,5,12,2);ctx.fill();
+  // Rod — tapered, slight curve
+  const rodGrad=ctx.createLinearGradient(18,-8,34,-52);
+  rodGrad.addColorStop(0,'#c8a060');rodGrad.addColorStop(1,'#e8c890');
+  ctx.strokeStyle='#d4b070';ctx.lineWidth=3;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(18,-6);ctx.quadraticCurveTo(22,-28,34,-52);ctx.stroke();
+  ctx.strokeStyle='#e8d0a0';ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.moveTo(18,-6);ctx.quadraticCurveTo(22,-28,34,-52);ctx.stroke();
+  // Rod guides (small rings along rod)
+  ctx.strokeStyle='#aaa';ctx.lineWidth=1;
+  [[20,-14,2],[24,-26,1.5],[28,-38,1.2],[32,-48,1]].forEach(([rx,ry,rr])=>{
+    ctx.beginPath();ctx.arc(rx,ry,rr,0,Math.PI*2);ctx.stroke();
+  });
+  // Reel
+  ctx.fillStyle='#555';ctx.beginPath();ctx.arc(18,-4,5,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#888';ctx.beginPath();ctx.arc(18,-4,3,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#aaa';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(18,-8);ctx.lineTo(18,0);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(14,-4);ctx.lineTo(22,-4);ctx.stroke();
+
+  // === WATER WAKE ===
+  ctx.save();ctx.globalAlpha=.18;ctx.strokeStyle='#aaddff';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(-55,20);ctx.bezierCurveTo(-70,24,-80,22,-90,25);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(-55,22);ctx.bezierCurveTo(-68,26,-78,25,-88,28);ctx.stroke();
+  ctx.restore();
+
+  ctx.restore();
+}
+
+// ── DRAW FISHING LINE ──
+function drawLine(){
+  if(phase==='idle'||phase==='charging')return;
+  const rodTipX=BOAT_X+32;
+  const rodTipY=BOAT_Y-48+Math.sin(waveOffset*.5)*2;
+  const surfY=waterY(bobX);
+  ctx.save();
+  ctx.strokeStyle='rgba(220,220,180,0.75)';ctx.lineWidth=1.2;
+
+  if(phase==='flying'){
+    // Arc through air
+    ctx.beginPath();ctx.moveTo(rodTipX,rodTipY);
+    ctx.quadraticCurveTo((rodTipX+bobX)/2,(rodTipY+bobY)/2-50,bobX,bobY);
+    ctx.stroke();
+  } else {
+    // Line from rod tip to water surface entry point
+    ctx.beginPath();ctx.moveTo(rodTipX,rodTipY);
+    ctx.quadraticCurveTo((rodTipX+bobX)/2,(rodTipY+surfY)/2-24,bobX,surfY);
+    ctx.stroke();
+    // Line continues underwater (dotted, faint)
+    const underDepth=(phase==='waiting'||phase==='biting')?40:bobSink;
+    if(underDepth>2){
+      ctx.save();
+      ctx.strokeStyle='rgba(180,200,220,0.28)';
+      ctx.lineWidth=1;
+      ctx.setLineDash([4,5]);
+      ctx.beginPath();ctx.moveTo(bobX,surfY);ctx.lineTo(bobX,surfY+underDepth);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+}
+
+// ── DRAW BOB ──
+function drawBob(){
+  if(phase==='idle'||phase==='charging')return;
+  const by=waterY(bobX);
+  ctx.save();ctx.translate(bobX,by);
+  // Bob in water
+  if(phase==='waiting'||phase==='biting'){
+    // Floating bob
+    const dip=phase==='biting'?Math.sin(Date.now()*.015)*4:Math.sin(Date.now()*.004)*2;
+    ctx.fillStyle='#cc2222';ctx.beginPath();ctx.arc(0,-4+dip,5,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#eeeeee';ctx.beginPath();ctx.arc(0,1+dip,5,0,Math.PI);ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=1;ctx.stroke();
+    // Ripple around bob
+    ctx.globalAlpha=.2+Math.sin(Date.now()*.003)*.1;
+    ctx.strokeStyle='#88ccff';ctx.lineWidth=1;
+    ctx.beginPath();ctx.ellipse(0,4,12,3,0,0,Math.PI*2);ctx.stroke();
+    ctx.globalAlpha=.1;
+    ctx.beginPath();ctx.ellipse(0,4,20,5,0,0,Math.PI*2);ctx.stroke();
+
+    if(phase==='biting'){
+      // Bob jerking down
+      ctx.globalAlpha=1;
+      ctx.fillStyle='#ff4444';ctx.beginPath();ctx.arc(0,-4+Math.sin(Date.now()*.025)*8,5,0,Math.PI*2);ctx.fill();
+      // TAP hint pulse
+      const pulse=Math.sin(Date.now()*.01)*.5+.5;
+      ctx.globalAlpha=pulse*.6;ctx.strokeStyle='#f5c842';ctx.lineWidth=2;
+      ctx.beginPath();ctx.arc(0,0,16+pulse*6,0,Math.PI*2);ctx.stroke();
+    }
+  } else if(phase==='sinking'){
+    // Line sinking below surface
+    ctx.fillStyle='#cc2222';ctx.beginPath();ctx.arc(0,bobSink,5,0,Math.PI*2);ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ── DRAW FISH ──
+function drawFish(){
+  for(const f of fishSchool){
+    if(!f.visible)continue;
+    f.wobble+=.06;
+    // Fish swim near surface so player can see them
+    const depthY=waterY(f.x)+18+f.size*2+(f.depth-.4)*60;
+    f.y+=(depthY-f.y)*.02;
+    f.x+=f.vx;
+    if(f.x>W+40) f.x=-40;
+    if(f.x<-40) f.x=W+40;
+    const depth=(f.y-WATER_Y)/(H-WATER_Y);
+    const alpha=Math.max(0, 0.85-depth*1.2)*(f.hooked?.3:1);
+    if(alpha<=0)continue;
+    ctx.save();ctx.translate(f.x,f.y);ctx.globalAlpha=alpha;
+    if(f.vx<0)ctx.scale(-1,1);
+    ctx.rotate(Math.sin(f.wobble)*.12);
+    if(f.size<=0)continue;
+    ctx.font=`${f.size*2}px serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(f.emoji,0,0);
+    ctx.restore();
+  }
+}
+
+// ── DRAW PARTICLES ──
+function drawParticles(){
+  splashParticles=splashParticles.filter(p=>p.life>0);
+  for(const p of splashParticles){
+    p.x+=p.vx;p.y+=p.vy;p.vy+=.18;p.vx*=.96;p.life-=.035;
+    if(p.life<=0)continue;
+    ctx.save();ctx.globalAlpha=Math.max(0,p.life);ctx.fillStyle=p.col;
+    ctx.beginPath();ctx.arc(p.x,p.y,Math.max(0.1,p.r*p.life),0,Math.PI*2);ctx.fill();ctx.restore();
+  }
+}
+
+// ── DRAW CHARGE INDICATOR ──
+function drawCharge(){
+  if(phase!=='charging')return;
+  const pct=Math.min((Date.now()-chargeStart)/2000,1);
+  // Arc indicator above rod tip
+  const tx=BOAT_X+32,ty=BOAT_Y-50;
+  ctx.save();
+  ctx.strokeStyle=pct<.5?'#44aaff':pct<.8?'#f5c842':'#ff4444';
+  ctx.lineWidth=3;ctx.lineCap='round';
+  if(isFinite(tx)&&isFinite(ty)){
+  ctx.beginPath();ctx.arc(tx,ty-12,18,-Math.PI*.8,(-Math.PI*.8)+pct*Math.PI*1.6);ctx.stroke();
+  }
+  // Dot at end
+  const endA=-Math.PI*.8+pct*Math.PI*1.6;
+  ctx.fillStyle=ctx.strokeStyle;ctx.beginPath();ctx.arc(tx+Math.cos(endA)*18,ty-12+Math.sin(endA)*18,4,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+
+// ── DRAW RIPPLES ──
+function drawRipples(){
+  for(let i=ripples.length-1;i>=0;i--){
+    const r=ripples[i];r.r+=1.5;r.life-=.04;
+    if(r.life<=0||r.r>100){ripples.splice(i,1);continue;}
+    ctx.save();ctx.globalAlpha=Math.max(0,r.life*.4);ctx.strokeStyle='#aaddff';ctx.lineWidth=1;
+    const rw=Math.max(0.1,Math.min(r.r,200)),rh=Math.max(0.1,rw*.3);
+    ctx.beginPath();ctx.ellipse(r.x,r.y,rw,rh,0,0,Math.PI*2);ctx.stroke();ctx.restore();
+  }
+}
+
+function splash(x,y){
+  for(let i=0;i<12;i++){
+    const a=Math.random()*Math.PI*2,s=2+Math.random()*4;
+    splashParticles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s-3,life:1,r:2+Math.random()*3,col:Math.random()<.5?'#aaddff':'#ffffff'});
+  }
+  for(let i=0;i<3;i++) ripples.push({x,y,r:5,life:1});
+}
+
+
+// ── UNDERWATER SCENE ──
+let sharkAngle=0,sharkX=W*.3,sharkDir=1;
+const CORALS=[
+  {x:W*.12,y:H*.72,type:'brain',col:'#cc6644',h:28},
+  {x:W*.28,y:H*.78,type:'fan',col:'#dd8833',h:40},
+  {x:W*.45,y:H*.75,type:'branch',col:'#ff7755',h:34},
+  {x:W*.62,y:H*.8,type:'brain',col:'#cc5566',h:24},
+  {x:W*.78,y:H*.74,type:'fan',col:'#ee9944',h:38},
+  {x:W*.9,y:H*.77,type:'branch',col:'#ff6644',h:30},
+  {x:W*.05,y:H*.8,type:'brain',col:'#aa4433',h:20},
+  {x:W*.55,y:H*.88,type:'branch',col:'#dd7755',h:26},
+];
+const SEAWEEDS=Array.from({length:10},(_,i)=>({
+  x:W*(i*.09+.04),y:H*.95,h:25+Math.random()*35,phase:Math.random()*Math.PI*2
+}));
+let bubbles=Array.from({length:8},()=>({
+  x:Math.random()*W,y:H*.5+Math.random()*(H*.4),
+  r:1+Math.random()*3,speed:.3+Math.random()*.5,life:Math.random()
+}));
+
+function drawUnderwaterScene(){
+  ctx.save();
+  // Depth fade overlay
+  const df=ctx.createLinearGradient(0,WATER_Y,0,H);
+  df.addColorStop(0,'rgba(5,18,35,0)');df.addColorStop(.4,'rgba(3,12,25,0.3)');df.addColorStop(1,'rgba(2,8,18,0.7)');
+  ctx.fillStyle=df;ctx.fillRect(0,WATER_Y,W,H-WATER_Y);
+
+  // Light rays from surface
+  ctx.save();ctx.globalAlpha=.04;
+  for(let i=0;i<5;i++){
+    const rx=W*.3+i*W*.1;
+    const rayGrad=ctx.createLinearGradient(rx,WATER_Y,rx+30,H);
+    rayGrad.addColorStop(0,'#88ccff');rayGrad.addColorStop(1,'rgba(136,204,255,0)');
+    ctx.fillStyle=rayGrad;
+    ctx.beginPath();ctx.moveTo(rx,WATER_Y);ctx.lineTo(rx+20,H);ctx.lineTo(rx+35,H);ctx.lineTo(rx+15,WATER_Y);ctx.closePath();ctx.fill();
+  }
+  ctx.restore();
+
+  // Sandy bottom
+  const sandGrad=ctx.createLinearGradient(0,H*.85,0,H);
+  sandGrad.addColorStop(0,'rgba(180,150,90,0)');sandGrad.addColorStop(.3,'rgba(160,130,70,0.3)');
+  sandGrad.addColorStop(1,'rgba(140,110,50,0.55)');
+  ctx.fillStyle=sandGrad;ctx.fillRect(0,H*.85,W,H*.15);
+  // Sand ripples
+  ctx.save();ctx.globalAlpha=.08;ctx.strokeStyle='#c8a860';ctx.lineWidth=1;
+  for(let i=0;i<6;i++){
+    ctx.beginPath();ctx.moveTo(0,H*.9+i*8);
+    for(let x=0;x<W;x+=20) ctx.lineTo(x,H*.9+i*8+Math.sin(x*.08+i)*3);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // Seaweed
+  for(const s of SEAWEEDS){
+    s.phase+=.012;
+    ctx.save();ctx.strokeStyle='#2a7a3a';ctx.lineWidth=3;ctx.lineCap='round';
+    ctx.beginPath();ctx.moveTo(s.x,s.y);
+    const segs=5;
+    for(let i=1;i<=segs;i++){
+      const t=i/segs;
+      const wx=s.x+Math.sin(s.phase+t*Math.PI*1.5)*8*t;
+      const wy=s.y-s.h*t;
+      ctx.lineTo(wx,wy);
+    }
+    ctx.stroke();
+    // Tips
+    ctx.fillStyle='#3a9a4a';
+    const tipX=s.x+Math.sin(s.phase+Math.PI*1.5)*8;
+    const tipY=s.y-s.h;
+    ctx.beginPath();ctx.ellipse(tipX,tipY,4,7,Math.sin(s.phase)*.4,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+
+  // Coral structures
+  for(const c of CORALS){
+    ctx.save();ctx.translate(c.x,c.y);ctx.globalAlpha=0.82;
+    if(c.type==='brain'){
+      // Brain coral — dome with ridges
+      ctx.fillStyle=c.col;ctx.beginPath();ctx.arc(0,0,c.h*.6,Math.PI,0);ctx.closePath();ctx.fill();
+      ctx.fillStyle=ctx.fillStyle;
+      ctx.save();ctx.globalAlpha=.3;ctx.strokeStyle='#000';ctx.lineWidth=1.5;
+      for(let i=-3;i<=3;i++){
+        ctx.beginPath();ctx.moveTo(i*5,-2);ctx.quadraticCurveTo(i*5+2,-c.h*.3,i*5,-c.h*.55);ctx.stroke();
+      }
+      ctx.restore();
+      // Base
+      ctx.fillStyle=c.col;ctx.fillRect(-c.h*.7,-2,c.h*1.4,6);
+    } else if(c.type==='fan'){
+      // Fan coral — spread branches
+      for(let i=-3;i<=3;i++){
+        const a=-Math.PI*.6+i*.2;
+        ctx.strokeStyle=c.col;ctx.lineWidth=2+Math.abs(i)*.5;ctx.lineCap='round';
+        ctx.beginPath();ctx.moveTo(0,0);
+        ctx.lineTo(Math.sin(a)*c.h,Math.cos(a)*(-c.h));
+        ctx.stroke();
+        // Branch tips
+        ctx.strokeStyle=lightenHex(c.col,30);ctx.lineWidth=1;
+        ctx.beginPath();ctx.moveTo(Math.sin(a)*c.h*.6,Math.cos(a)*(-c.h*.6));
+        ctx.lineTo(Math.sin(a+.25)*c.h*.9,Math.cos(a+.25)*(-c.h*.9));ctx.stroke();
+        ctx.beginPath();ctx.moveTo(Math.sin(a)*c.h*.6,Math.cos(a)*(-c.h*.6));
+        ctx.lineTo(Math.sin(a-.25)*c.h*.9,Math.cos(a-.25)*(-c.h*.9));ctx.stroke();
+      }
+    } else {
+      // Branch coral — tree-like
+      function branch(x,y,len,angle,depth){
+        if(depth===0||len<2)return;
+        const ex=x+Math.sin(angle)*len,ey=y-Math.cos(angle)*len;
+        ctx.strokeStyle=depth>2?c.col:lightenHex(c.col,20);
+        ctx.lineWidth=Math.max(.8,depth*.7);ctx.lineCap='round';
+        ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(ex,ey);ctx.stroke();
+        branch(ex,ey,len*.65,angle-.35,depth-1);
+        branch(ex,ey,len*.65,angle+.35,depth-1);
+        if(depth===1){
+          ctx.fillStyle='#ff4466';ctx.beginPath();ctx.arc(ex,ey,2,0,Math.PI*2);ctx.fill();
+        }
+      }
+      branch(0,0,c.h*.5,0,4);
+    }
+    ctx.restore();
+  }
+
+  // Bubbles
+  for(const b of bubbles){
+    b.y-=b.speed;b.x+=Math.sin(b.y*.05)*.4;b.life+=.005;
+    if(b.y<WATER_Y){b.y=H*.9;b.x=Math.random()*W;}
+    ctx.save();ctx.globalAlpha=.2;ctx.strokeStyle='#aaddff';ctx.lineWidth=.8;
+    ctx.beginPath();ctx.arc(b.x,b.y,b.r,0,Math.PI*2);ctx.stroke();ctx.restore();
+  }
+
+  // ── SHARK (deep, slow, ominous) ──
+  sharkAngle+=.004;
+  sharkX+=sharkDir*.4;
+  if(sharkX>W+60){sharkX=-60;sharkDir=1;}
+  if(sharkX<-60){sharkX=W+60;sharkDir=-1;}
+  const sharkY=H*.7+Math.sin(sharkAngle)*15;
+  const depthAlpha=.55;
+  ctx.save();ctx.translate(sharkX,sharkY);ctx.globalAlpha=depthAlpha;
+  if(sharkDir<0)ctx.scale(-1,1);
+  // Body
+  const sg=ctx.createLinearGradient(-35,0,35,0);
+  sg.addColorStop(0,'#2a3a4a');sg.addColorStop(.5,'#3a4a5a');sg.addColorStop(1,'#1a2a3a');
+  ctx.fillStyle=sg;
+  ctx.beginPath();ctx.moveTo(-38,0);ctx.bezierCurveTo(-30,-10,20,-12,38,0);
+  ctx.bezierCurveTo(30,4,20,10,0,8);ctx.bezierCurveTo(-20,10,-30,6,-38,0);ctx.closePath();ctx.fill();
+  // Belly
+  ctx.fillStyle='rgba(200,210,220,0.4)';
+  ctx.beginPath();ctx.ellipse(0,4,20,5,0,0,Math.PI*2);ctx.fill();
+  // Dorsal fin
+  ctx.fillStyle='#2a3a4a';
+  ctx.beginPath();ctx.moveTo(8,-8);ctx.lineTo(14,-22);ctx.lineTo(20,-8);ctx.closePath();ctx.fill();
+  // Tail
+  ctx.beginPath();ctx.moveTo(-38,0);ctx.lineTo(-52,-14);ctx.lineTo(-46,0);ctx.lineTo(-52,14);ctx.closePath();ctx.fill();
+  // Pectoral fin
+  ctx.beginPath();ctx.moveTo(5,5);ctx.lineTo(-8,18);ctx.lineTo(12,8);ctx.closePath();ctx.fill();
+  // Eye
+  ctx.fillStyle='#000';ctx.beginPath();ctx.arc(26,-2,2.5,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,0.4)';ctx.beginPath();ctx.arc(27,-3,1,0,Math.PI*2);ctx.fill();
+  // Grin (subtle)
+  ctx.strokeStyle='rgba(0,0,0,0.4)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(36,2);ctx.quadraticCurveTo(32,6,28,4);ctx.stroke();
+  ctx.restore();
+
+  ctx.restore(); // main save
+}
+
+function lightenHex(hex,amt){
+  const n=parseInt(hex.replace('#',''),16);
+  const r=Math.min(255,(n>>16)+amt),g=Math.min(255,((n>>8)&0xff)+amt),b=Math.min(255,(n&0xff)+amt);
+  return `rgb(${r},${g},${b})`;
+}
+
+// ── MAIN DRAW ──
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  drawSky();drawWater();drawRipples();drawUnderwaterScene();drawFish();
+  drawBoat();drawLine();drawBob();drawParticles();drawCharge();
+}
+
+// ── PHASE MACHINE ──
+function update(){
+  if(phase==='flying'){
+    // Bob arcs toward target
+    bobX+=(bobX>W/2?-1:1)*(chargePower*8+4)*.5;
+    // Once it crosses water surface, start sinking
+    if(bobY>=waterY(bobX)){
+      bobY=waterY(bobX);
+      phase='sinking';bobSink=0;
+      splash(bobX,bobY);
+    } else {
+      bobY+=6+chargePower*4;
+    }
+  }
+  if(phase==='sinking'){
+    bobSink+=3;
+    if(bobSink>30){phase='waiting';bobSink=0;
+      // Decide wait time based on depth — deeper = longer wait, more variance
+      waitTimer=Math.floor(1500+Math.random()*3000);
+      setTimeout(()=>{
+        if(phase==='waiting') triggerBite();
+      },waitTimer);
+    }
+  }
+  if(phase==='biting'){
+    biteTimer-=16;
+    if(biteTimer<=0) missedBite();
+  }
+  if(phase==='reeling'){
+    reelTimer-=16;
+    if(reelTimer<=0) landCatch();
+  }
+}
+
+function triggerBite(){
+  if(phase!=='waiting')return;
+  // Pick nearest fish
+  const nearby=fishSchool.filter(f=>!f.hooked&&Math.abs(f.x-bobX)<120);
+  let target=nearby.length>0?nearby[Math.floor(Math.random()*nearby.length)]:fishSchool[Math.floor(Math.random()*fishSchool.length)];
+  target.hooked=true;
+  biteFish=target;
+  phase='biting';
+  biteTimer=biteFish.biteWindow;
+  // Show tension bar
+  document.getElementById('tension-wrap').classList.add('show');
+  tension=0;
+}
+
+function missedBite(){
+  if(biteFish){biteFish.hooked=false;biteFish=null;}
+  phase='waiting';
+  document.getElementById('tension-wrap').classList.remove('show');
+  // Try again
+  waitTimer=1000+Math.random()*2000;
+  setTimeout(()=>{if(phase==='waiting')triggerBite();},waitTimer);
+}
+
+function yank(){
+  if(phase==='biting'){
+    phase='reeling';
+    reelTimer=800;
+    tension=.5;
+    splash(bobX,waterY(bobX));
+  } else if(phase==='reeling'){
+    tension=Math.min(1,tension+.3);
+    updateTensionBar();
+    if(tension>=1) snapLine();
+  }
+}
+
+function snapLine(){
+  // Line too tense — fish escapes
+  if(biteFish){biteFish.hooked=false;biteFish=null;}
+  phase='idle';
+  document.getElementById('tension-wrap').classList.remove('show');
+  showCatchMsg('💨','Snapped!','-5','#ff4444');
+  score=Math.max(0,score-5);
+  document.getElementById('score-hud').textContent=score;
+  splash(bobX,waterY(bobX));
+}
+
+function landCatch(){
+  if(!biteFish){phase='idle';return;}
+  const f=biteFish;
+  catches.push(f.emoji);
+  score+=f.pts;
+  document.getElementById('score-hud').textContent=score;
+  showCatchMsg(f.emoji,f.name,'+'+f.pts,f.col);
+  // Remove fish
+  const idx=fishSchool.indexOf(f);
+  if(idx>=0) fishSchool.splice(idx,1);
+  fishSchool.push(spawnFish()); // respawn
+  biteFish=null;
+  phase='idle';
+  document.getElementById('tension-wrap').classList.remove('show');
+  tension=0;
+  splash(bobX,waterY(bobX));
+}
+
+function updateTensionBar(){
+  const bar=document.getElementById('tension-bar');
+  bar.style.width=(tension*100)+'%';
+  bar.style.background=tension<.5?'#44cc88':tension<.8?'#f5c842':'#ff4444';
+}
+
+let catchMsgTimeout;
+function showCatchMsg(emoji,name,pts,col){
+  document.getElementById('catch-emoji').textContent=emoji;
+  document.getElementById('catch-name').textContent=name;
+  document.getElementById('catch-name').style.color=col;
+  document.getElementById('catch-pts').textContent=pts;
+  const el=document.getElementById('catch-msg');
+  el.classList.add('show');
+  clearTimeout(catchMsgTimeout);
+  catchMsgTimeout=setTimeout(()=>el.classList.remove('show'),1200);
+}
+
+// ── LOOP ──
+function loop(){raf=requestAnimationFrame(loop);if(state==='playing'){update();updateTensionBar();}draw();}
+
+// ── GAME TIMER ──
+function startTimer(){
+  timeLeft=120;
+  gameInterval=setInterval(()=>{
+    if(state!=='playing'){clearInterval(gameInterval);return;}
+    timeLeft--;
+    const m=Math.floor(timeLeft/60),s=timeLeft%60;
+    document.getElementById('time-hud').textContent=`${m}:${s.toString().padStart(2,'0')}`;
+    if(timeLeft<=0){clearInterval(gameInterval);endGame();}
+  },1000);
+}
+
+function endGame(){
+  state='over';
+  if(score>best){best=score;localStorage.setItem('cast_best',best);}
+  document.getElementById('over-score').textContent=score;
+  document.getElementById('over-best').textContent='BEST: '+best;
+  const catchEl=document.getElementById('over-catches');
+  catchEl.innerHTML='';
+  const unique=[...new Set(catches)];
+  unique.forEach(e=>{const d=document.createElement('div');d.className='catch-badge';d.textContent=e;catchEl.appendChild(d);});
+  if(unique.length===0){const d=document.createElement('div');d.style.color='#2a4a6a';d.style.fontSize='13px';d.textContent='No fish caught…';catchEl.appendChild(d);}
+  document.getElementById('over-screen').classList.remove('hide');
+}
+
+// ── INPUT ──
+let holdStart=0;
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  if(phase==='idle'){phase='charging';chargeStart=Date.now();}
+  else if(phase==='biting'||phase==='reeling'){yank();}
+},{passive:false});
+
+canvas.addEventListener('touchend',e=>{
+  e.preventDefault();
+  if(phase==='charging'){
+    chargePower=Math.min((Date.now()-chargeStart)/2000,1);
+    // Cast: bob flies to the right side, distance based on power
+    bobX=BOAT_X+80+chargePower*(W*.3);
+    bobY=BOAT_Y-60;
+    phase='flying';
+  }
+},{passive:false});
+
+canvas.addEventListener('mousedown',e=>{
+  if(phase==='idle'){phase='charging';chargeStart=Date.now();}
+  else if(phase==='biting'||phase==='reeling'){yank();}
+});
+canvas.addEventListener('mouseup',()=>{
+  if(phase==='charging'){
+    chargePower=Math.min((Date.now()-chargeStart)/2000,1);
+    bobX=BOAT_X+80+chargePower*(W*.3);
+    bobY=BOAT_Y-60;
+    phase='flying';
+  }
+});
+
+// ── START ──
+function startGame(){
+  score=0;catches=[];phase='idle';biteFish=null;tension=0;
+  bobX=BOAT_X;bobY=WATER_Y;
+  document.getElementById('score-hud').textContent='0';
+  document.getElementById('best-hud').textContent='BEST: '+best;
+  document.getElementById('tension-wrap').classList.remove('show');
+  document.getElementById('catch-msg').classList.remove('show');
+  initScene();state='playing';startTimer();
+  if(!raf)loop();
+}
+
+document.getElementById('start-btn').addEventListener('click',()=>{
+  document.getElementById('start-screen').classList.add('hide');startGame();
+});
+document.getElementById('retry-btn').addEventListener('click',()=>{
+  document.getElementById('over-screen').classList.add('hide');startGame();
+});
+
+loop();
+</script>
+</body>
+</html>

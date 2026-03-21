@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>PATINTERO</title>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@700;800&family=Nunito:wght@600;900&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;touch-action:none;}
+html,body{width:100%;height:100%;overflow:hidden;}
+body{
+  background:#1a2f1a;
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Nunito',sans-serif;
+  user-select:none;-webkit-user-select:none;
+}
+#wrap{
+  position:relative;
+  width:min(100vw,calc(100dvh*.62));
+  height:min(100dvh,calc(100vw/.62));
+  max-width:420px;max-height:680px;
+  overflow:hidden;
+}
+canvas{display:block;width:100%;height:100%;}
+.screen{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;z-index:20;
+  background:rgba(10,20,10,0.92);
+}
+.screen.hide{display:none;}
+.title{
+  font-family:'Baloo 2',cursive;font-weight:800;
+  font-size:clamp(38px,11vw,58px);
+  color:#f5e642;
+  text-shadow:3px 3px 0 #8a7a00,0 0 30px #f5e64244;
+  letter-spacing:2px;margin-bottom:4px;text-align:center;line-height:1.1;
+}
+.sub{font-size:clamp(10px,2.8vw,12px);letter-spacing:4px;color:#6a8a3a;text-transform:uppercase;margin-bottom:32px;}
+.score-big{
+  font-family:'Baloo 2',cursive;font-weight:800;
+  font-size:clamp(52px,14vw,80px);color:#f5e642;
+  text-shadow:2px 2px 0 #8a7a00;margin-bottom:4px;
+}
+.score-lbl{font-size:11px;letter-spacing:4px;color:#6a8a3a;text-transform:uppercase;margin-bottom:28px;}
+.best-lbl{font-size:12px;letter-spacing:3px;color:#4a6a2a;margin-bottom:28px;}
+.btn{
+  font-family:'Baloo 2',cursive;font-weight:700;
+  font-size:clamp(17px,4.5vw,22px);letter-spacing:2px;
+  color:#1a2f1a;background:#f5e642;border:none;
+  padding:14px 48px;border-radius:4px;cursor:pointer;
+  box-shadow:0 4px 0 #8a7a00,0 0 20px #f5e64233;
+  transition:transform .1s,box-shadow .1s;
+  -webkit-tap-highlight-color:transparent;margin:6px;
+}
+.btn:active{transform:translateY(3px);box-shadow:0 1px 0 #8a7a00;}
+.btn.sec{background:transparent;color:#6a8a3a;border:1.5px solid #3a5a2a;box-shadow:none;font-size:clamp(13px,3.5vw,15px);padding:10px 28px;}
+#hud{
+  position:absolute;top:0;left:0;right:0;
+  display:flex;justify-content:space-between;align-items:center;
+  padding:10px 16px 0;pointer-events:none;z-index:5;
+}
+#score-hud{font-family:'Baloo 2',cursive;font-weight:800;font-size:clamp(20px,5vw,28px);color:#f5e642;text-shadow:1px 1px 0 #8a7a00;}
+#lives-hud{font-size:clamp(14px,3.5vw,18px);color:#e05050;letter-spacing:3px;}
+#wave-hud{font-size:11px;letter-spacing:3px;color:#4a6a2a;text-transform:uppercase;}
+#caught-msg{
+  position:absolute;top:42%;left:50%;transform:translate(-50%,-50%);
+  font-family:'Baloo 2',cursive;font-weight:800;
+  font-size:clamp(32px,9vw,48px);letter-spacing:3px;
+  color:#e05050;text-shadow:2px 2px 0 #500;
+  pointer-events:none;z-index:10;opacity:0;transition:opacity .15s;
+}
+#caught-msg.show{opacity:1;}
+#cross-msg{
+  position:absolute;top:42%;left:50%;transform:translate(-50%,-50%);
+  font-family:'Baloo 2',cursive;font-weight:800;
+  font-size:clamp(28px,8vw,40px);letter-spacing:3px;
+  color:#f5e642;text-shadow:2px 2px 0 #8a7a00;
+  pointer-events:none;z-index:10;opacity:0;transition:opacity .15s;
+}
+#cross-msg.show{opacity:1;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="hud">
+    <div id="lives-hud">♥ ♥ ♥</div>
+    <div id="score-hud">0</div>
+    <div id="wave-hud">ANTAS 1 <span style="color:#3a5a2a;font-size:0.8em">[wave]</span></div>
+  </div>
+  <div id="caught-msg">HULI! <span style="color:#a06060;font-size:0.6em;font-weight:600">[caught!]</span></div>
+  <div id="cross-msg">CROSS!</div>
+
+  <div class="screen" id="start-screen">
+    <div class="title">PATINTERO</div>
+    <div class="sub">TAWIRIN LAHAT <span style="color:#3a5a1a;font-size:0.85em">[cross all lines]</span></div>
+    <div class="btn" id="start-btn">LARO NA! <span style="color:#6a8a3a;font-size:0.55em;font-weight:600">[let's play]</span></div>
+  </div>
+
+  <div class="screen hide" id="over-screen">
+    <div class="title">HULI! <span style="color:#6a4a3a;font-size:0.42em;font-weight:600">[caught]</span></div>
+    <div class="score-big" id="over-score">0</div>
+    <div class="score-lbl">TAWIRAN <span style="color:#3a5a2a">[crossings]</span></div>
+    <div class="best-lbl" id="over-best">BEST: 0</div>
+    <div class="btn" id="retry-btn">MULI! <span style="color:#6a8a3a;font-size:0.55em;font-weight:600">[again]</span></div>
+  </div>
+</div>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+const W=420,H=680;
+canvas.width=W;canvas.height=H;
+
+// ── PERSPECTIVE HELPERS ──
+// Court sits in lower 70% of canvas, with vanishing point at top center
+const VP={x:W/2,y:H*0.18};   // vanishing point
+const GY0=H*0.28;             // top of court (far end)
+const GY1=H*0.96;             // bottom of court (near end)
+const GX_LEFT_BOT=18, GX_RIGHT_BOT=W-18;  // near corners
+const GX_LEFT_TOP=W*0.24, GX_RIGHT_TOP=W*0.76; // far corners
+
+function projX(gx,gy){
+  // gx: 0..1 across court, gy: 0..1 along court (0=far,1=near)
+  const t=gy;
+  const xl=GX_LEFT_TOP+(GX_LEFT_BOT-GX_LEFT_TOP)*t;
+  const xr=GX_RIGHT_TOP+(GX_RIGHT_BOT-GX_RIGHT_TOP)*t;
+  return xl+(xr-xl)*gx;
+}
+function projY(gy){
+  return GY0+(GY1-GY0)*gy;
+}
+function proj(gx,gy){return{x:projX(gx,gy),y:projY(gy)};}
+
+// ── GAME CONSTANTS ──
+const ROWS=4; // horizontal lines dividing court into 4 lanes
+const COLS=3; // vertical lines (left, mid, right)
+// Lane boundaries in grid-y space (0=far,1=near)
+const LANE_Y=[0.08,0.28,0.5,0.72,0.92]; // 5 lines, all reachable
+const LINE_X=[0,0.5,1.0]; // 3 vertical lines (left,mid,right)
+
+// ── GAME STATE ──
+let state='menu',score=0,lives=3,wave=1;
+let best=parseInt(localStorage.getItem('pat_best')||'0');
+let raf;
+let player={gx:0.5,gy:0.9,vx:0,vy:0,r:20,moving:false,invincible:0,trail:[]};
+let guards=[];   // AI guarders on lines
+let particles=[];
+let caughtTO,crossTO;
+let touchStart=null,touchCurrent=null;
+let crossedLines=new Set(); // which lines player has crossed this run
+let totalCrossings=0;
+
+// ── GUARD CONFIG per wave ──
+function numGuards(){return 2+Math.min(wave,4);}
+
+function initGuards(){
+  guards=[];
+  // Horizontal line guards (patrol horizontal lines)
+  const hLines=[LANE_Y[1],LANE_Y[2],LANE_Y[3]];
+  for(let i=0;i<hLines.length;i++){
+    if(guards.length>=numGuards())break;
+    const gy=hLines[i];
+    const speed=0.004+wave*0.0012;
+    guards.push({
+      type:'h',
+      gx:Math.random(),gy,
+      vx:(Math.random()<.5?1:-1)*(speed*(0.6+Math.random()*0.8)),vy:0,
+      r:18,
+      col:guardCol(i),
+      reach:0.35+Math.random()*0.25,
+      armA:0,pauseTimer:Math.floor(Math.random()*30),pauseDur:0,
+    });
+  }
+  // Mid vertical line guard
+  if(guards.length<numGuards()){
+    guards.push({
+      type:'v',
+      gx:0.5,gy:0.5,
+      vx:0,vy:(Math.random()<.5?1:-1)*(0.003+wave*0.0005+Math.random()*0.002),
+      r:18,
+      col:guardCol(3),
+      reach:0.4,
+      armA:0,pauseTimer:Math.floor(Math.random()*20),pauseDur:0,
+    });
+  }
+  // Extra fast guard on random h-line for harder waves
+  if(wave>=3&&guards.length<numGuards()){
+    guards.push({
+      type:'h',
+      gx:Math.random(),gy:0.5,
+      vx:(Math.random()<.5?1:-1)*(0.009+wave*0.001),vy:0,
+      r:17,col:'#ff6030',reach:0.5,armA:0,pauseTimer:0,pauseDur:0,
+    });
+  }
+}
+
+function guardCol(i){return['#e05050','#5080e0','#50c080','#e09030'][i%4];}
+
+function resetPlayer(){
+  player.gx=0.5;player.gy=0.97;player.vx=0;player.vy=0;
+  player.invincible=90;player.trail=[];
+  crossedLines=new Set();
+}
+
+// ── DRAW COURT ──
+function drawCourt(){
+  // Sky / background
+  const sky=ctx.createLinearGradient(0,0,0,GY0);
+  sky.addColorStop(0,'#0a1a0a');sky.addColorStop(1,'#1a3a1a');
+  ctx.fillStyle=sky;ctx.fillRect(0,0,W,GY0);
+
+  // Court fill - concrete
+  ctx.beginPath();
+  ctx.moveTo(GX_LEFT_TOP,GY0);ctx.lineTo(GX_RIGHT_TOP,GY0);
+  ctx.lineTo(GX_RIGHT_BOT,GY1);ctx.lineTo(GX_LEFT_BOT,GY1);
+  ctx.closePath();
+  const cGrad=ctx.createLinearGradient(W/2,GY0,W/2,GY1);
+  cGrad.addColorStop(0,'#2a4020');cGrad.addColorStop(0.5,'#3a5a2a');cGrad.addColorStop(1,'#2a4a1a');
+  ctx.fillStyle=cGrad;ctx.fill();
+
+  // Court texture - subtle noise lines
+  ctx.save();ctx.globalAlpha=0.07;
+  for(let i=0;i<18;i++){
+    const gy=i/18;
+    const p0=proj(0,gy),p1=proj(1,gy);
+    ctx.strokeStyle='#fff';ctx.lineWidth=0.5;
+    ctx.beginPath();ctx.moveTo(p0.x,p0.y);ctx.lineTo(p1.x,p1.y);ctx.stroke();
+  }
+  ctx.restore();
+
+  // Draw horizontal lane lines
+  for(let i=0;i<LANE_Y.length;i++){
+    const gy=LANE_Y[i];
+    const p0=proj(0,gy),p1=proj(1,gy);
+    const alpha=i===0||i===LANE_Y.length-1?0.9:0.7;
+    const w=i===0||i===LANE_Y.length-1?3:2;
+    ctx.save();ctx.globalAlpha=alpha;
+    ctx.strokeStyle='#f5e642';ctx.lineWidth=w;ctx.lineCap='round';
+    // Shadow
+    ctx.strokeStyle='rgba(0,0,0,0.4)';ctx.lineWidth=w+3;
+    ctx.beginPath();ctx.moveTo(p0.x+1,p0.y+2);ctx.lineTo(p1.x+1,p1.y+2);ctx.stroke();
+    ctx.strokeStyle='#f5e642';ctx.lineWidth=w;
+    ctx.beginPath();ctx.moveTo(p0.x,p0.y);ctx.lineTo(p1.x,p1.y);ctx.stroke();
+    ctx.restore();
+  }
+
+  // Draw vertical lines
+  for(let i=0;i<LINE_X.length;i++){
+    const gx=LINE_X[i];
+    const p0=proj(gx,0),p1=proj(gx,1);
+    ctx.save();ctx.globalAlpha=0.7;
+    ctx.strokeStyle='rgba(0,0,0,0.4)';ctx.lineWidth=5;
+    ctx.beginPath();ctx.moveTo(p0.x+1,p0.y+2);ctx.lineTo(p1.x+1,p1.y+2);ctx.stroke();
+    ctx.strokeStyle='#f5e642';ctx.lineWidth=2.5;
+    ctx.beginPath();ctx.moveTo(p0.x,p0.y);ctx.lineTo(p1.x,p1.y);ctx.stroke();
+    ctx.restore();
+  }
+
+  // Crossed line highlights
+  for(const lineKey of crossedLines){
+    const parts=lineKey.split('_');
+    const type=parts[0],idx=parseInt(parts[1]);
+    ctx.save();ctx.globalAlpha=0.35;
+    ctx.strokeStyle='#f5e642';ctx.lineWidth=8;
+    if(type==='h'){
+      const gy=LANE_Y[idx];
+      const p0=proj(0,gy),p1=proj(1,gy);
+      ctx.beginPath();ctx.moveTo(p0.x,p0.y);ctx.lineTo(p1.x,p1.y);ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+// ── DRAW PERSON ──
+function drawPerson(gx,gy,r,col,armA,isPlayer,invincible){
+  const{x,y}=proj(gx,gy);
+  const scale=0.75+gy*0.75; // perspective scale
+  const rs=r*scale;
+
+  ctx.save();ctx.translate(x,y);
+
+  if(isPlayer&&invincible>0&&Math.floor(invincible/6)%2===0){ctx.restore();return;}
+
+  // Shadow
+  ctx.save();ctx.globalAlpha=0.25;ctx.fillStyle='#000';
+  ctx.beginPath();ctx.ellipse(0,rs*.4,rs*.7,rs*.2,0,0,Math.PI*2);ctx.fill();ctx.restore();
+
+  // Legs
+  const legS=Math.sin(armA*2)*rs*.55;
+  ctx.strokeStyle=isPlayer?'#1a3a8a':'#5a1a1a';ctx.lineWidth=rs*.32;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(0,rs*.1);ctx.lineTo(-rs*.22+legS,rs*.7);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(0,rs*.1);ctx.lineTo(rs*.22-legS,rs*.7);ctx.stroke();
+
+  // Body
+  ctx.fillStyle=isPlayer?'#3a6acc':col;
+  ctx.beginPath();ctx.roundRect(-rs*.28,-rs*.42,rs*.56,rs*.55,rs*.12);ctx.fill();
+
+  // Jersey number / stripe
+  ctx.fillStyle='rgba(255,255,255,0.3)';
+  ctx.beginPath();ctx.roundRect(-rs*.28,-rs*.42,rs*.56,rs*.18,rs*.06);ctx.fill();
+
+  // Arms
+  const armS=Math.sin(armA)*rs*.5;
+  ctx.strokeStyle=isPlayer?'#2a4a9a':col;ctx.lineWidth=rs*.26;
+  ctx.beginPath();ctx.moveTo(-rs*.2,-rs*.2);ctx.lineTo(-rs*.5-armS,-rs*.1+armS*.3);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(rs*.2,-rs*.2);ctx.lineTo(rs*.5+armS,-rs*.1-armS*.3);ctx.stroke();
+
+  // Head
+  const skinCol=isPlayer?'#f0c080':'#e8a870';
+  ctx.fillStyle=skinCol;
+  ctx.beginPath();ctx.arc(0,-rs*.58,rs*.3,0,Math.PI*2);ctx.fill();
+
+  // Eyes
+  ctx.fillStyle='#222';
+  ctx.beginPath();ctx.arc(-rs*.1,-rs*.6,rs*.07,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(rs*.1,-rs*.6,rs*.07,0,Math.PI*2);ctx.fill();
+
+  // Hair
+  if(isPlayer){
+    ctx.fillStyle='#2a1a08';
+    ctx.beginPath();ctx.ellipse(0,-rs*.82,rs*.28,rs*.14,0,0,Math.PI);ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+// ── DRAW TRAIL ──
+function drawTrail(){
+  for(let i=0;i<player.trail.length;i++){
+    const t=player.trail[i];
+    const{x,y}=proj(t.gx,t.gy);
+    ctx.save();ctx.globalAlpha=(i/player.trail.length)*0.25;
+    ctx.fillStyle='#f5e642';
+    ctx.beginPath();ctx.arc(x,y,5*(i/player.trail.length),0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ── PARTICLES ──
+function drawParticles(){
+  for(const p of particles){
+    const{x,y}=proj(p.gx,p.gy);
+    ctx.save();ctx.globalAlpha=p.life;ctx.fillStyle=p.col;
+    ctx.beginPath();ctx.arc(x,y,p.r*p.life,0,Math.PI*2);ctx.fill();ctx.restore();
+  }
+}
+
+// ── SCORE LABEL on court ──
+function drawScoreLabel(){
+  ctx.save();
+  ctx.font=`800 14px 'Nunito',sans-serif`;ctx.textAlign='center';
+  ctx.fillStyle='rgba(245,230,66,0.35)';
+  ctx.fillText(`SCORE: ${score}`,W/2,GY0-8);
+  ctx.restore();
+}
+
+// ── MAIN DRAW ──
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  // Sky above court
+  ctx.fillStyle='#0a180a';ctx.fillRect(0,0,W,GY0);
+  // Trees silhouette
+  drawTrees();
+  drawCourt();
+  drawTrail();
+  drawParticles();
+  // Draw guards back-to-front
+  const sorted=[...guards].sort((a,b)=>a.gy-b.gy);
+  for(const g of sorted) drawPerson(g.gx,g.gy,g.r,g.col,g.armA,false,0);
+  // Player
+  drawPerson(player.gx,player.gy,player.r,'#3a6acc',player.vx*12,true,player.invincible);
+  drawScoreLabel();
+}
+
+function drawTrees(){
+  ctx.save();ctx.globalAlpha=0.4;
+  for(const t of trees){
+    ctx.fillStyle='#1a3a0a';
+    ctx.beginPath();ctx.moveTo(t.x,t.y);ctx.lineTo(t.x-t.w*.5,t.y+t.h);ctx.lineTo(t.x+t.w*.5,t.y+t.h);ctx.closePath();ctx.fill();
+    ctx.fillStyle='#152e08';
+    ctx.beginPath();ctx.moveTo(t.x,t.y+t.h*.3);ctx.lineTo(t.x-t.w*.55,t.y+t.h*1.1);ctx.lineTo(t.x+t.w*.55,t.y+t.h*1.1);ctx.closePath();ctx.fill();
+  }
+  ctx.restore();
+}
+
+let trees=[];
+function initTrees(){
+  trees=[];
+  for(let i=0;i<6;i++) trees.push({x:20+i*(W/5.5)+(Math.random()-0.5)*30,y:GY0-(30+Math.random()*50),w:22+Math.random()*18,h:40+Math.random()*30});
+}
+
+// ── UPDATE ──
+function update(){
+  if(state!=='playing')return;
+
+  // Guard movement — reactive to player
+  for(const g of guards){
+    const pdx=player.gx-g.gx;
+    const pdy=player.gy-g.gy;
+    const pdist=Math.sqrt(pdx*pdx+pdy*pdy);
+
+    // Is player on MY line?
+    const myLineY = g.type==='h' ? g.gy : null;
+    const myLineX = g.type==='v' ? g.gx : null;
+    const playerOnMyLine = g.type==='h'
+      ? Math.abs(player.gy - g.gy) < 0.13
+      : Math.abs(player.gx - g.gx) < 0.13;
+
+    const baseSpeed = 0.0022 + wave*0.0006;
+    const chaseSpeed = baseSpeed * (1.5 + wave*0.1);
+
+    if(g.pauseTimer>0){
+      g.armA+=0.02; g.pauseTimer--;
+    } else {
+      if(playerOnMyLine && pdist < 0.65 && player.invincible<=0){
+        // CHASE — move along my line toward player
+        g.armA += 0.18;
+        if(g.type==='h'){
+          g.vx = Math.sign(pdx) * chaseSpeed;
+          g.gx += g.vx;
+          g.gx = Math.max(0.01, Math.min(0.99, g.gx));
+        } else {
+          g.vy = Math.sign(pdy) * chaseSpeed;
+          g.gy += g.vy;
+          g.gy = Math.max(0.05, Math.min(0.95, g.gy));
+        }
+      } else {
+        // PATROL — wander along line, drift toward player's crossing point
+        g.armA += 0.08;
+        if(g.type==='h'){
+          // Drift gx toward player.gx when player is approaching this line
+          const approachingMyLine = Math.abs(player.gy - g.gy) < 0.28;
+          if(approachingMyLine){
+            // Anticipate — move to intercept player's x position
+            const targetGx = player.gx;
+            const diff = targetGx - g.gx;
+            g.vx = Math.sign(diff) * Math.min(Math.abs(diff)*0.04, baseSpeed*1.2);
+          } else {
+            // Normal patrol
+            if(Math.random()<0.004){ g.vx*=-1; g.pauseTimer=10+Math.floor(Math.random()*25); }
+          }
+          g.gx += g.vx;
+          if(g.gx>0.98||g.gx<0.02){
+            g.vx*=-1;
+            if(Math.random()<0.35) g.pauseTimer=15+Math.floor(Math.random()*30);
+            g.vx = Math.sign(g.vx)*baseSpeed*(0.6+Math.random()*0.8);
+          }
+        } else {
+          // Vertical guard: drift gy toward player.gy when player is near vertical line
+          const nearMyVLine = Math.abs(player.gx - g.gx) < 0.28;
+          if(nearMyVLine){
+            const diff = player.gy - g.gy;
+            g.vy = Math.sign(diff) * Math.min(Math.abs(diff)*0.04, baseSpeed*1.1);
+          } else {
+            if(Math.random()<0.004){ g.vy*=-1; }
+          }
+          g.gy += g.vy;
+          if(g.gy>0.95||g.gy<0.05){
+            g.vy*=-1;
+            if(Math.random()<0.35) g.pauseTimer=12+Math.floor(Math.random()*25);
+            g.vy = Math.sign(g.vy)*baseSpeed*(0.6+Math.random()*0.9);
+          }
+        }
+      }
+    }
+  }
+
+  // Player movement toward touch
+  if(touchCurrent){
+    const rect=canvas.getBoundingClientRect();
+    const scX=W/rect.width,scY=H/rect.height;
+    const tx=(touchCurrent.clientX-rect.left)*scX;
+    const ty=(touchCurrent.clientY-rect.top)*scY;
+    // Unproject touch to grid coords (approximate)
+    const gy=Math.max(0,Math.min(1,(ty-GY0)/(GY1-GY0)));
+    const xl=GX_LEFT_TOP+(GX_LEFT_BOT-GX_LEFT_TOP)*gy;
+    const xr=GX_RIGHT_TOP+(GX_RIGHT_BOT-GX_RIGHT_TOP)*gy;
+    const gx=Math.max(0,Math.min(1,(tx-xl)/(xr-xl)));
+    const speed=0.013-gy*0.002;
+    const dx=gx-player.gx,dy=gy-player.gy;
+    const d=Math.sqrt(dx*dx+dy*dy);
+    if(d>0.01){
+      player.vx=dx/d*speed;player.vy=dy/d*speed*0.7;
+    } else {player.vx=0;player.vy=0;}
+  } else {player.vx*=0.82;player.vy*=0.82;}
+
+  const pgx=player.gx,pgy=player.gy;
+  player.gx=Math.max(0.01,Math.min(0.99,player.gx+player.vx));
+  player.gy=Math.max(0.04,Math.min(0.97,player.gy+player.vy));
+
+  player.trail.unshift({gx:player.gx,gy:player.gy});
+  if(player.trail.length>12)player.trail.pop();
+
+  if(player.invincible>0)player.invincible--;
+
+  // Check line crossings (score)
+  for(let i=0;i<LANE_Y.length;i++){
+    const gy=LANE_Y[i];
+    const key=`h_${i}`;
+    if(!crossedLines.has(key)){
+      if((pgx-0.5)*(player.gx-0.5)<0||(Math.abs(pgx-0.5)<0.01)){
+        // crossed vertical midpoint while near horizontal line
+      }
+      if((pgy-gy)*(player.gy-gy)<=0&&Math.abs(player.gy-gy)<0.08){
+        crossedLines.add(key);
+        score++;
+        totalCrossings++;
+        spawnCrossParticles(player.gx,player.gy);
+        document.getElementById('score-hud').textContent=score;
+        showCross();
+        if(score>best){best=score;localStorage.setItem('pat_best',best);}
+        // Check if all h-lines crossed
+        if(crossedLines.size>=LANE_Y.length){
+          wave++;
+          document.getElementById('wave-hud').innerHTML=`ANTAS ${wave} <span style='color:#3a5a2a;font-size:0.8em'>[wave]</span>`;
+          crossedLines=new Set();
+          initGuards();
+          // Brief flash
+          showCross('SUSUNOD! <span style="color:#8a7a30;font-size:0.6em">[next wave]</span>');
+        }
+      }
+    }
+  }
+
+  // Check guard catch
+  if(player.invincible<=0){
+    for(const g of guards){
+      const dx=g.gx-player.gx,dy=g.gy-player.gy;
+      // scale dy for perspective
+      const dist=Math.sqrt(dx*dx*1.4+dy*dy*2.5);
+      // Guard catches when on same line and close enough
+      let onSameLine=false;
+      if(g.type==='h'){
+        const nearLine=LANE_Y.find(ly=>Math.abs(g.gy-ly)<0.04);
+        if(nearLine!==undefined&&Math.abs(player.gy-nearLine)<0.07) onSameLine=true;
+      } else {
+        const nearVLine=LINE_X.find(lx=>Math.abs(g.gx-lx)<0.04);
+        if(nearVLine!==undefined&&Math.abs(player.gx-nearVLine)<0.07) onSameLine=true;
+      }
+      if(onSameLine&&dist<0.12){
+        caughtPlayer();return;
+      }
+    }
+  }
+
+  // Particles
+  for(const p of particles){
+    p.gx+=p.vgx;p.gy+=p.vgy;p.life-=p.decay;
+  }
+  particles=particles.filter(p=>p.life>0);
+}
+
+function spawnCrossParticles(gx,gy){
+  for(let i=0;i<10;i++){
+    const a=Math.random()*Math.PI*2;
+    particles.push({gx,gy,vgx:Math.cos(a)*0.008,vgy:Math.sin(a)*0.005,life:1,decay:0.04+Math.random()*.03,r:3+Math.random()*4,col:Math.random()<.5?'#f5e642':'#fff'});
+  }
+}
+
+function caughtPlayer(){
+  lives--;
+  updateLives();
+  player.invincible=120;
+  document.getElementById('caught-msg').classList.add('show');
+  clearTimeout(caughtTO);
+  caughtTO=setTimeout(()=>document.getElementById('caught-msg').classList.remove('show'),900);
+  // Screen flash red
+  ctx.save();ctx.fillStyle='rgba(200,0,0,0.22)';ctx.fillRect(0,0,W,H);ctx.restore();
+  if(lives<=0){
+    setTimeout(()=>{
+      state='over';
+      document.getElementById('over-score').textContent=score;
+      document.getElementById('over-best').textContent='BEST: '+best;
+      document.getElementById('over-screen').classList.remove('hide');
+    },600);
+  } else {
+    resetPlayer();
+  }
+}
+
+let crossMsgTO;
+function showCross(txt){
+  const el=document.getElementById('cross-msg');
+  el.innerHTML=txt?`${txt}`:'TUMAWID! <span style="color:#8a7a30;font-size:0.6em;font-weight:600">[crossed!]</span>';el.classList.add('show');
+  clearTimeout(crossMsgTO);
+  crossMsgTO=setTimeout(()=>el.classList.remove('show'),700);
+}
+function updateLives(){
+  document.getElementById('lives-hud').textContent=['♥','♥','♥'].map((h,i)=>i<lives?h:'♡').join(' ');
+}
+
+// ── LOOP ──
+function loop(){raf=requestAnimationFrame(loop);update();draw();}
+
+// ── INPUT ──
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();touchCurrent=e.touches[0];
+},{passive:false});
+canvas.addEventListener('touchmove',e=>{
+  e.preventDefault();touchCurrent=e.touches[0];
+},{passive:false});
+canvas.addEventListener('touchend',e=>{
+  e.preventDefault();
+  if(e.touches.length===0)touchCurrent=null;
+  else touchCurrent=e.touches[0];
+},{passive:false});
+canvas.addEventListener('touchcancel',()=>{touchCurrent=null;});
+canvas.addEventListener('mousedown',e=>{touchCurrent={clientX:e.clientX,clientY:e.clientY};});
+canvas.addEventListener('mousemove',e=>{if(e.buttons)touchCurrent={clientX:e.clientX,clientY:e.clientY};});
+canvas.addEventListener('mouseup',()=>{touchCurrent=null;});
+
+// ── BUTTONS ──
+function startGame(){
+  score=0;lives=3;wave=1;totalCrossings=0;
+  document.getElementById('score-hud').textContent='0';
+  document.getElementById('wave-hud').innerHTML='ANTAS 1 <span style="color:#3a5a2a;font-size:0.8em">[wave]</span>';
+  updateLives();
+  initTrees();initGuards();resetPlayer();
+  particles=[];
+  state='playing';
+  if(!raf)loop();
+}
+document.getElementById('start-btn').addEventListener('click',()=>{
+  document.getElementById('start-screen').classList.add('hide');startGame();
+});
+document.getElementById('retry-btn').addEventListener('click',()=>{
+  document.getElementById('over-screen').classList.add('hide');startGame();
+});
+
+loop();
+</script>
+</body>
+</html>

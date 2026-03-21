@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>DRIFT</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Bebas+Neue&display=swap');
+
+  :root {
+    --bg: #050a12;
+    --deep: #030709;
+    --coral1: #ff6b6b;
+    --coral2: #ffa07a;
+    --teal: #00d4aa;
+    --teal2: #00ffc8;
+    --glow: #00ffc855;
+    --warn: #ff4444;
+    --gold: #ffd700;
+    --text: #e8f4f8;
+    --dim: #3a5a6a;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; touch-action: none; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Space Mono', monospace;
+    overflow: hidden;
+    width: 100vw;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  canvas {
+    display: block;
+    touch-action: none;
+    position: relative;
+    z-index: 0;
+  }
+
+  #ui {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+    z-index: 10;
+    isolation: isolate;
+  }
+
+  #score-display {
+    position: fixed;
+    top: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(28px, 7vw, 52px);
+    letter-spacing: 4px;
+    color: var(--teal2);
+    text-shadow: 0 0 20px var(--glow), 0 0 40px var(--glow);
+    pointer-events: none;
+    transition: transform 0.1s;
+  }
+
+  #depth-display {
+    position: fixed;
+    top: 64px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px;
+    letter-spacing: 3px;
+    color: var(--teal);
+    opacity: 0.7;
+    pointer-events: none;
+  }
+
+  #best-display {
+    position: fixed;
+    top: 18px;
+    right: 18px;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--dim);
+    pointer-events: none;
+    text-align: right;
+  }
+
+  /* SCREENS */
+  .screen {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    background: radial-gradient(ellipse at 50% 60%, #0a1e2a 0%, var(--bg) 70%);
+    transition: opacity 0.4s;
+    pointer-events: all;
+  }
+
+  .screen.hidden { display: none; }
+
+  .screen-title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(64px, 20vw, 140px);
+    letter-spacing: 8px;
+    color: var(--teal2);
+    text-shadow: 0 0 40px var(--glow), 0 0 80px var(--glow);
+    line-height: 0.9;
+    margin-bottom: 8px;
+  }
+
+  .screen-sub {
+    font-size: clamp(10px, 2.5vw, 13px);
+    letter-spacing: 4px;
+    color: var(--teal);
+    opacity: 0.7;
+    margin-bottom: 48px;
+    text-transform: uppercase;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(22px, 5vw, 30px);
+    letter-spacing: 5px;
+    color: var(--bg);
+    cursor: pointer;
+    pointer-events: all;
+    position: relative;
+    z-index: 50;
+    margin: 8px;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    -webkit-user-select: none;
+    transition: transform 0.12s;
+    /* size comes from the SVG bg — padding matches SVG text position */
+    padding: 0;
+    border: none;
+    background: none;
+    width: 220px;
+    height: 64px;
+  }
+  .btn:hover { transform: scale(1.04); filter: brightness(1.1); }
+  .btn:active { transform: scale(0.94); }
+  .btn .btn-bg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 0;
+    filter: drop-shadow(0 0 12px var(--teal2)) drop-shadow(0 0 24px var(--glow));
+  }
+  .btn .btn-label {
+    position: relative;
+    z-index: 1;
+    pointer-events: none;
+  }
+  .btn.secondary {
+    opacity: 0.7;
+    width: 180px;
+    height: 52px;
+  }
+
+  .instructions {
+    font-size: clamp(10px, 2.6vw, 13px);
+    line-height: 2;
+    color: var(--dim);
+    text-align: center;
+    letter-spacing: 1px;
+    margin-bottom: 32px;
+    max-width: 320px;
+  }
+
+  .instructions span {
+    color: var(--teal);
+  }
+
+  #death-score {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(48px, 15vw, 100px);
+    color: var(--teal2);
+    text-shadow: 0 0 30px var(--glow);
+    margin-bottom: 4px;
+  }
+
+  #death-label {
+    font-size: 11px;
+    letter-spacing: 4px;
+    color: var(--dim);
+    margin-bottom: 12px;
+  }
+
+  #death-best {
+    font-size: 12px;
+    letter-spacing: 3px;
+    color: var(--gold);
+    margin-bottom: 36px;
+    min-height: 20px;
+  }
+
+  #death-cause {
+    font-size: 12px;
+    letter-spacing: 3px;
+    color: var(--coral1);
+    margin-bottom: 28px;
+    text-transform: uppercase;
+  }
+
+  /* breathing pulse ring */
+  .pulse-ring {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    border: 1px solid var(--teal2);
+    opacity: 0;
+    animation: pulse-out 2s ease-out infinite;
+    pointer-events: none;
+    z-index: 5;
+  }
+  body.playing .pulse-ring { display: none; }
+  .pulse-ring:nth-child(2) { animation-delay: 0.6s; }
+  .pulse-ring:nth-child(3) { animation-delay: 1.2s; }
+
+  @keyframes pulse-out {
+    0% { width: 80px; height: 80px; opacity: 0.6; }
+    100% { width: 320px; height: 320px; opacity: 0; }
+  }
+
+  /* coral deco on screens */
+  .coral-deco {
+    position: fixed;
+    bottom: 0;
+    width: 100%;
+    height: 120px;
+    opacity: 0.18;
+    pointer-events: none;
+  }
+
+  #streak-flash {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(32px, 10vw, 64px);
+    letter-spacing: 6px;
+    color: var(--gold);
+    text-shadow: 0 0 30px #ffd70099;
+    pointer-events: none;
+    opacity: 0;
+    z-index: 5;
+    transition: opacity 0.1s;
+  }
+
+  #heart-bar {
+    position: fixed;
+    top: 20px;
+    left: 18px;
+    display: flex;
+    gap: 6px;
+    pointer-events: none;
+  }
+
+  .heart {
+    font-size: clamp(16px, 4vw, 22px);
+    transition: transform 0.2s;
+  }
+  .heart.lost { filter: grayscale(1); opacity: 0.25; }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+<div id="ui">
+  <div id="score-display">0</div>
+  <div id="depth-display">DEPTH · 0m</div>
+  <div id="best-display">BEST<br><span id="best-val">0</span></div>
+  <div id="heart-bar">
+    <div class="heart" id="h1">♥</div>
+    <div class="heart" id="h2">♥</div>
+    <div class="heart" id="h3">♥</div>
+  </div>
+  <div id="streak-flash"></div>
+</div>
+
+<!-- START SCREEN -->
+<div class="screen" id="start-screen">
+  <div class="screen-title">DRIFT</div>
+  <div class="screen-sub">descent into the deep</div>
+  <div class="instructions">
+    <span>HOLD</span> to move right<br>
+    <span>RELEASE</span> to move left<br>
+    Navigate the corridor as it <span>breathes</span><br>
+    Collect <span>glowing orbs</span> for points<br>
+    3 lives · speed increases
+  </div>
+  <div class="btn" id="start-btn" role="button" tabindex="0">
+    <svg class="btn-bg" viewBox="0 0 220 64" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+      <polygon points="16,0 220,0 220,64 0,64 0,16" fill="#00ffc8"/>
+    </svg>
+    <span class="btn-label">DIVE</span>
+  </div>
+</div>
+
+<!-- DEATH SCREEN -->
+<div class="screen hidden" id="death-screen">
+  <div class="screen-sub">YOU HIT THE WALL</div>
+  <div id="death-cause"></div>
+  <div id="death-score">0</div>
+  <div id="death-label">DEPTH REACHED</div>
+  <div id="death-best"></div>
+  <div class="btn" id="restart-btn" role="button" tabindex="0">
+    <svg class="btn-bg" viewBox="0 0 220 64" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+      <polygon points="16,0 220,0 220,64 0,64 0,16" fill="#00ffc8"/>
+    </svg>
+    <span class="btn-label">DIVE AGAIN</span>
+  </div>
+  <div class="btn secondary" id="menu-btn" role="button" tabindex="0">
+    <svg class="btn-bg" viewBox="0 0 180 52" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+      <polygon points="12,0 180,0 180,52 0,52 0,12" fill="none" stroke="#00d4aa" stroke-width="2"/>
+    </svg>
+    <span class="btn-label" style="color:var(--teal);font-size:clamp(14px,3.5vw,17px)">SURFACE</span>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// — — — STATE — — —
+let W, H, raf;
+let state = 'menu'; // menu | playing | dead
+let held = false;
+
+// Game vars
+let score, depth, lives, speed, scrollY;
+let corridor; // array of {x, w} per row
+let orbs;
+let particles;
+let player;
+let streak;
+let flashTimer;
+let deathReason;
+let shakeX, shakeTimer, gracePeriod;
+let bgStars;
+let biolumFrames;
+
+// BEST
+let bestScore = parseInt(localStorage.getItem('drift_best') || '0');
+
+// Corridor config
+const CORRIDOR_ROWS = 80; // how many rows buffer
+const ROW_H = 12; // px per corridor row
+const CORRIDOR_BASE_W = 0.68; // fraction of screen initially
+const CORRIDOR_MIN_W = 0.18;
+const MIN_ABS_W = 80; // px minimum
+const PLAYER_RADIUS = 10;
+const ORB_RADIUS = 7;
+
+// — — — RESIZE — — —
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+
+// — — — INIT GAME — — —
+function initGame() {
+  score = 0;
+  depth = 0;
+  lives = 3;
+  speed = 1.0;
+  scrollY = 0;
+  streak = 0;
+  shakeX = 0;
+  shakeTimer = 0;
+  gracePeriod = 120;
+
+  player = {
+    x: W / 2,
+    y: H * 0.35,
+    vx: 0,
+    trail: []
+  };
+
+  corridor = [];
+  orbs = [];
+  particles = [];
+  biolumFrames = 0;
+
+  // Build initial corridor
+  buildCorridor(CORRIDOR_ROWS);
+
+  // Scatter stars
+  bgStars = Array.from({length: 60}, () => ({
+    x: Math.random() * W,
+    y: Math.random() * H,
+    r: Math.random() * 1.5 + 0.3,
+    twinkle: Math.random() * Math.PI * 2,
+    speed: Math.random() * 0.02 + 0.005
+  }));
+
+  updateUI();
+}
+
+// — — — CORRIDOR GENERATION — — —
+let corrWander = 0.5; // 0=left, 1=right center fraction
+let corrW = CORRIDOR_BASE_W;
+let corrPhase = 0; // for breathing
+let corrBreathAmp = 0;
+let corrBreathFreq = 0;
+
+function buildCorridor(count) {
+  for (let i = 0; i < count; i++) {
+    // Breathing gets faster and wilder with depth
+    const d = depth + i * 0.5;
+    corrPhase += 0.04 + d * 0.00004;
+    corrBreathAmp = 0.025 + Math.min(d * 0.00025, 0.12);
+
+    // Corridor narrows significantly — 70% wide at start, ~20% by depth 2000
+    const targetW = CORRIDOR_BASE_W - d * 0.00022;
+    corrW = Math.max(CORRIDOR_MIN_W, targetW + Math.sin(corrPhase) * corrBreathAmp);
+
+    // Wander speed increases with depth — starts gentle, gets snaky
+    const wanderSpeed = 0.018 + Math.min(d * 0.00012, 0.07);
+    corrWander += (Math.random() - 0.5) * wanderSpeed;
+    corrWander = Math.max(corrW / 2 + 0.02, Math.min(1 - corrW / 2 - 0.02, corrWander));
+
+    const cx = corrWander * W;
+    const hw = (corrW * W) / 2;
+
+    corridor.push({
+      x: cx - hw,
+      w: hw * 2,
+      breathPhase: corrPhase
+    });
+  }
+}
+
+function rowAt(worldY) {
+  return Math.floor(worldY / ROW_H);
+}
+
+// — — — ORB SPAWNING — — —
+let orbTimer = 0;
+
+function spawnOrb() {
+  // Place orb in visible corridor ahead
+  const futureRow = rowAt(scrollY + H * 0.8);
+  if (futureRow >= corridor.length) return;
+  const row = corridor[Math.min(futureRow + 8, corridor.length - 1)];
+  const margin = 18;
+  const ox = row.x + margin + Math.random() * Math.max(0, row.w - margin * 2);
+  const oy = (futureRow + 8) * ROW_H - scrollY;
+
+  orbs.push({
+    x: ox,
+    y: oy + H * 0.8,
+    worldY: (futureRow + 8) * ROW_H,
+    pulse: Math.random() * Math.PI * 2,
+    collected: false,
+    type: Math.random() < 0.12 ? 'rare' : 'normal'
+  });
+}
+
+// — — — PARTICLES — — —
+function burst(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    const angle = (Math.PI * 2 * i) / count + Math.random() * 0.5;
+    const spd = 1.5 + Math.random() * 3;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * spd,
+      vy: Math.sin(angle) * spd,
+      life: 1,
+      decay: 0.04 + Math.random() * 0.03,
+      r: 2 + Math.random() * 3,
+      color
+    });
+  }
+}
+
+// — — — UPDATE — — —
+function update() {
+  if (state !== 'playing') return;
+
+  biolumFrames++;
+
+  // Speed ramp — noticeably faster over time, capped at frantic
+  speed = 1.4 + depth * 0.0012;
+  speed = Math.min(speed, 7.5);
+
+  // Scroll world
+  scrollY += speed;
+  depth = Math.floor(scrollY / 10);
+
+  // Extend corridor buffer
+  while (corridor.length < rowAt(scrollY + H * 1.5) + 10) {
+    buildCorridor(20);
+  }
+
+  // Player horizontal physics
+  const targetVX = held ? 2.0 : -2.0;
+  player.vx += (targetVX - player.vx) * 0.10;
+  player.x += player.vx;
+  player.x = Math.max(PLAYER_RADIUS, Math.min(W - PLAYER_RADIUS, player.x));
+
+  // Trail
+  player.trail.unshift({ x: player.x, y: player.y });
+  if (player.trail.length > 18) player.trail.pop();
+
+  // Shake decay
+  if (shakeTimer > 0) {
+    shakeX = (Math.random() - 0.5) * 8 * (shakeTimer / 10);
+    shakeTimer--;
+  } else {
+    shakeX = 0;
+  }
+
+  if (gracePeriod > 0) gracePeriod--;
+
+  // — Collision detection —
+  const pWorldY = player.y + scrollY;
+  const rowIdx = Math.floor(pWorldY / ROW_H);
+  if (rowIdx >= 0 && rowIdx < corridor.length && gracePeriod === 0) {
+    const row = corridor[rowIdx];
+    if (player.x - PLAYER_RADIUS < row.x || player.x + PLAYER_RADIUS > row.x + row.w) {
+      hitWall();
+    }
+  }
+
+  // Update orbs (scroll them up)
+  orbTimer++;
+  const orbInterval = Math.max(40, 90 - depth * 0.02);
+  if (orbTimer > orbInterval) {
+    orbTimer = 0;
+    spawnOrb();
+  }
+
+  for (let i = orbs.length - 1; i >= 0; i--) {
+    const o = orbs[i];
+    o.pulse += 0.08;
+    // orbs move up with the scroll
+    const screenY = o.worldY - scrollY;
+    o.screenY = screenY;
+
+    if (!o.collected) {
+      const dx = player.x - o.x;
+      const dy = player.y - screenY;
+      if (Math.sqrt(dx * dx + dy * dy) < PLAYER_RADIUS + ORB_RADIUS + 4) {
+        o.collected = true;
+        const pts = o.type === 'rare' ? 10 : 1;
+        score += pts;
+        streak++;
+        burst(o.x, screenY, o.type === 'rare' ? '#ffd700' : '#00ffc8', o.type === 'rare' ? 16 : 8);
+        if (streak === 5 || streak === 10 || streak % 15 === 0) {
+          showStreak(streak);
+        }
+        popScore();
+      }
+    }
+
+    if (screenY < -40 || o.collected) orbs.splice(i, 1);
+  }
+
+  // Update particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.05;
+    p.life -= p.decay;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  // Stars drift
+  for (const s of bgStars) {
+    s.twinkle += s.speed;
+  }
+
+  // Score display
+  updateUI();
+}
+
+function hitWall() {
+  lives--;
+  shakeTimer = 12;
+  gracePeriod = 90;
+  burst(player.x, player.y, '#ff6b6b', 14);
+  streak = 0;
+  updateHearts();
+
+  if (lives <= 0) {
+    // die
+    endGame('CORAL COLLISION');
+  }
+}
+
+function endGame(reason) {
+  state = 'dead';
+  document.body.classList.remove('playing');
+  deathReason = reason;
+
+  if (score > bestScore) {
+    bestScore = score;
+    localStorage.setItem('drift_best', bestScore);
+  }
+
+  document.getElementById('death-score').textContent = score;
+  document.getElementById('death-cause').textContent = reason;
+  document.getElementById('death-best').textContent =
+    score >= bestScore ? '★ NEW PERSONAL BEST ★' : `BEST: ${bestScore}m`;
+
+  setTimeout(() => {
+    document.getElementById('death-screen').classList.remove('hidden');
+  }, 600);
+}
+
+// — — — DRAW — — —
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  // BG gradient
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+  bgGrad.addColorStop(0, '#030d15');
+  bgGrad.addColorStop(1, '#050f1a');
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  if (shakeTimer > 0) ctx.translate(shakeX, 0);
+
+  // Stars / bioluminescent particles in bg
+  for (const s of bgStars) {
+    const glow = 0.3 + Math.sin(s.twinkle) * 0.25;
+    ctx.globalAlpha = glow;
+    ctx.fillStyle = '#00ffc8';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Draw corridor walls
+  drawCorridor();
+
+  // Draw orbs
+  for (const o of orbs) {
+    if (o.collected) continue;
+    const sy = o.worldY - scrollY;
+    const pulse = 0.6 + Math.sin(o.pulse) * 0.4;
+    const col = o.type === 'rare' ? '#ffd700' : '#00ffc8';
+    const gCol = o.type === 'rare' ? '#ffaa00' : '#00d4aa';
+
+    // outer glow
+    const grd = ctx.createRadialGradient(o.x, sy, 0, o.x, sy, ORB_RADIUS * 3 * pulse);
+    grd.addColorStop(0, col + '99');
+    grd.addColorStop(1, col + '00');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(o.x, sy, ORB_RADIUS * 3 * pulse, 0, Math.PI * 2);
+    ctx.fill();
+
+    // core
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.arc(o.x, sy, ORB_RADIUS * pulse, 0, Math.PI * 2);
+    ctx.fill();
+
+    // inner bright
+    ctx.fillStyle = 'white';
+    ctx.globalAlpha = 0.6;
+    ctx.beginPath();
+    ctx.arc(o.x - 2, sy - 2, ORB_RADIUS * 0.3 * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // Draw player trail
+  for (let i = player.trail.length - 1; i >= 0; i--) {
+    const t = player.trail[i];
+    const alpha = (1 - i / player.trail.length) * 0.4;
+    const r = PLAYER_RADIUS * (1 - i / player.trail.length) * 0.7;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#00ffc8';
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Player
+  drawPlayer();
+
+  // Particles
+  for (const p of particles) {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.restore();
+}
+
+function drawCorridor() {
+  const startRow = Math.max(0, rowAt(scrollY) - 1);
+  const endRow = Math.min(corridor.length - 1, rowAt(scrollY + H) + 2);
+
+  // Draw wall fill (dark)
+  // Left wall
+  ctx.fillStyle = '#030810';
+  for (let r = startRow; r <= endRow; r++) {
+    const row = corridor[r];
+    const sy = r * ROW_H - scrollY;
+    ctx.fillRect(0, sy, row.x, ROW_H + 1);
+    ctx.fillRect(row.x + row.w, sy, W - (row.x + row.w), ROW_H + 1);
+  }
+
+  // Coral wall texture - draw edge lines with color
+  for (let r = startRow; r <= endRow; r++) {
+    const row = corridor[r];
+    const sy = r * ROW_H - scrollY;
+    const depthFade = Math.min(1, depth / 500);
+
+    // breathing effect on wall edge color
+    const breath = Math.sin(row.breathPhase * 2 + r * 0.3) * 0.5 + 0.5;
+    const edgeAlpha = 0.3 + breath * 0.5;
+
+    // Left wall edge
+    const lGrad = ctx.createLinearGradient(row.x - 24, 0, row.x + 4, 0);
+    lGrad.addColorStop(0, '#ff6b6b00');
+    lGrad.addColorStop(0.5, `rgba(255,107,107,${edgeAlpha * 0.6})`);
+    lGrad.addColorStop(1, `rgba(255,160,122,${edgeAlpha})`);
+    ctx.fillStyle = lGrad;
+    ctx.fillRect(row.x - 24, sy, 28, ROW_H + 1);
+
+    // Right wall edge
+    const rGrad = ctx.createLinearGradient(row.x + row.w - 4, 0, row.x + row.w + 24, 0);
+    rGrad.addColorStop(0, `rgba(255,160,122,${edgeAlpha})`);
+    rGrad.addColorStop(0.5, `rgba(255,107,107,${edgeAlpha * 0.6})`);
+    rGrad.addColorStop(1, '#ff6b6b00');
+    ctx.fillStyle = rGrad;
+    ctx.fillRect(row.x + row.w - 4, sy, 28, ROW_H + 1);
+
+    // Bioluminescent dots scattered on wall surface
+    if (r % 6 === 0) {
+      const dotBright = Math.sin(biolumFrames * 0.05 + r * 0.7) * 0.5 + 0.5;
+      ctx.globalAlpha = dotBright * 0.6;
+      ctx.fillStyle = '#00ffc8';
+      // left wall dots
+      ctx.beginPath();
+      ctx.arc(row.x - 8 - (r % 3) * 5, sy + 4, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+      // right wall dots
+      ctx.beginPath();
+      ctx.arc(row.x + row.w + 8 + (r % 3) * 5, sy + 4, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // Scanline flow effect inside corridor (flowing lines going up = sense of depth/motion)
+  ctx.save();
+  const flowAlpha = 0.04;
+  for (let i = 0; i < 3; i++) {
+    const fx = (corridor[startRow] || {x: W * 0.2}).x + 20 + i * (W * 0.12);
+    const phase = (biolumFrames * speed * 0.5 + i * 60) % H;
+    const lineGrd = ctx.createLinearGradient(0, phase - 80, 0, phase + 80);
+    lineGrd.addColorStop(0, '#00ffc800');
+    lineGrd.addColorStop(0.5, `rgba(0,255,200,${flowAlpha})`);
+    lineGrd.addColorStop(1, '#00ffc800');
+    ctx.strokeStyle = lineGrd;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(fx, 0);
+    ctx.lineTo(fx, H);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawPlayer() {
+  const x = player.x, y = player.y;
+
+  // outer glow
+  const grd = ctx.createRadialGradient(x, y, 0, x, y, PLAYER_RADIUS * 3);
+  grd.addColorStop(0, '#00ffc855');
+  grd.addColorStop(1, '#00ffc800');
+  ctx.fillStyle = grd;
+  ctx.beginPath();
+  ctx.arc(x, y, PLAYER_RADIUS * 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // body
+  const bodyGrd = ctx.createRadialGradient(x - 3, y - 3, 0, x, y, PLAYER_RADIUS);
+  bodyGrd.addColorStop(0, '#80ffee');
+  bodyGrd.addColorStop(0.5, '#00ffc8');
+  bodyGrd.addColorStop(1, '#00aa88');
+  ctx.fillStyle = bodyGrd;
+  ctx.beginPath();
+  ctx.arc(x, y, PLAYER_RADIUS, 0, Math.PI * 2);
+  ctx.fill();
+
+  // highlight
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.beginPath();
+  ctx.arc(x - 3, y - 3, 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // direction indicator
+  const dir = held ? 1 : -1;
+  ctx.fillStyle = 'rgba(0,255,200,0.5)';
+  ctx.beginPath();
+  ctx.moveTo(x + dir * 14, y);
+  ctx.lineTo(x + dir * 8, y - 5);
+  ctx.lineTo(x + dir * 8, y + 5);
+  ctx.fill();
+}
+
+// — — — LOOP — — —
+function loop() {
+  update();
+  draw();
+  raf = requestAnimationFrame(loop);
+}
+
+// — — — UI HELPERS — — —
+function updateUI() {
+  document.getElementById('score-display').textContent = score;
+  document.getElementById('depth-display').textContent = `DEPTH · ${depth}m`;
+  document.getElementById('best-val').textContent = bestScore;
+}
+
+function updateHearts() {
+  ['h1', 'h2', 'h3'].forEach((id, i) => {
+    document.getElementById(id).classList.toggle('lost', i >= lives);
+  });
+}
+
+function popScore() {
+  const el = document.getElementById('score-display');
+  el.style.transform = 'translateX(-50%) scale(1.3)';
+  setTimeout(() => el.style.transform = 'translateX(-50%) scale(1)', 120);
+}
+
+let streakFlashTO;
+function showStreak(n) {
+  const el = document.getElementById('streak-flash');
+  const msgs = ['', '', '', '', 'ON FIRE', '', '', '', '', '', 'UNSTOPPABLE'];
+  el.textContent = n >= 10 ? msgs[10] : (n >= 5 ? msgs[5] : `${n}x STREAK`);
+  el.style.opacity = '1';
+  clearTimeout(streakFlashTO);
+  streakFlashTO = setTimeout(() => { el.style.opacity = '0'; }, 900);
+}
+
+// — — — INPUT — — —
+// Only the canvas listens for hold/release — buttons are never touched
+canvas.addEventListener('touchstart', e => {
+  if (state !== 'playing') return;
+  e.preventDefault();
+  held = true;
+}, { passive: false });
+
+canvas.addEventListener('touchend',   () => { held = false; });
+canvas.addEventListener('touchcancel',() => { held = false; });
+canvas.addEventListener('mousedown',  e => { if (state === 'playing') held = true; });
+document.addEventListener('mouseup',  () => { held = false; });
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowRight' || e.code === 'KeyD') held = true;
+});
+document.addEventListener('keyup', e => {
+  if (e.code === 'Space' || e.code === 'ArrowRight' || e.code === 'KeyD') held = false;
+});
+
+// — — — BUTTONS — — —
+// Plain click only — no touchend override that could double-fire or conflict
+document.getElementById('start-btn').addEventListener('click', () => {
+  document.getElementById('start-screen').classList.add('hidden');
+  startGame();
+});
+
+document.getElementById('restart-btn').addEventListener('click', () => {
+  document.getElementById('death-screen').classList.add('hidden');
+  startGame();
+});
+
+document.getElementById('menu-btn').addEventListener('click', () => {
+  document.getElementById('death-screen').classList.add('hidden');
+  document.getElementById('start-screen').classList.remove('hidden');
+  state = 'menu';
+  document.body.classList.remove('playing');
+  cancelAnimationFrame(raf);
+});
+
+function startGame() {
+  state = 'playing';
+  document.body.classList.add('playing');
+  corrWander = 0.5;
+  corrW = CORRIDOR_BASE_W;
+  corrPhase = 0;
+  initGame();
+  if (raf) cancelAnimationFrame(raf);
+  loop();
+}
+
+// — — — MENU LOOP — — —
+function menuLoop() {
+  if (state !== 'menu') return;
+  ctx.clearRect(0, 0, W, H);
+
+  // subtle animated deep sea bg
+  const t = Date.now() * 0.001;
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#030d15');
+  bg.addColorStop(1, '#050f1a');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // drifting particles in bg
+  ctx.fillStyle = '#00ffc8';
+  for (let i = 0; i < 30; i++) {
+    const x = (Math.sin(t * 0.3 + i * 2.1) * 0.5 + 0.5) * W;
+    const y = ((t * 0.05 + i * 0.13) % 1) * H;
+    const a = Math.sin(t + i) * 0.3 + 0.4;
+    ctx.globalAlpha = a * 0.5;
+    ctx.beginPath();
+    ctx.arc(x, y, 1.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  requestAnimationFrame(menuLoop);
+}
+
+// Keyboard activation for div buttons
+['start-btn','restart-btn','menu-btn'].forEach(id => {
+  document.getElementById(id).addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') document.getElementById(id).click();
+  });
+});
+
+// — — — BOOT — — —
+resize();
+window.addEventListener('resize', resize);
+state = 'menu';
+menuLoop();
+</script>
+<div class="pulse-ring"></div>
+<div class="pulse-ring"></div>
+<div class="pulse-ring"></div>
+</body>
+</html>

@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>SPLAT</title>
+<link href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Nunito:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;touch-action:none;}
+:root{
+  --sky1:#87ceeb;--sky2:#c9e8f7;--ground:#5a9e3a;--ground2:#4a8a2e;
+  --path:#d4b896;--path2:#c4a882;
+  --ink:#1a1008;--white:#fffdf8;
+}
+body{
+  background:#87ceeb;
+  width:100vw;height:100dvh;
+  overflow:hidden;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  font-family:'Nunito',sans-serif;
+  user-select:none;-webkit-user-select:none;
+}
+#wrap{
+  position:relative;
+  width:min(100vw, calc(100dvh * 0.6));
+  height:min(100dvh, calc(100vw / 0.6));
+  max-width:400px;max-height:667px;
+  overflow:hidden;
+  border-radius:12px;
+  box-shadow:0 8px 40px rgba(0,0,0,0.35);
+}
+canvas{display:block;width:100%;height:100%;}
+
+.screen{
+  position:absolute;inset:0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  border-radius:12px;
+  z-index:20;
+}
+.screen.hide{display:none;}
+
+/* start */
+#start-screen{background:linear-gradient(170deg,#87ceeb 0%,#c9e8f7 60%,#b8e0a0 100%);}
+.splat-title{
+  font-family:'Lilita One',cursive;
+  font-size:clamp(64px,18vw,96px);
+  color:#fff;
+  -webkit-text-stroke:3px #3a7ac8;
+  text-shadow:4px 4px 0 #3a7ac8,8px 8px 0 rgba(0,0,0,0.15);
+  letter-spacing:4px;margin-bottom:4px;
+}
+.game-sub{
+  font-family:'Nunito',sans-serif;font-weight:900;
+  font-size:clamp(11px,3vw,14px);
+  letter-spacing:4px;color:#3a7ac8;
+  text-transform:uppercase;margin-bottom:28px;
+}
+.tip{
+  font-size:clamp(12px,3.2vw,15px);
+  color:#2a5a8a;text-align:center;
+  line-height:1.9;margin-bottom:28px;
+  max-width:280px;font-weight:700;
+}
+.tip span{color:#e05050;}
+
+.big-btn{
+  font-family:'Lilita One',cursive;
+  font-size:clamp(20px,5vw,26px);
+  letter-spacing:3px;
+  color:#fff;
+  background:#e05050;
+  padding:16px 52px;
+  border-radius:50px;
+  cursor:pointer;
+  box-shadow:0 4px 0 #a83030, 0 8px 20px rgba(224,80,80,0.4);
+  transition:transform 0.1s,box-shadow 0.1s;
+  border:none;
+  -webkit-tap-highlight-color:transparent;
+}
+.big-btn:active{transform:translateY(3px);box-shadow:0 1px 0 #a83030,0 4px 10px rgba(224,80,80,0.3);}
+
+/* HUD */
+#hud{
+  position:absolute;top:0;left:0;right:0;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:10px 14px 0;
+  pointer-events:none;z-index:10;
+}
+#score-txt{
+  font-family:'Lilita One',cursive;
+  font-size:clamp(22px,6vw,32px);
+  color:#fff;
+  text-shadow:2px 2px 0 #3a7ac8,0 0 12px rgba(58,122,200,0.4);
+}
+#wave-txt{
+  font-family:'Nunito',sans-serif;font-weight:900;
+  font-size:clamp(11px,3vw,13px);
+  letter-spacing:2px;color:#fff;
+  text-shadow:1px 1px 0 #3a7ac8;
+  text-transform:uppercase;
+}
+#combo-txt{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  font-family:'Lilita One',cursive;
+  font-size:clamp(28px,8vw,44px);
+  color:#f9c74f;
+  text-shadow:2px 2px 0 #c8860a;
+  pointer-events:none;z-index:15;
+  opacity:0;transition:opacity 0.15s;
+}
+
+/* over screen */
+#over-screen{background:rgba(20,10,5,0.88);}
+.over-title{
+  font-family:'Lilita One',cursive;
+  font-size:clamp(44px,13vw,72px);
+  color:#f9c74f;
+  text-shadow:3px 3px 0 #c8860a;margin-bottom:6px;
+}
+.over-score{
+  font-family:'Lilita One',cursive;
+  font-size:clamp(22px,6vw,34px);
+  color:#fff;margin-bottom:6px;
+}
+.over-best{
+  font-size:13px;letter-spacing:2px;
+  color:#aaa;margin-bottom:28px;font-weight:700;
+}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+
+  <!-- HUD -->
+  <div id="hud">
+    <div id="score-txt">0</div>
+    <div id="wave-txt">WAVE 1</div>
+  </div>
+  <div id="miss-bar" style="position:absolute;bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:6px;z-index:10;pointer-events:none">
+  </div>
+  <div id="combo-txt"></div>
+
+  <!-- START -->
+  <div class="screen" id="start-screen">
+    <div class="splat-title">SPLAT!</div>
+    <div class="game-sub">water balloon mayhem</div>
+    <div class="tip">
+      <span>DRAG</span> to aim your balloon<br>
+      <span>HOLD LONGER</span> = bigger balloon<br>
+
+      Miss <span>5 shots</span> and it's over!
+    </div>
+    <div class="big-btn" id="start-btn">LAUNCH!</div>
+  </div>
+
+  <!-- GAME OVER -->
+  <div class="screen hide" id="over-screen">
+    <div class="over-title">SOAKED!</div>
+    <div class="over-score" id="over-score">0 pts</div>
+    <div class="over-best" id="over-best">BEST: 0</div>
+    <div class="big-btn" id="retry-btn">AGAIN!</div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = 400, H = 667;
+canvas.width = W; canvas.height = H;
+
+// ── COLOURS ──
+const PALETTE = ['#e05050','#50a0e0','#50c878','#f9c74f','#c878c8','#ff8c42'];
+const WATER_COLS = ['#4fc3f7','#29b6f6','#81d4fa','#b3e5fc','#e1f5fe'];
+
+// ── STATE ──
+let state = 'menu';
+let score = 0, wave = 1, combo = 0, comboTimer = 0, misses = 0;
+let best = parseInt(localStorage.getItem('splat_best')||'0');
+let raf;
+
+// figures
+let figures = [];
+let splats = [];      // ink splat marks on ground
+let balloons = [];    // in-flight balloons
+let particles = [];   // water droplets
+let floaters = [];    // floating score popups
+let clouds = [];
+
+// drag state
+let dragging = false;
+let dragStart = {x:0,y:0};
+let dragCurrent = {x:0,y:0};
+let holdStart = 0;
+
+// spawn timing
+let spawnTimer = 0;
+const BASE_SPAWN = 110;
+let figuresEscaped = 0;
+const MAX_ESCAPED = 8;
+const MAX_MISSES = 5;
+
+// ── FIGURE FACTORY ──
+const REACTIONS = ['QUACK!','SQUAWK!','HONK!','SPLASH!','WAAAK!','QUAACK!','SQUEEK!'];
+function makeFigure() {
+  const fromLeft = Math.random() < 0.5;
+  const lane = 0.62 + Math.random() * 0.2; // y fraction on ground
+  const speed = (1.2 + Math.random() * 1.4 + wave * 0.18) * (fromLeft ? 1 : -1);
+  const color = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+  const size = 14 + Math.random() * 8;
+  return {
+    x: fromLeft ? -30 : W + 30,
+    y: H * lane,
+    vx: speed, vy: 0,
+    size,
+    color,
+    state: 'walk', // walk | hit | flee | done
+    hitTimer: 0,
+    fleeTimer: 0,
+    walkCycle: Math.random() * Math.PI * 2,
+    reaction: REACTIONS[Math.floor(Math.random() * REACTIONS.length)],
+    reactionTimer: 0,
+    hat: Math.random() < 0.3,
+    hatColor: PALETTE[Math.floor(Math.random() * PALETTE.length)],
+    scream: false,
+    wobble: 0,
+    splashColor: WATER_COLS[Math.floor(Math.random() * WATER_COLS.length)],
+  };
+}
+
+// ── CLOUDS ──
+function initClouds() {
+  clouds = [];
+  for (let i = 0; i < 4; i++) {
+    clouds.push({
+      x: Math.random() * W,
+      y: 30 + Math.random() * 80,
+      w: 60 + Math.random() * 80,
+      h: 28 + Math.random() * 20,
+      speed: 0.2 + Math.random() * 0.3,
+    });
+  }
+}
+
+// ── DRAW SCENE ──
+function drawBG() {
+  // Sky gradient
+  const sky = ctx.createLinearGradient(0,0,0,H*0.58);
+  sky.addColorStop(0,'#5ab4e0');
+  sky.addColorStop(1,'#c9e8f7');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0,0,W,H*0.58);
+
+  // Clouds
+  ctx.fillStyle = 'rgba(255,255,255,0.82)';
+  for (const c of clouds) {
+    ctx.beginPath();
+    ctx.ellipse(c.x, c.y, c.w*0.5, c.h*0.4, 0, 0, Math.PI*2);
+    ctx.ellipse(c.x-c.w*0.22, c.y+c.h*0.08, c.w*0.32, c.h*0.32, 0, 0, Math.PI*2);
+    ctx.ellipse(c.x+c.w*0.22, c.y+c.h*0.06, c.w*0.3, c.h*0.3, 0, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // Ground layers
+  // Far grass
+  ctx.fillStyle = '#7abf52';
+  ctx.fillRect(0, H*0.56, W, H*0.08);
+  // Midground grass
+  ctx.fillStyle = '#5a9e3a';
+  ctx.beginPath();
+  ctx.moveTo(0, H*0.6);
+  for (let x=0;x<=W;x+=18) ctx.lineTo(x, H*0.6 + Math.sin(x*0.18)*4);
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.fill();
+  // Path / sidewalk
+  ctx.fillStyle = '#d4b896';
+  ctx.fillRect(0, H*0.63, W, H*0.14);
+  // Path edge lines
+  ctx.strokeStyle = '#c4a882'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(0,H*0.63); ctx.lineTo(W,H*0.63); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0,H*0.77); ctx.lineTo(W,H*0.77); ctx.stroke();
+  // Pavement cracks
+  ctx.strokeStyle = '#b8946e'; ctx.lineWidth = 0.8; ctx.globalAlpha = 0.4;
+  [[60,H*0.65,100,H*0.68],[180,H*0.7,220,H*0.66],[300,H*0.65,340,H*0.72],[120,H*0.74,150,H*0.71]].forEach(([x1,y1,x2,y2])=>{
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  });
+  ctx.globalAlpha = 1;
+  // Foreground grass
+  ctx.fillStyle = '#4a8a2e';
+  ctx.beginPath();
+  ctx.moveTo(0, H*0.77);
+  for (let x=0;x<=W;x+=14) ctx.lineTo(x, H*0.77 - Math.sin(x*0.22)*5);
+  ctx.lineTo(W,H); ctx.lineTo(0,H); ctx.fill();
+}
+
+// ── DRAW DUCK ──
+function drawFigure(f) {
+  ctx.save();
+  ctx.translate(f.x, f.y);
+  const s = f.size;
+  const hit = f.state === 'hit';
+  const flee = f.state === 'flee';
+  const t = f.walkCycle;
+
+  if (hit) ctx.scale(1 + Math.sin(f.hitTimer*0.3)*0.25, 1 - Math.sin(f.hitTimer*0.3)*0.15);
+
+  // Wobble when hit
+  ctx.translate(f.wobble * Math.sin(t*2), 0);
+
+  // Shadow
+  ctx.save(); ctx.globalAlpha = 0.15; ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.ellipse(0, s*0.6, s*0.65, s*0.15, 0, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  // Feet waddle
+  const waddle = flee ? Math.sin(t*4)*s*0.22 : Math.sin(t*2.5)*s*0.14;
+  const footCol = hit ? '#ff9900' : '#f4a200';
+  ctx.fillStyle = footCol;
+  // Left foot
+  ctx.save(); ctx.translate(-s*0.18+waddle, s*0.55);
+  ctx.beginPath(); ctx.ellipse(0,0,s*0.22,s*0.09,0.3,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+  // Right foot
+  ctx.save(); ctx.translate(s*0.18-waddle, s*0.55);
+  ctx.beginPath(); ctx.ellipse(0,0,s*0.22,s*0.09,-0.3,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  // Body — plump oval
+  const bodyCol = hit ? '#4fc3f7' : f.color;
+  ctx.fillStyle = bodyCol;
+  ctx.beginPath(); ctx.ellipse(0, s*0.15, s*0.48, s*0.38, 0, 0, Math.PI*2); ctx.fill();
+  // Belly lighter patch
+  ctx.fillStyle = hit ? '#b3e5fc' : '#fffde8';
+  ctx.beginPath(); ctx.ellipse(s*0.08, s*0.22, s*0.28, s*0.22, 0.2, 0, Math.PI*2); ctx.fill();
+
+  // Wing flap when fleeing
+  if (flee || hit) {
+    const flapY = Math.sin(t*5)*s*0.18;
+    ctx.fillStyle = hit ? '#29b6f6' : darkenCol(f.color, 20);
+    ctx.beginPath();
+    ctx.ellipse(-s*0.42, s*0.1+flapY, s*0.22, s*0.12, -0.6, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(s*0.42, s*0.1+flapY, s*0.22, s*0.12, 0.6, 0, Math.PI*2); ctx.fill();
+  }
+
+  // Head
+  ctx.fillStyle = bodyCol;
+  ctx.beginPath(); ctx.arc(s*0.28, -s*0.28, s*0.28, 0, Math.PI*2); ctx.fill();
+
+  // Water drip if hit
+  if (hit) {
+    ctx.globalAlpha = 0.75; ctx.fillStyle = '#4fc3f7';
+    ctx.beginPath(); ctx.ellipse(s*0.2, -s*0.1+f.hitTimer*0.35, s*0.06, s*0.1, 0, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // Eye
+  const eyeCol = (hit || flee) ? '#ff3333' : '#222';
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(s*0.38, -s*0.34, s*0.12, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = eyeCol;
+  ctx.beginPath(); ctx.arc(s*0.4, -s*0.33, s*0.07, 0, Math.PI*2); ctx.fill();
+  // Eye shine
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(s*0.42, -s*0.36, s*0.03, 0, Math.PI*2); ctx.fill();
+
+  // Beak
+  ctx.fillStyle = hit ? '#ff6600' : '#f4a200';
+  ctx.save(); ctx.translate(s*0.54, -s*0.28);
+  if (hit || flee) {
+    // Open beak (shocked)
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(s*0.22,-s*0.06); ctx.lineTo(s*0.2, s*0.08); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#c00';
+    ctx.beginPath(); ctx.ellipse(s*0.1, s*0.01, s*0.07, s*0.04, 0, 0, Math.PI*2); ctx.fill();
+  } else {
+    ctx.beginPath(); ctx.moveTo(0,-s*0.04); ctx.lineTo(s*0.2,0); ctx.lineTo(0,s*0.04); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+
+  // Hat (some ducks wear hats — extra chaotic)
+  if (f.hat) {
+    ctx.fillStyle = f.hatColor;
+    ctx.fillRect(s*0.06, -s*0.62, s*0.44, s*0.22);
+    ctx.fillRect(s*0.0, -s*0.42, s*0.56, s*0.08);
+    // Hat band
+    ctx.fillStyle = darkenCol(f.hatColor, 30);
+    ctx.fillRect(s*0.06, -s*0.44, s*0.44, s*0.06);
+  }
+
+  // Reaction speech bubble
+  if (f.reactionTimer > 0) {
+    ctx.globalAlpha = Math.min(1, f.reactionTimer / 10);
+    const bx = f.vx > 0 ? -s*2.2 : s*0.6;
+    const by = -s*1.0;
+    const bw = 58, bh = 22;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 6); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(bx+bw*0.5, by+bh); ctx.lineTo(bx+bw*0.4, by+bh+8); ctx.lineTo(bx+bw*0.65, by+bh); ctx.fill();
+    ctx.fillStyle = '#0077aa';
+    ctx.font = `900 ${Math.floor(s*0.55)}px Nunito,sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(f.reaction, bx+bw*0.5, by+bh*0.5);
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.restore();
+}
+
+function darkenCol(hex, amt) {
+  const n = parseInt(hex.replace('#',''), 16);
+  const r = Math.max(0,(n>>16)-amt), g = Math.max(0,((n>>8)&0xff)-amt), b = Math.max(0,(n&0xff)-amt);
+  return `rgb(${r},${g},${b})`;
+}
+
+// ── DRAW BALLOON ──
+function drawBalloon(b) {
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  // shadow
+  ctx.save(); ctx.globalAlpha = 0.15;
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.ellipse(0,b.r*0.8,b.r*0.7,b.r*0.2,0,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+  // balloon
+  const bg = ctx.createRadialGradient(-b.r*0.3,-b.r*0.35,b.r*0.05,-b.r*0.1,-b.r*0.1,b.r);
+  bg.addColorStop(0,'rgba(255,255,255,0.7)');
+  bg.addColorStop(0.3, b.color+'cc');
+  bg.addColorStop(1, b.color+'88');
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.arc(0,0,b.r,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle = b.color; ctx.lineWidth = 1.5;
+  ctx.stroke();
+  // knot
+  ctx.fillStyle = b.color;
+  ctx.beginPath(); ctx.ellipse(0, b.r+2, 3, 5, 0, 0, Math.PI*2); ctx.fill();
+  // string
+  ctx.strokeStyle = '#aaa'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, b.r+7); ctx.quadraticCurveTo(6, b.r+16, 2, b.r+22); ctx.stroke();
+  ctx.restore();
+}
+
+// ── DRAW AIM GUIDE ──
+function drawAim() {
+  if (!dragging) return;
+  const dx = dragStart.x - dragCurrent.x;
+  const dy = dragStart.y - dragCurrent.y;
+  const held = (Date.now() - holdStart) / 1000;
+  const power = Math.min(held * 0.8, 1);
+  const radius = 14 + power * 24;
+  const speed = 6 + power * 14;
+  const vx = dx * 0.18, vy = dy * 0.18;
+
+  // Trajectory dots
+  ctx.save();
+  let px = dragStart.x, py = dragStart.y;
+  let pvx = vx, pvy = vy;
+  for (let i = 0; i < 18; i++) {
+    pvx *= 0.99; pvy += 0.32;
+    px += pvx; py += pvy;
+    if (py > H + 40) break;
+    ctx.globalAlpha = (1 - i/18) * 0.55;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(px, py, 3 - i*0.12, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.restore();
+
+  // Balloon preview at drag point
+  ctx.save(); ctx.globalAlpha = 0.85;
+  const col = PALETTE[Math.floor(Date.now()/300) % PALETTE.length];
+  const bg = ctx.createRadialGradient(
+    dragStart.x-radius*0.3, dragStart.y-radius*0.35, radius*0.05,
+    dragStart.x, dragStart.y, radius
+  );
+  bg.addColorStop(0,'rgba(255,255,255,0.7)');
+  bg.addColorStop(0.3, col+'cc');
+  bg.addColorStop(1, col+'88');
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.arc(dragStart.x, dragStart.y, radius, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = col; ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+
+  // Power bar
+  const barW = 80, barH = 8;
+  const bx = dragStart.x - barW/2, by = dragStart.y + radius + 14;
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath(); ctx.roundRect(bx, by, barW, barH, 4); ctx.fill();
+  ctx.fillStyle = power < 0.5 ? '#4fc3f7' : power < 0.8 ? '#f9c74f' : '#e05050';
+  ctx.beginPath(); ctx.roundRect(bx, by, barW * power, barH, 4); ctx.fill();
+}
+
+// ── DRAW SPLATS ──
+function drawSplats() {
+  for (const s of splats) {
+    ctx.save(); ctx.globalAlpha = s.alpha;
+    ctx.translate(s.x, s.y);
+    ctx.fillStyle = s.color;
+    for (const blob of s.blobs) {
+      ctx.beginPath(); ctx.ellipse(blob.x, blob.y, blob.rx, blob.ry, blob.a, 0, Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+// ── PARTICLES ──
+function drawParticles() {
+  for (const p of particles) {
+    ctx.save(); ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    if (p.type === 'drop') {
+      ctx.beginPath(); ctx.ellipse(p.x, p.y, p.r, p.r*1.6, p.angle, 0, Math.PI*2); ctx.fill();
+    } else {
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+// ── SCORE FLOATERS ──
+function drawFloaters() {
+  for (const f of floaters) {
+    ctx.save(); ctx.globalAlpha = f.life;
+    ctx.font = `900 ${f.size}px 'Lilita One',cursive`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = f.color;
+    ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.lineWidth = 3;
+    ctx.strokeText(f.text, f.x, f.y);
+    ctx.fillText(f.text, f.x, f.y);
+    ctx.restore();
+  }
+}
+
+// ── SPLAT CREATION ──
+function createSplat(x, y, r, color) {
+  const blobs = [];
+  for (let i = 0; i < 7 + Math.floor(r/4); i++) {
+    const a = Math.random() * Math.PI * 2;
+    const d = Math.random() * r * 0.9;
+    blobs.push({
+      x: Math.cos(a)*d, y: Math.sin(a)*d*0.4,
+      rx: r*0.25 + Math.random()*r*0.3,
+      ry: r*0.1 + Math.random()*r*0.12,
+      a: Math.random()*Math.PI,
+    });
+  }
+  splats.push({x, y, color, blobs, alpha:0.8});
+}
+
+// ── WATER BURST ──
+function waterBurst(x, y, r, color) {
+  for (let i = 0; i < 24 + r; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const spd = 2 + Math.random() * (r * 0.25);
+    particles.push({
+      x, y,
+      vx: Math.cos(a)*spd, vy: Math.sin(a)*spd - 2,
+      life: 1, decay: 0.025 + Math.random()*0.025,
+      r: 2 + Math.random()*4,
+      color: WATER_COLS[Math.floor(Math.random()*WATER_COLS.length)],
+      type: 'drop', angle: a,
+    });
+  }
+}
+
+// ── FLOAT SCORE ──
+function floatScore(x, y, pts, combo) {
+  const colors = ['#f9c74f','#fff','#4fc3f7','#ff8c42','#c878c8'];
+  floaters.push({
+    x, y,
+    vy: -1.8,
+    text: (combo > 1 ? `x${combo} ` : '') + `+${pts}`,
+    color: combo > 2 ? '#f9c74f' : '#fff',
+    size: combo > 2 ? 28 : 22,
+    life: 1, decay: 0.018,
+  });
+}
+
+// ── LAUNCH BALLOON ──
+function launch() {
+  if (!dragging) return;
+  dragging = false;
+  const dx = dragStart.x - dragCurrent.x;
+  const dy = dragStart.y - dragCurrent.y;
+  const held = Math.min((Date.now() - holdStart) / 1000, 1.25);
+  const power = held * 0.8;
+  const r = 14 + power * 24;
+  const color = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+  balloons.push({
+    x: dragStart.x, y: dragStart.y,
+    vx: dx * 0.18, vy: dy * 0.18,
+    r, color,
+    popped: false,
+  });
+}
+
+// ── UPDATE ──
+function update() {
+  // Clouds drift
+  for (const c of clouds) {
+    c.x += c.speed;
+    if (c.x > W + c.w) c.x = -c.w;
+  }
+
+  // Walk cycle on all living figures
+  for (const f of figures) {
+    f.walkCycle += f.state === 'flee' ? 0.22 : 0.1;
+    if (f.wobble > 0) f.wobble -= 0.05;
+
+    if (f.state === 'walk') {
+      f.x += f.vx;
+    } else if (f.state === 'hit') {
+      f.hitTimer++;
+      f.x += f.vx * 0.3;
+      if (f.hitTimer > 28) {
+        f.state = 'flee';
+        f.fleeTimer = 0;
+        f.vx = (f.vx > 0 ? 1 : -1) * (2.5 + wave * 0.2);
+      }
+    } else if (f.state === 'flee') {
+      f.fleeTimer++;
+      f.x += f.vx * 1.8;
+    }
+
+    if (f.reactionTimer > 0) f.reactionTimer--;
+
+    // Off screen = escaped
+    if (f.state === 'walk' && (f.x < -60 || f.x > W+60)) {
+      f.state = 'done';
+      figuresEscaped++;
+    }
+    if (f.state === 'flee' && (f.x < -80 || f.x > W+80)) {
+      f.state = 'done';
+    }
+  }
+
+  figures = figures.filter(f => f.state !== 'done');
+
+  // Balloons
+  for (const b of balloons) {
+    b.vx *= 0.994;
+    b.vy += 0.3;
+    b.x += b.vx; b.y += b.vy;
+
+    if (b.popped) continue;
+
+    // Hit figures
+    for (const f of figures) {
+      if (f.state === 'hit' || f.state === 'flee') continue;
+      const dx = f.x - b.x, dy = f.y - b.y;
+      if (Math.sqrt(dx*dx+dy*dy) < b.r + f.size * 0.6) {
+        b.popped = true;
+        f.state = 'hit'; f.hitTimer = 0;
+        f.reactionTimer = 50;
+        f.wobble = 1.2;
+        combo++;
+        const pts = 10 * combo;
+        score += pts;
+        floatScore(f.x, f.y - f.size*1.2, pts, combo);
+        waterBurst(b.x, b.y, b.r, b.color);
+        createSplat(b.x, b.y + f.size*0.3, b.r, b.color);
+        document.getElementById('score-txt').textContent = score;
+        showCombo(combo);
+        break;
+      }
+    }
+
+    // Hit ground — miss penalty
+    if (!b.popped && b.y > H * 0.78) {
+      b.popped = true;
+      combo = 0; comboTimer = 0;
+      misses++;
+      waterBurst(b.x, b.y, b.r, b.color);
+      createSplat(b.x, b.y, b.r, b.color+'55');
+      updateMissBar();
+    }
+
+    // Off screen sides
+    if (b.x < -40 || b.x > W+40 || b.y > H+40) b.popped = true;
+  }
+  balloons = balloons.filter(b => !b.popped || b.y < H+40);
+  // Keep popped ones briefly for visual
+  balloons = balloons.filter(b => !b.popped);
+
+  // Particles
+  for (const p of particles) {
+    p.x += p.vx; p.y += p.vy;
+    p.vy += 0.18; p.vx *= 0.96;
+    p.life -= p.decay;
+  }
+  particles = particles.filter(p => p.life > 0);
+
+  // Floaters
+  for (const f of floaters) {
+    f.y += f.vy; f.life -= f.decay;
+  }
+  floaters = floaters.filter(f => f.life > 0);
+
+  // Splat fade (very slow)
+  for (const s of splats) s.alpha = Math.max(0, s.alpha - 0.0008);
+  splats = splats.filter(s => s.alpha > 0.05);
+
+  // Spawn figures
+  spawnTimer++;
+  const interval = Math.max(40, BASE_SPAWN - wave * 12);
+  if (spawnTimer >= interval) {
+    spawnTimer = 0;
+    if (figures.length < 4 + wave) figures.push(makeFigure());
+  }
+
+  // Wave progression
+  if (score >= wave * 150) {
+    wave++;
+    document.getElementById('wave-txt').textContent = 'WAVE '+wave;
+    // Spawn a bunch on wave up
+    for (let i = 0; i < 2; i++) figures.push(makeFigure());
+  }
+
+  // Combo decay
+  comboTimer++;
+  if (comboTimer > 90) { combo = 0; comboTimer = 0; }
+
+  // Game over: too many escaped
+  if (figuresEscaped >= MAX_ESCAPED) {
+    endGame();
+  }
+}
+
+// ── COMBO DISPLAY ──
+let comboFlashTO;
+function showCombo(n) {
+  comboTimer = 0;
+  if (n < 2) return;
+  const el = document.getElementById('combo-txt');
+  const msgs = {2:'DOUBLE!',3:'TRIPLE!',4:'QUAD!!',5:'CRAZY!!!',6:'INSANE!!!!'};
+  el.textContent = msgs[n] || `${n}x CHAIN!!!!`;
+  el.style.opacity = '1';
+  clearTimeout(comboFlashTO);
+  comboFlashTO = setTimeout(()=>{ el.style.opacity='0'; }, 1000);
+}
+
+
+// ── MISS BAR ──
+function updateMissBar() {
+  const bar = document.getElementById('miss-bar');
+  bar.innerHTML = '';
+  for (let i = 0; i < MAX_MISSES; i++) {
+    const dot = document.createElement('div');
+    const hit = i >= (MAX_MISSES - misses);
+    dot.style.cssText = `width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,0.6);background:${hit ? '#e05050' : 'rgba(255,255,255,0.25)'};transition:background 0.15s;`;
+    bar.appendChild(dot);
+  }
+  if (misses >= MAX_MISSES) endGame();
+}
+
+// ── END GAME ──
+function endGame() {
+  state = 'over';
+  if (score > best) { best = score; localStorage.setItem('splat_best', best); }
+  document.getElementById('over-score').textContent = score + ' pts';
+  document.getElementById('over-best').textContent = 'BEST: ' + best;
+  document.getElementById('over-screen').classList.remove('hide');
+}
+
+// ── MAIN LOOP ──
+function loop() {
+  raf = requestAnimationFrame(loop);
+  ctx.clearRect(0,0,W,H);
+  drawBG();
+  drawSplats();
+  drawParticles();
+  for (const f of figures) drawFigure(f);
+  for (const b of balloons) drawBalloon(b);
+  drawAim();
+  drawFloaters();
+  if (state === 'playing') update();
+}
+
+// ── INPUT ──
+function getPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  const scX = W / rect.width, scY = H / rect.height;
+  const src = e.touches ? e.touches[0] : e;
+  return { x:(src.clientX - rect.left)*scX, y:(src.clientY - rect.top)*scY };
+}
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (state !== 'playing') return;
+  const p = getPos(e);
+  dragging = true;
+  dragStart = {...p};
+  dragCurrent = {...p};
+  holdStart = Date.now();
+}, {passive:false});
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (!dragging) return;
+  dragCurrent = getPos(e);
+}, {passive:false});
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  if (dragging) launch();
+}, {passive:false});
+
+canvas.addEventListener('mousedown', e => {
+  if (state !== 'playing') return;
+  const p = getPos(e);
+  dragging = true;
+  dragStart = {...p};
+  dragCurrent = {...p};
+  holdStart = Date.now();
+});
+canvas.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  dragCurrent = getPos(e);
+});
+canvas.addEventListener('mouseup', () => { if (dragging) launch(); });
+canvas.addEventListener('mouseleave', () => { if (dragging) launch(); });
+
+// ── BUTTONS ──
+function startGame() {
+  score = 0; wave = 1; combo = 0; comboTimer = 0; misses = 0;
+  figuresEscaped = 0; spawnTimer = 0;
+  figures = []; balloons = []; particles = []; floaters = []; splats = [];
+  dragging = false;
+  initClouds();
+  document.getElementById('score-txt').textContent = '0';
+  document.getElementById('wave-txt').textContent = 'WAVE 1';
+  document.getElementById('combo-txt').style.opacity = '0';
+  updateMissBar();
+  state = 'playing';
+  // Spawn first two figures immediately
+  figures.push(makeFigure()); figures.push(makeFigure());
+  if (!raf) loop();
+}
+
+document.getElementById('start-btn').addEventListener('click', () => {
+  document.getElementById('start-screen').classList.add('hide');
+  startGame();
+});
+document.getElementById('retry-btn').addEventListener('click', () => {
+  document.getElementById('over-screen').classList.add('hide');
+  startGame();
+});
+
+// Boot — run loop so bg is visible behind start screen
+initClouds();
+loop();
+</script>
+</body>
+</html>

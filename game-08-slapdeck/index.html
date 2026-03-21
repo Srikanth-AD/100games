@@ -1,0 +1,929 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>SLAP DECK</title>
+<link href="https://fonts.googleapis.com/css2?family=Righteous&family=Nunito:wght@700;900&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;touch-action:none;}
+html,body{width:100%;height:100%;overflow:hidden;}
+body{
+  background:#1a0a2e;
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Nunito',sans-serif;
+  user-select:none;-webkit-user-select:none;
+}
+#wrap{
+  position:relative;
+  width:min(100vw,calc(100dvh*.62));
+  height:min(100dvh,calc(100vw/.62));
+  max-width:420px;max-height:680px;
+  overflow:hidden;border-radius:16px;
+  box-shadow:0 8px 48px rgba(0,0,0,0.7);
+}
+canvas{display:block;width:100%;height:100%;}
+.screen{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;z-index:20;
+  border-radius:16px;
+}
+.screen.hide{display:none;}
+
+/* START */
+#start-screen{background:radial-gradient(ellipse at 50% 40%,#2d1060 0%,#1a0a2e 70%);}
+.s-title{
+  font-family:'Righteous',cursive;
+  font-size:clamp(52px,14vw,78px);
+  color:#fff;letter-spacing:4px;
+  text-shadow:3px 3px 0 #7c3aed,0 0 40px #a855f744;
+  margin-bottom:2px;
+}
+.s-sub{font-size:clamp(10px,2.8vw,12px);letter-spacing:5px;color:#6d28d9;text-transform:uppercase;margin-bottom:28px;}
+.s-cards{font-size:clamp(32px,8vw,44px);margin-bottom:20px;letter-spacing:4px;}
+.rules{
+  font-size:clamp(11px,3vw,13px);color:#a78bfa;text-align:center;
+  line-height:2.2;margin-bottom:28px;max-width:270px;font-weight:700;
+}
+.rules b{color:#e879f9;}
+.s-btn{
+  font-family:'Righteous',cursive;font-size:clamp(17px,4.5vw,22px);letter-spacing:3px;
+  color:#1a0a2e;background:#a855f7;border:none;padding:14px 52px;border-radius:50px;
+  cursor:pointer;box-shadow:0 4px 0 #6d28d9,0 0 24px #a855f744;
+  transition:transform .1s,box-shadow .1s;-webkit-tap-highlight-color:transparent;margin:6px;
+}
+.s-btn:active{transform:translateY(3px);box-shadow:0 1px 0 #6d28d9;}
+.s-btn.sec{background:transparent;color:#6d28d9;border:1.5px solid #4c1d95;box-shadow:none;font-size:clamp(12px,3.2vw,14px);padding:10px 28px;}
+
+/* HUD */
+#hud{
+  position:absolute;top:0;left:0;right:0;
+  display:flex;justify-content:space-between;align-items:center;
+  padding:10px 14px 0;pointer-events:none;z-index:10;
+}
+#ai-info{display:flex;align-items:center;gap:6px;}
+#ai-emoji{font-size:clamp(18px,4.5vw,22px);}
+#ai-name{font-size:11px;letter-spacing:2px;color:#6d28d9;text-transform:uppercase;}
+#ai-cards-count{
+  font-family:'Righteous',cursive;font-size:clamp(16px,4vw,20px);
+  color:#e879f9;text-shadow:0 0 8px #e879f944;
+}
+#my-info{display:flex;align-items:center;gap:6px;}
+#my-cards-count{
+  font-family:'Righteous',cursive;font-size:clamp(16px,4vw,20px);
+  color:#a855f7;text-shadow:0 0 8px #a855f744;
+}
+
+/* Big message overlay */
+#big-msg{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  pointer-events:none;z-index:15;opacity:0;transition:opacity .15s;
+}
+#big-msg.show{opacity:1;pointer-events:all;}
+#big-msg-text{
+  font-family:'Righteous',cursive;
+  font-size:clamp(36px,10vw,56px);
+  text-align:center;letter-spacing:4px;
+  text-shadow:3px 3px 0 rgba(0,0,0,0.4);
+  margin-bottom:8px;
+}
+#big-msg-sub{font-size:clamp(13px,3.5vw,16px);letter-spacing:3px;color:rgba(255,255,255,0.7);text-align:center;}
+
+/* Color picker */
+#color-picker{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  background:rgba(10,0,20,0.88);z-index:18;
+}
+#color-picker.hide{display:none;}
+#cp-label{font-family:'Righteous',cursive;font-size:clamp(18px,5vw,24px);color:#fff;letter-spacing:3px;margin-bottom:20px;}
+#cp-btns{display:flex;gap:14px;}
+.cp-btn{
+  width:clamp(52px,13vw,64px);height:clamp(52px,13vw,64px);
+  border-radius:50%;border:3px solid rgba(255,255,255,0.3);cursor:pointer;
+  font-size:clamp(22px,5.5vw,28px);display:flex;align-items:center;justify-content:center;
+  transition:transform .1s;-webkit-tap-highlight-color:transparent;
+}
+.cp-btn:active{transform:scale(1.2);}
+
+/* SLAP FLASH */
+#slap-zone{
+  position:absolute;inset:0;z-index:12;
+  display:flex;align-items:center;justify-content:center;
+  pointer-events:none;opacity:0;transition:opacity .1s;
+}
+#slap-zone.active{pointer-events:all;}
+#slap-ring{
+  width:180px;height:180px;border-radius:50%;
+  background:rgba(255,200,0,0.15);
+  border:4px solid #fbbf24;
+  display:flex;align-items:center;justify-content:center;
+  flex-direction:column;gap:4px;
+}
+#slap-ring-txt{font-family:'Righteous',cursive;font-size:clamp(28px,7vw,38px);color:#fbbf24;letter-spacing:2px;text-shadow:0 0 20px #fbbf24;}
+#slap-ring-sub{font-size:11px;letter-spacing:3px;color:#f59e0b;text-transform:uppercase;}
+
+/* Results */
+#results-screen{background:radial-gradient(ellipse at 50% 40%,#2d1060 0%,#1a0a2e 70%);}
+.r-icon{font-size:clamp(52px,14vw,72px);margin-bottom:8px;}
+.r-title{font-family:'Righteous',cursive;font-size:clamp(40px,11vw,60px);letter-spacing:4px;margin-bottom:4px;}
+.r-sub{font-size:clamp(12px,3.2vw,14px);letter-spacing:3px;color:#6d28d9;margin-bottom:6px;text-transform:uppercase;}
+.r-ai{font-size:clamp(13px,3.5vw,15px);color:#a78bfa;margin-bottom:24px;text-align:center;max-width:240px;font-style:italic;}
+.r-best{font-size:11px;letter-spacing:3px;color:#4c1d95;margin-bottom:24px;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="hud">
+    <div id="ai-info">
+      <div id="ai-emoji">🤖</div>
+      <div>
+        <div id="ai-name">RIVAL</div>
+        <div id="ai-cards-count">7 cards</div>
+      </div>
+    </div>
+    <div id="my-info">
+      <div>
+        <div style="font-size:11px;letter-spacing:2px;color:#6d28d9;text-align:right">YOU</div>
+        <div id="my-cards-count">7 cards</div>
+      </div>
+      <div style="font-size:clamp(18px,4.5vw,22px)">🫵</div>
+    </div>
+  </div>
+
+  <!-- Slap zone -->
+  <div id="slap-zone">
+    <div id="slap-ring">
+      <div id="slap-ring-txt">SLAP!</div>
+      <div id="slap-ring-sub">jack on pile</div>
+    </div>
+  </div>
+
+  <!-- Big message -->
+  <div id="big-msg">
+    <div id="big-msg-text">DRAW 2!</div>
+    <div id="big-msg-sub"></div>
+  </div>
+
+  <!-- Color picker (wild) -->
+  <div id="color-picker" class="hide">
+    <div id="cp-label">PICK A COLOR</div>
+    <div id="cp-btns">
+      <div class="cp-btn" style="background:#ef4444" data-col="red">🔴</div>
+      <div class="cp-btn" style="background:#3b82f6" data-col="blue">🔵</div>
+      <div class="cp-btn" style="background:#22c55e" data-col="green">💚</div>
+      <div class="cp-btn" style="background:#eab308" data-col="yellow">🌕</div>
+    </div>
+  </div>
+
+  <!-- Start -->
+  <div class="screen" id="start-screen">
+    <div class="s-cards">🃏🎴🃏</div>
+    <div class="s-title">SLAP DECK</div>
+    <div class="s-sub">chaos card game</div>
+    <div class="rules">
+      Match <b>color</b> or <b>number</b> to play<br>
+      <b>Skip</b> · <b>Reverse</b> · <b>Draw 2</b> · <b>Wild</b><br>
+      <b>Jack on pile? SLAP IT</b> first!<br>
+      First to empty hand wins
+    </div>
+    <div class="s-btn" id="start-btn">DEAL ME IN</div>
+  </div>
+
+  <!-- Results -->
+  <div class="screen hide" id="results-screen">
+    <div class="r-icon" id="r-icon">🏆</div>
+    <div class="r-title" id="r-title" style="color:#fbbf24">YOU WIN!</div>
+    <div class="r-sub" id="r-sub">dominant performance</div>
+    <div class="r-ai" id="r-ai-quote"></div>
+    <div class="r-best" id="r-best"></div>
+    <div class="s-btn" id="replay-btn">REMATCH</div>
+    <div class="s-btn sec" id="menu-btn">MENU</div>
+  </div>
+</div>
+
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+const W=420,H=680;
+canvas.width=W;canvas.height=H;
+
+// ── CARD SYSTEM ──
+const COLORS=['red','blue','green','yellow'];
+const COLOR_HEX={red:'#ef4444',blue:'#3b82f6',green:'#22c55e',yellow:'#eab308'};
+const COLOR_DARK={red:'#7f1d1d',blue:'#1e3a8a',green:'#14532d',yellow:'#713f12'};
+const NUMBERS=['0','1','2','3','4','5','6','7','8','9'];
+const SPECIALS=['skip','reverse','draw2'];
+const WILD_TYPES=['wild','wild4'];
+
+function makeDeck(){
+  const deck=[];
+  for(const col of COLORS){
+    for(const n of NUMBERS){
+      deck.push({col,val:n,type:'number'});
+      if(n!=='0') deck.push({col,val:n,type:'number'});
+    }
+    for(const s of SPECIALS){
+      deck.push({col,val:s,type:'special'});
+      deck.push({col,val:s,type:'special'});
+    }
+  }
+  for(let i=0;i<4;i++) deck.push({col:'wild',val:'wild',type:'wild'});
+  for(let i=0;i<4;i++) deck.push({col:'wild',val:'wild4',type:'wild'});
+  return shuffle(deck);
+}
+
+function shuffle(arr){
+  const a=[...arr];
+  for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}
+  return a;
+}
+
+// ── AI PERSONALITIES ──
+const PERSONALITIES=[
+  {name:'SMUGBOT',emoji:'😏',quote_win:"That was embarrassing for you.",quote_lose:"A fluke. Rematch.",delay:600,style:'aggressive'},
+  {name:'JITTERY',emoji:'😰',quote_win:"I c-can't believe I won!",quote_lose:"Sorry!! Good game!!",delay:1200,style:'nervous'},
+  {name:'GALAXY',emoji:'🧠',quote_win:"Statistically inevitable.",quote_lose:"I let you win. For data.",delay:900,style:'smart'},
+  {name:'CHAOS',emoji:'🎲',quote_win:"Pure chaos. I love it.",quote_lose:"WHO CARES LET'S GO AGAIN",delay:400,style:'random'},
+];
+
+// ── STATE ──
+let state='menu';
+let deck=[],playerHand=[],aiHand=[],pile=[];
+let currentColor='',turn='player'; // player | ai
+let drawPending=0; // draw 2 or 4 stacked
+let gameOver=false;
+let aiPersonality=null;
+let wins=parseInt(localStorage.getItem('slapdeck_wins')||'0');
+let raf;
+
+// Animation state
+let animCards=[]; // flying cards
+let particles=[];
+let selectedIdx=-1; // which card player has selected
+let slapActive=false,slapTimer=0,slapWinner='';
+let msgTimer=0,msgText='',msgSub='',msgCol='#fff';
+let aiThinkTimer=0;
+let turnTimer=0; // frames, counts down per player turn
+const TURN_FRAMES=300; // 5 seconds at 60fps
+let turnTimerActive=false;
+let shakeTimer=0;
+let handScroll=0; // horizontal scroll for player hand
+
+// Touch
+let touchStartX=0,touchStartY=0,isDragging=false,dragCardIdx=-1;
+let dragX=0,dragY=0;
+
+// ── LAYOUT ──
+const CARD_W=54,CARD_H=82,CARD_R=8;
+const AI_HAND_Y=72;
+const PILE_X=W/2,PILE_Y=H*0.48;
+const PLAYER_HAND_Y=H-52;
+
+// ── DEAL ──
+function dealGame(){
+  deck=makeDeck();
+  playerHand=[];aiHand=[];pile=[];
+  for(let i=0;i<7;i++){playerHand.push(deck.pop());aiHand.push(deck.pop());}
+  let first;
+  do{first=deck.pop();}while(first.type!=='number');
+  pile=[first];
+  currentColor=first.col;
+  turn='player';drawPending=0;gameOver=false;
+  animCards=[];particles=[];selectedIdx=-1;slapActive=false;
+  turnTimerActive=false;turnTimer=0;
+  aiPersonality=PERSONALITIES[Math.floor(Math.random()*PERSONALITIES.length)];
+  updateHUD();
+  setTimeout(startPlayerTurn, 200);
+}
+
+// ── CAN PLAY ──
+function canPlay(card){
+  const top=pile[pile.length-1];
+  if(drawPending>0 && card.val!=='draw2' && card.val!=='wild4') return false;
+  if(card.type==='wild'||card.type==='wild4') return true; // wait, wild4 only if no match... simplify: always playable
+  if(card.col===currentColor) return true;
+  if(card.type==='number'&&card.val===top.val) return true;
+  if(card.type==='special'&&card.val===top.val) return true;
+  return false;
+}
+
+function playableCards(hand){ return hand.map((_,i)=>i).filter(i=>canPlay(hand[i])); }
+
+// ── PLAY CARD ──
+function playCard(card,fromPlayer){
+  // For player cards: pile already updated by onLand animation callback
+  // For AI cards: push here (no onLand)
+  if(fromPlayer===false){
+    pile.push(card);
+  }
+  if(card.type==='wild'||card.val==='wild4'){
+    currentColor=card.chosenColor||currentColor;
+  } else {
+    currentColor=card.col;
+  }
+
+  // Special effects
+  let msg='',msgc='#fff';
+  if(card.val==='skip'){
+    msg=fromPlayer?'SKIPPED AI!':'AI SKIPS YOU!';
+    msgc=fromPlayer?'#a855f7':'#e879f9';
+    turn=fromPlayer?'player':'ai';
+  } else if(card.val==='reverse'){
+    msg='REVERSED!';msgc='#fbbf24';
+    turn=fromPlayer?'player':'ai';
+    if(turn==='player') startPlayerTurn();
+  } else if(card.val==='draw2'){
+    drawPending+=2;
+    msg=fromPlayer?`AI DRAWS ${drawPending}!`:`DRAW ${drawPending}!`;
+    msgc=fromPlayer?'#a855f7':'#ef4444';
+    turn=fromPlayer?'ai':'player';
+  } else if(card.val==='wild4'){
+    drawPending+=4;
+    msg=fromPlayer?`AI DRAWS ${drawPending}!`:`DRAW ${drawPending}!`;
+    msgc=fromPlayer?'#a855f7':'#ef4444';
+    turn=fromPlayer?'ai':'player';
+  } else {
+    turn=fromPlayer?'ai':'player';
+  }
+
+  // Jack = slap!
+  if(card.val==='1'){ // using 1 as jack (J slot)
+    triggerSlap();
+  }
+
+  if(msg) showMsg(msg,'',msgc);
+  updateHUD();
+}
+
+function drawFromDeck(hand,count){
+  for(let i=0;i<count;i++){
+    if(deck.length===0){deck=shuffle(pile.slice(0,-1));pile=[pile[pile.length-1]];}
+    hand.push(deck.pop());
+  }
+}
+
+// ── SLAP ──
+function triggerSlap(){
+  turnTimerActive=false; // pause timer during slap
+  slapActive=true;slapTimer=90; // ~1.5s window
+  const sz=document.getElementById('slap-zone');
+  sz.classList.add('active');
+  sz.style.opacity='1';
+  // AI has delayed slap based on personality
+  const aiDelay=aiPersonality.delay+Math.random()*300;
+  setTimeout(()=>{
+    if(slapActive) aiSlaps();
+  },aiDelay);
+}
+
+function playerSlaps(){
+  if(!slapActive)return;
+  slapActive=false;
+  slapWinner='player';
+  hideSlapZone();
+  showMsg('YOU SLAPPED!','AI draws 3','#fbbf24');
+  drawFromDeck(aiHand,3);
+  updateHUD();
+}
+
+function aiSlaps(){
+  if(!slapActive)return;
+  slapActive=false;
+  slapWinner='ai';
+  hideSlapZone();
+  showMsg('AI SLAPPED FIRST!','You draw 3','#e879f9');
+  drawFromDeck(playerHand,3);
+  updateHUD();
+}
+
+function hideSlapZone(){
+  if(turn==='player') startPlayerTurn(); // resume timer after slap
+  const sz=document.getElementById('slap-zone');
+  sz.classList.remove('active');sz.style.opacity='0';
+}
+
+// ── AI TURN ──
+function doAITurn(){
+  if(turn!=='ai'||gameOver)return;
+  turnTimerActive=false; // no timer on AI turn
+  aiThinkTimer=Math.min(aiPersonality.delay,800)+Math.floor(Math.random()*300);
+}
+
+function executeAITurn(){
+  if(turn!=='ai'||gameOver)return;
+
+  // Draw pending — AI must draw
+  if(drawPending>0){
+    drawFromDeck(aiHand,drawPending);
+    showMsg(`AI DREW ${drawPending}!`,'','#a855f7');
+    drawPending=0;
+    turn='player';updateHUD();startPlayerTurn();return;
+  }
+
+  const playable=playableCards(aiHand);
+  if(playable.length===0){
+    drawFromDeck(aiHand,1);
+    showMsg('AI DRAWS','','#6d28d9');
+    turn='player';updateHUD();startPlayerTurn();return;
+  }
+
+  let idx;
+  if(aiPersonality.style==='aggressive'){
+    const specials=playable.filter(i=>aiHand[i].type!=='number');
+    idx=specials.length>0?specials[0]:playable[0];
+  } else if(aiPersonality.style==='random'){
+    idx=playable[Math.floor(Math.random()*playable.length)];
+  } else {
+    idx=playable[0];
+  }
+
+  const card={...aiHand[idx]};
+  aiHand.splice(idx,1);
+
+  if(card.type==='wild'||card.val==='wild4'){
+    const colorCounts={red:0,blue:0,green:0,yellow:0};
+    for(const c of aiHand) if(c.col in colorCounts) colorCounts[c.col]++;
+    card.chosenColor=Object.entries(colorCounts).sort((a,b)=>b[1]-a[1])[0][0];
+  }
+
+  animCards.push({card,fromX:PILE_X+(Math.random()-0.5)*60,fromY:AI_HAND_Y,toX:PILE_X,toY:PILE_Y,t:0,speed:0.1,fromAI:true});
+  setTimeout(()=>{
+    playCard(card,false);
+    if(aiHand.length===0) setTimeout(()=>endGame('ai'),300);
+    else if(aiHand.length===1) showMsg('AI HAS UNO!','','#e879f9');
+  },350);
+}
+
+function startPlayerTurn(){
+  if(gameOver)return;
+  turnTimer=TURN_FRAMES;
+  turnTimerActive=true;
+}
+
+// ── PLAYER PLAYS CARD ──
+function playerPlayCard(idx){
+  if(turn!=='player'||gameOver)return;
+  const card=playerHand[idx];
+  if(!canPlay(card))return;
+
+  if(card.type==='wild'||card.val==='wild4'){
+    // Show color picker
+    pendingWildCard={...card,idx};
+    turnTimerActive=false; // pause during color pick
+    document.getElementById('color-picker').classList.remove('hide');
+    return;
+  }
+
+  // Draw pending check
+  if(drawPending>0){
+    if(card.val==='draw2'||card.val==='wild4'){
+      // Stack it
+    } else {
+      // Must draw
+      drawFromDeck(playerHand,drawPending);
+      showMsg(`YOU DRAW ${drawPending}!`,'','#ef4444');
+      drawPending=0;turn='ai';updateHUD();doAITurn();return;
+    }
+  }
+
+  // Compute fromX before splicing (hand layout depends on count)
+  const n=playerHand.length;
+  const maxSpread=W-60;
+  const cardSpacing=Math.min(CARD_W+8,maxSpread/Math.max(n,1));
+  const totalW=(n-1)*cardSpacing;
+  const fromX=W/2-totalW/2+idx*cardSpacing;
+
+  playerHand.splice(idx,1);
+  selectedIdx=-1;
+
+  animCards.push({
+    card,
+    fromX,fromY:PLAYER_HAND_Y-18, // start from lifted position
+    toX:PILE_X,toY:PILE_Y,
+    t:0,speed:0.09, // slightly slower so you see it land
+    fromAI:false,
+    onLand:()=>{
+      pile.push(card);
+      if(card.type==='wild'||card.val==='wild4') currentColor=card.chosenColor||currentColor;
+      else currentColor=card.col;
+    }
+  });
+
+  setTimeout(()=>{
+    playCard(card,true);
+    if(playerHand.length===0){setTimeout(()=>endGame('player'),300);}
+    else if(playerHand.length===1) showMsg('UNO!','One card left!','#fbbf24');
+    else doAITurn();
+  },420);
+  updateHUD();
+}
+
+let pendingWildCard=null;
+document.querySelectorAll('.cp-btn').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    if(!pendingWildCard)return;
+    const col=btn.dataset.col;
+    const card={...pendingWildCard,chosenColor:col};
+    playerHand.splice(pendingWildCard.idx,1);
+    document.getElementById('color-picker').classList.add('hide');
+    turnTimerActive=false;
+    animCards.push({
+      card,fromX:W/2,fromY:PLAYER_HAND_Y-18,
+      toX:PILE_X,toY:PILE_Y,t:0,speed:0.09,fromAI:false,
+      onLand:()=>{pile.push(card);currentColor=card.chosenColor||currentColor;}
+    });
+    pendingWildCard=null;selectedIdx=-1;
+    setTimeout(()=>{
+      playCard(card,true);
+      if(playerHand.length===0) endGame('player');
+      else doAITurn();
+    },420);
+    updateHUD();
+  });
+});
+
+// ── DRAW (player taps deck) ──
+function playerDraw(){
+  if(turn!=='player'||gameOver)return;
+  if(drawPending>0){
+    drawFromDeck(playerHand,drawPending);
+    showMsg(`YOU DRAW ${drawPending}!`,'','#ef4444');
+    drawPending=0;
+  } else {
+    drawFromDeck(playerHand,1);
+    showMsg('DRAW 1','','#6d28d9');
+  }
+  turn='ai';updateHUD();doAITurn();
+}
+
+// ── END GAME ──
+function endGame(winner){
+  if(gameOver)return;
+  gameOver=true;state='results';
+  const playerWon=winner==='player';
+  if(playerWon){wins++;localStorage.setItem('slapdeck_wins',wins);}
+  document.getElementById('r-icon').textContent=playerWon?'🏆':'💀';
+  document.getElementById('r-title').textContent=playerWon?'YOU WIN!':'AI WINS!';
+  document.getElementById('r-title').style.color=playerWon?'#fbbf24':'#e879f9';
+  document.getElementById('r-sub').textContent=playerWon?'well played':'better luck next time';
+  document.getElementById('r-ai-quote').textContent=
+    `${aiPersonality.emoji} ${aiPersonality.name}: "${playerWon?aiPersonality.quote_lose:aiPersonality.quote_win}"`;
+  document.getElementById('r-best').textContent=`WINS: ${wins}`;
+  setTimeout(()=>document.getElementById('results-screen').classList.remove('hide'),600);
+}
+
+// ── HUD ──
+function updateHUD(){
+  document.getElementById('ai-cards-count').textContent=`${aiHand.length} card${aiHand.length!==1?'s':''}`;
+  document.getElementById('my-cards-count').textContent=`${playerHand.length} card${playerHand.length!==1?'s':''}`;
+  document.getElementById('ai-emoji').textContent=aiPersonality?aiPersonality.emoji:'🤖';
+  document.getElementById('ai-name').textContent=aiPersonality?aiPersonality.name:'RIVAL';
+}
+
+// ── MSG ──
+let msgTO;
+function showMsg(text,sub,col){
+  msgText=text;msgSub=sub||'';msgCol=col||'#fff';msgTimer=60;
+  const el=document.getElementById('big-msg');
+  el.style.opacity='1';
+  document.getElementById('big-msg-text').textContent=text;
+  document.getElementById('big-msg-text').style.color=col;
+  document.getElementById('big-msg-sub').textContent=sub;
+  clearTimeout(msgTO);
+  msgTO=setTimeout(()=>el.style.opacity='0',900);
+}
+
+// ── DRAW CARD ──
+function drawCard(card,x,y,faceUp,selected,small){
+  const cw=small?40:CARD_W,ch=small?60:CARD_H,cr=small?5:CARD_R;
+  ctx.save();ctx.translate(x,y);
+  if(selected) ctx.translate(0,-18);
+
+  // Shadow
+  ctx.save();ctx.globalAlpha=0.3;ctx.fillStyle='#000';
+  ctx.beginPath();ctx.roundRect(-cw/2+3,3,cw,ch,cr);ctx.fill();ctx.restore();
+
+  if(!faceUp){
+    // Card back
+    const bg=ctx.createLinearGradient(-cw/2,-ch/2,cw/2,ch/2);
+    bg.addColorStop(0,'#4c1d95');bg.addColorStop(1,'#2d1060');
+    ctx.fillStyle=bg;
+    ctx.beginPath();ctx.roundRect(-cw/2,-ch/2,cw,ch,cr);ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,0.15)';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.roundRect(-cw/2,-ch/2,cw,ch,cr);ctx.stroke();
+    // Pattern
+    ctx.save();ctx.globalAlpha=0.2;ctx.fillStyle='#a855f7';
+    ctx.font=`${small?14:18}px serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText('🃏',0,0);ctx.restore();
+  } else {
+    // Card face
+    const isWild=card.type==='wild'||card.val==='wild4';
+    const col=isWild?(card.chosenColor?COLOR_HEX[card.chosenColor]:'#7c3aed'):COLOR_HEX[card.col];
+    const dark=isWild?(card.chosenColor?COLOR_DARK[card.chosenColor]:'#3b0764'):COLOR_DARK[card.col];
+    // White base
+    ctx.fillStyle='#fffbeb';ctx.beginPath();ctx.roundRect(-cw/2,-ch/2,cw,ch,cr);ctx.fill();
+    // Color band
+    ctx.fillStyle=col;
+    ctx.beginPath();ctx.roundRect(-cw/2+4,-ch/2+4,cw-8,ch-8,cr-2);ctx.fill();
+    // Inner white oval
+    ctx.fillStyle='rgba(255,255,255,0.2)';
+    ctx.beginPath();ctx.ellipse(0,0,cw*.32,ch*.42,0,0,Math.PI*2);ctx.fill();
+
+    // Value text
+    let label='';
+    if(card.type==='number') label=card.val;
+    else if(card.val==='skip') label='⊘';
+    else if(card.val==='reverse') label='↺';
+    else if(card.val==='draw2') label='+2';
+    else if(card.val==='wild') label='★';
+    else if(card.val==='wild4') label='+4';
+
+    ctx.font=`900 ${small?13:16}px 'Nunito',sans-serif`;
+    ctx.fillStyle='#fff';ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(label,0,0);
+    // Corner values
+    ctx.font=`900 ${small?9:11}px 'Nunito',sans-serif`;
+    ctx.fillStyle='rgba(255,255,255,0.9)';
+    ctx.textAlign='left';ctx.fillText(label,-cw/2+5,-ch/2+8);
+    ctx.textAlign='right';ctx.fillText(label,cw/2-5,ch/2-8);
+
+    // Border
+    ctx.strokeStyle=dark;ctx.lineWidth=2;
+    ctx.beginPath();ctx.roundRect(-cw/2,-ch/2,cw,ch,cr);ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ── DRAW SCENE ──
+function drawTable(){
+  // Table felt
+  const tg=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,320);
+  tg.addColorStop(0,'#1e1040');tg.addColorStop(1,'#0d0820');
+  ctx.fillStyle=tg;ctx.fillRect(0,0,W,H);
+  // Subtle pattern
+  ctx.save();ctx.globalAlpha=0.04;
+  for(let i=0;i<12;i++){
+    const a=(i/12)*Math.PI*2;
+    ctx.strokeStyle='#a855f7';ctx.lineWidth=1;
+    ctx.beginPath();ctx.arc(W/2,H/2,80+i*18,a,a+Math.PI*.8);ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawAIHand(){
+  const n=Math.min(aiHand.length,12);
+  const spread=Math.min(n*28,W-80);
+  const startX=W/2-spread/2+14;
+  for(let i=0;i<n;i++){
+    drawCard(null,startX+i*(spread/(n||1)),AI_HAND_Y+30,false,false,false);
+  }
+  if(aiHand.length>12){
+    ctx.save();ctx.font='bold 11px Nunito,sans-serif';ctx.fillStyle='#6d28d9';
+    ctx.textAlign='center';ctx.fillText(`+${aiHand.length-12}`,W/2,AI_HAND_Y+80);ctx.restore();
+  }
+}
+
+function drawPileAndDeck(){
+  // Deck
+  ctx.save();ctx.translate(PILE_X-76,PILE_Y);
+  ctx.fillStyle='rgba(255,255,255,0.05)';
+  ctx.beginPath();ctx.roundRect(-CARD_W/2+2,2,CARD_W,CARD_H,CARD_R);ctx.fill();
+  drawCard(null,0,0,false,false,false);
+  ctx.font='bold 10px Nunito,sans-serif';ctx.fillStyle='#4c1d95';
+  ctx.textAlign='center';ctx.fillText('DRAW',0,CARD_H/2+12);
+  ctx.restore();
+
+  // Pile
+  if(pile.length>0){
+    const top=pile[pile.length-1];
+    const isWild=top.type==='wild'||top.val==='wild4';
+    if(isWild&&top.chosenColor){
+      ctx.save();ctx.globalAlpha=0.3;
+      ctx.fillStyle=COLOR_HEX[top.chosenColor];
+      ctx.beginPath();ctx.arc(PILE_X,PILE_Y,CARD_W*.8,0,Math.PI*2);ctx.fill();
+      ctx.restore();
+    }
+    if(pile.length>1) drawCard(pile[pile.length-2],PILE_X+3,PILE_Y+3,true,false,false);
+    drawCard(top,PILE_X,PILE_Y,true,false,false);
+    // Current color indicator
+    if(isWild&&top.chosenColor){
+      ctx.save();
+      ctx.fillStyle=COLOR_HEX[top.chosenColor];
+      ctx.beginPath();ctx.arc(PILE_X+32,PILE_Y-36,9,0,Math.PI*2);ctx.fill();
+      ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+
+function drawPlayerHand(){
+  const n=playerHand.length;
+  if(n===0)return;
+  const maxSpread=W-60;
+  const cardSpacing=Math.min(CARD_W+8,maxSpread/Math.max(n,1));
+  const totalW=(n-1)*cardSpacing;
+  const startX=W/2-totalW/2;
+
+  for(let i=0;i<n;i++){
+    const x=startX+i*cardSpacing;
+    const playable=turn==='player'&&canPlay(playerHand[i]);
+    ctx.save();
+    if(!playable&&turn==='player') ctx.globalAlpha=0.55;
+    drawCard(playerHand[i],x,PLAYER_HAND_Y,true,selectedIdx===i,false);
+    if(playable&&turn==='player'){
+      ctx.globalAlpha=0.5;ctx.fillStyle='#a855f7';
+      ctx.beginPath();ctx.arc(x,PLAYER_HAND_Y-CARD_H/2-10,4,0,Math.PI*2);ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+function drawAnimCards(){
+  for(const ac of animCards){
+    const prev=ac.t;
+    ac.t=Math.min(1,ac.t+ac.speed);
+    const x=ac.fromX+(ac.toX-ac.fromX)*easeOut(ac.t);
+    const y=ac.fromY+(ac.toY-ac.fromY)*easeOut(ac.t);
+    // Scale up slightly mid-flight
+    const sc=1+Math.sin(ac.t*Math.PI)*0.08;
+    ctx.save();
+    ctx.globalAlpha=1;
+    ctx.translate(x,y);ctx.scale(sc,sc);ctx.translate(-x,-y);
+    drawCard(ac.card,x,y,true,false,false);
+    ctx.restore();
+    // Fire onLand callback once when it arrives
+    if(prev<1&&ac.t>=1&&ac.onLand){ac.onLand();ac.onLand=null;}
+  }
+  animCards=animCards.filter(ac=>ac.t<1);
+}
+
+function drawParticles(){
+  for(const p of particles){
+    ctx.save();ctx.globalAlpha=p.life;ctx.fillStyle=p.col;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.r*p.life,0,Math.PI*2);ctx.fill();ctx.restore();
+  }
+}
+
+function drawTurnIndicator(){
+  ctx.save();
+  ctx.font='700 10px Nunito,sans-serif';ctx.letterSpacing='2px';ctx.textAlign='center';
+  if(turn==='player'&&!gameOver){
+    ctx.fillStyle='#a855f7';
+    ctx.fillText('YOUR TURN',W/2,PLAYER_HAND_Y+CARD_H/2+20);
+  } else if(turn==='ai'&&!gameOver){
+    ctx.fillStyle='#e879f9';
+    ctx.fillText('AI THINKING...',W/2,AI_HAND_Y+CARD_H/2+20);
+  }
+  ctx.restore();
+}
+
+function drawColorBar(){
+  if(!currentColor||currentColor==='wild')return;
+  const col=COLOR_HEX[currentColor];
+  ctx.save();ctx.globalAlpha=0.18;
+  ctx.fillStyle=col;ctx.fillRect(0,0,W,H);
+  ctx.restore();
+  // Small indicator
+  ctx.save();ctx.globalAlpha=0.6;
+  ctx.fillStyle=col;
+  ctx.beginPath();ctx.arc(W-20,H/2,10,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+
+function drawTurnTimer(){
+  if(!turnTimerActive||turn!=='player'||gameOver)return;
+  const pct=turnTimer/TURN_FRAMES;
+  const barW=W-48,barH=5,bx=24,by=H-8;
+  ctx.fillStyle='rgba(255,255,255,0.08)';
+  ctx.beginPath();ctx.roundRect(bx,by,barW,barH,3);ctx.fill();
+  const col=pct>.5?'#a855f7':pct>.25?'#fbbf24':'#ef4444';
+  ctx.fillStyle=col;
+  ctx.beginPath();ctx.roundRect(bx,by,barW*pct,barH,3);ctx.fill();
+}
+
+function easeOut(t){return 1-(1-t)*(1-t);}
+
+// ── UPDATE ──
+function update(){
+  if(shakeTimer>0)shakeTimer--;
+  if(slapTimer>0){slapTimer--;if(slapTimer===0&&slapActive){aiSlaps();}}
+  if(aiThinkTimer>0){aiThinkTimer--;if(aiThinkTimer===0) executeAITurn();}
+  for(const p of particles){p.x+=p.vx;p.y+=p.vy;p.vy+=.1;p.vx*=.95;p.life-=p.decay;}
+  particles=particles.filter(p=>p.life>0);
+
+  // Turn timer — auto draw if player runs out of time
+  if(turnTimerActive&&turn==='player'&&!gameOver&&!slapActive){
+    turnTimer--;
+    if(turnTimer<=0){
+      turnTimerActive=false;
+      showMsg('TIME UP! DRAW 1','','#ef4444');
+      playerDraw();
+    }
+  }
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  let sx=0,sy=0;
+  if(shakeTimer>0){sx=(Math.random()-.5)*shakeTimer*.8;sy=(Math.random()-.5)*shakeTimer*.8;}
+  ctx.save();ctx.translate(sx,sy);
+  drawTable();
+  drawColorBar();
+  drawAIHand();
+  drawPileAndDeck();
+  drawAnimCards();
+  drawPlayerHand();
+  drawParticles();
+  drawTurnIndicator();
+  drawTurnTimer();
+  ctx.restore();
+}
+
+function loop(){raf=requestAnimationFrame(loop);if(state!=='menu'){update();draw();}}
+
+// ── INPUT ──
+function getPos(e){
+  const r=canvas.getBoundingClientRect();
+  const s=e.touches?e.touches[0]:e;
+  return{x:(s.clientX-r.left)*(W/r.width),y:(s.clientY-r.top)*(H/r.height)};
+}
+
+function cardAt(x,y){
+  // Check player hand
+  const n=playerHand.length;
+  if(n===0)return -1;
+  const maxSpread=W-60;
+  const cardSpacing=Math.min(CARD_W+8,maxSpread/Math.max(n,1));
+  const totalW=(n-1)*cardSpacing;
+  const startX=W/2-totalW/2;
+  for(let i=n-1;i>=0;i--){
+    const cx=startX+i*cardSpacing;
+    const cy=PLAYER_HAND_Y-(selectedIdx===i?18:0);
+    if(Math.abs(x-cx)<CARD_W/2+4&&Math.abs(y-cy)<CARD_H/2+4) return i;
+  }
+  return -1;
+}
+
+function hitsDeck(x,y){
+  return Math.abs(x-(PILE_X-76))<CARD_W/2+8&&Math.abs(y-PILE_Y)<CARD_H/2+8;
+}
+
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  const p=getPos(e);
+  if(slapActive){playerSlaps();return;}
+  const ci=cardAt(p.x,p.y);
+  if(ci!==-1){
+    if(selectedIdx===ci){
+      playerPlayCard(ci);
+    } else {
+      selectedIdx=ci;
+    }
+  } else if(hitsDeck(p.x,p.y)){
+    playerDraw();selectedIdx=-1;
+  } else {
+    selectedIdx=-1;
+  }
+},{passive:false});
+
+canvas.addEventListener('mousedown',e=>{
+  const p=getPos(e);
+  if(slapActive){playerSlaps();return;}
+  const ci=cardAt(p.x,p.y);
+  if(ci!==-1){
+    if(selectedIdx===ci){playerPlayCard(ci);}
+    else selectedIdx=ci;
+  } else if(hitsDeck(p.x,p.y)){
+    playerDraw();selectedIdx=-1;
+  } else {
+    selectedIdx=-1;
+  }
+});
+
+// Slap zone direct tap
+document.getElementById('slap-zone').addEventListener('touchstart',e=>{
+  e.preventDefault();playerSlaps();
+},{passive:false});
+document.getElementById('slap-zone').addEventListener('mousedown',()=>playerSlaps());
+
+// ── BUTTONS ──
+document.getElementById('start-btn').addEventListener('click',()=>{
+  document.getElementById('start-screen').classList.add('hide');
+  state='playing';dealGame();if(!raf)loop();
+});
+document.getElementById('replay-btn').addEventListener('click',()=>{
+  document.getElementById('results-screen').classList.add('hide');
+  state='playing';dealGame();
+});
+document.getElementById('menu-btn').addEventListener('click',()=>{
+  document.getElementById('results-screen').classList.add('hide');
+  document.getElementById('start-screen').classList.remove('hide');
+  state='menu';
+});
+
+loop();
+</script>
+</body>
+</html>

@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>SWARM</title>
+<link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;touch-action:none;}
+html,body{width:100%;height:100%;overflow:hidden;background:#02040a;}
+body{display:flex;align-items:center;justify-content:center;font-family:'Share Tech Mono',monospace;}
+#wrap{
+  position:relative;
+  width:min(100vw,calc(100dvh*.62));
+  height:min(100dvh,calc(100vw/.62));
+  max-width:420px;max-height:680px;
+}
+canvas{display:block;width:100%;height:100%;}
+.screen{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;z-index:20;
+  background:rgba(2,4,10,0.93);
+}
+.screen.hide{display:none;}
+.title{
+  font-family:'Exo 2',sans-serif;font-weight:900;
+  font-size:clamp(68px,18vw,100px);
+  color:#00ff88;letter-spacing:6px;
+  text-shadow:0 0 30px #00ff8888,0 0 80px #00ff8833;
+  margin-bottom:4px;
+}
+.sub{font-size:clamp(10px,2.5vw,12px);letter-spacing:5px;color:#0a3320;text-transform:uppercase;margin-bottom:40px;}
+.how{
+  font-size:clamp(12px,3.2vw,14px);color:#0a4428;
+  text-align:center;line-height:2.2;margin-bottom:36px;max-width:270px;
+  letter-spacing:1px;
+}
+.how b{color:#00cc66;}
+.go{
+  font-family:'Exo 2',sans-serif;font-weight:900;
+  font-size:clamp(16px,4.5vw,20px);letter-spacing:5px;
+  color:#02040a;background:#00ff88;border:none;
+  padding:14px 52px;cursor:pointer;
+  box-shadow:0 0 28px #00ff8866,0 0 60px #00ff8822;
+  transition:transform .1s;
+  -webkit-tap-highlight-color:transparent;
+}
+.go:active{transform:scale(0.95);}
+#hud{
+  position:absolute;top:0;left:0;right:0;
+  display:flex;justify-content:space-between;align-items:center;
+  padding:12px 16px 0;pointer-events:none;z-index:5;
+}
+#score-hud{
+  font-family:'Exo 2',sans-serif;font-weight:900;
+  font-size:clamp(20px,5.5vw,28px);color:#00ff88;
+  text-shadow:0 0 12px #00ff8866;letter-spacing:2px;
+}
+#wave-hud{font-size:11px;letter-spacing:3px;color:#0a3320;text-transform:uppercase;}
+#lives-hud{font-size:clamp(14px,3.5vw,17px);color:#00ff88;letter-spacing:2px;}
+.over-title{
+  font-family:'Exo 2',sans-serif;font-weight:900;
+  font-size:clamp(48px,13vw,72px);color:#00ff88;
+  text-shadow:0 0 30px #00ff8888;margin-bottom:6px;
+}
+.over-score{font-family:'Exo 2',sans-serif;font-weight:900;font-size:clamp(30px,8vw,44px);color:#fff;letter-spacing:2px;margin-bottom:4px;}
+.over-best{font-size:11px;letter-spacing:4px;color:#0a3320;margin-bottom:28px;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="hud">
+    <div id="lives-hud">● ● ●</div>
+    <div id="score-hud">0</div>
+    <div id="wave-hud">WAVE 1</div>
+  </div>
+
+  <div class="screen" id="start-screen">
+    <div class="title">SWARM</div>
+    <div class="sub">you are outnumbered</div>
+    <div class="how">
+      <b>DRAG</b> to steer your cell<br>
+      Loop back through your <b>own trail</b><br>
+      to poison everything inside<br>
+      <b>Don't get touched</b>
+    </div>
+    <div class="go" id="start-btn">SURVIVE</div>
+  </div>
+
+  <div class="screen hide" id="over-screen">
+    <div class="over-title">CONSUMED</div>
+    <div class="over-score" id="over-score">0</div>
+    <div class="over-best" id="over-best">BEST: 0</div>
+    <div class="go" id="retry-btn">TRY AGAIN</div>
+  </div>
+</div>
+
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+const W=420,H=680;
+canvas.width=W;canvas.height=H;
+
+// ── PALETTE ──
+const PLAYER_COL='#00ff88';
+const TRAIL_COL='#00cc55';
+const ENEMY_COLS=['#ff3355','#ff6622','#ff1177','#cc0044','#ff4400'];
+const POISON_COL='#00ff8833';
+const BG='#02040a';
+
+// ── STATE ──
+let state='menu',score=0,wave=1,lives=3;
+let best=parseInt(localStorage.getItem('swarm_best')||'0');
+let raf;
+
+// Player
+let player={x:W/2,y:H/2,r:8,trail:[],speed:3.2,angle:0,moving:false};
+let targetX=W/2,targetY=H/2;
+
+// Trail & loop detection
+let trailPoints=[];   // {x,y} last N positions
+const TRAIL_LEN=320;
+const TRAIL_SPACING=4; // px between trail dots
+let lastTrailDist=0;
+
+// Enemies
+let enemies=[];
+let particles=[];
+let poisonZones=[]; // {poly:[{x,y}...], life, kills}
+let flashAlpha=0;
+let screenShake=0;
+
+// ── ENEMY FACTORY ──
+function spawnEnemy(forced){
+  const edge=Math.floor(Math.random()*4);
+  let x,y;
+  if(edge===0){x=Math.random()*W;y=-12;}
+  else if(edge===1){x=W+12;y=Math.random()*H;}
+  else if(edge===2){x=Math.random()*W;y=H+12;}
+  else{x=-12;y=Math.random()*H;}
+  const spd=0.55+wave*0.10+Math.random()*0.4;
+  return{x,y,r:3+Math.random()*3,
+    col:ENEMY_COLS[Math.floor(Math.random()*ENEMY_COLS.length)],
+    vx:0,vy:0,spd,
+    wobble:Math.random()*Math.PI*2,
+    dead:false,
+  };
+}
+
+function initWave(){
+  enemies=[];
+  const count=20+wave*12;
+  for(let i=0;i<count;i++){
+    const e=spawnEnemy();
+    // stagger spawn positions slightly
+    setTimeout(()=>{ if(state==='playing') enemies.push(e); },i*60);
+  }
+}
+
+// ── POLYGON CONTAINS POINT ──
+function polyContains(poly,px,py){
+  let inside=false;
+  for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+    const xi=poly[i].x,yi=poly[i].y,xj=poly[j].x,yj=poly[j].y;
+    if((yi>py)!==(yj>py)&&px<(xj-xi)*(py-yi)/(yj-yi)+xi) inside=!inside;
+  }
+  return inside;
+}
+
+// ── LOOP DETECTION ──
+// Check if the new trail position closes a loop with an earlier segment
+function checkLoop(){
+  const N=trailPoints.length;
+  if(N<30) return null;
+  const px=player.x,py=player.y;
+  // Check against trail segments older than 20 points
+  for(let i=0;i<N-20;i++){
+    const a=trailPoints[i],b=trailPoints[i+1]||trailPoints[i];
+    if(segCircleIntersect(a.x,a.y,b.x,b.y,px,py,player.r+4)){
+      // Loop closed! Extract the polygon
+      const poly=trailPoints.slice(i);
+      return poly;
+    }
+  }
+  return null;
+}
+
+function segCircleIntersect(ax,ay,bx,by,cx,cy,r){
+  const dx=bx-ax,dy=by-ay;
+  const fx=ax-cx,fy=ay-cy;
+  const a=dx*dx+dy*dy;
+  const b=2*(fx*dx+fy*dy);
+  const c=fx*fx+fy*fy-r*r;
+  let disc=b*b-4*a*c;
+  if(disc<0)return false;
+  disc=Math.sqrt(disc);
+  const t1=(-b-disc)/(2*a);
+  const t2=(-b+disc)/(2*a);
+  return(t1>=0&&t1<=1)||(t2>=0&&t2<=1);
+}
+
+// ── POISON ZONE ──
+function activatePoisonZone(poly){
+  // Count enemies inside
+  let killed=0;
+  for(const e of enemies){
+    if(!e.dead&&polyContains(poly,e.x,e.y)){
+      e.dead=true;
+      killed++;
+      spawnDeathParticles(e.x,e.y,e.col,8);
+    }
+  }
+  if(killed>0){
+    const pts=killed*10*(1+Math.floor(poly.length/30));
+    score+=pts;
+    document.getElementById('score-hud').textContent=score;
+    flashAlpha=0.18;
+    screenShake=killed>5?10:5;
+    spawnScoreFloat(
+      poly.reduce((a,p)=>a+p.x,0)/poly.length,
+      poly.reduce((a,p)=>a+p.y,0)/poly.length,
+      '+'+pts,killed>8?'#ffff00':'#00ff88'
+    );
+  }
+  poisonZones.push({poly,life:1,kills:killed,area:polyArea(poly)});
+  trailPoints=[];
+  lastTrailDist=0;
+
+  // Wave clear?
+  enemies=enemies.filter(e=>!e.dead);
+  if(enemies.length===0){
+    wave++;
+    document.getElementById('wave-hud').textContent=`WAVE ${wave}`;
+    setTimeout(initWave,600);
+  }
+}
+
+function polyArea(poly){
+  let a=0;
+  for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+    a+=poly[j].x*poly[i].y;
+    a-=poly[i].x*poly[j].y;
+  }
+  return Math.abs(a)/2;
+}
+
+// ── PARTICLES ──
+let scoreFloats=[];
+function spawnDeathParticles(x,y,col,n){
+  for(let i=0;i<n;i++){
+    const a=Math.random()*Math.PI*2,s=1+Math.random()*4;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:1,decay:0.04+Math.random()*.04,r:1.5+Math.random()*3,col});
+  }
+}
+function spawnScoreFloat(x,y,txt,col){
+  scoreFloats.push({x,y,txt,col,life:1,decay:0.018,vy:-1.5});
+}
+
+// ── DRAW ──
+function drawBG(){
+  ctx.fillStyle=BG;
+  ctx.fillRect(0,0,W,H);
+  // Subtle hex grid
+  ctx.save();ctx.globalAlpha=0.035;ctx.strokeStyle='#00ff88';ctx.lineWidth=0.5;
+  const S=28;
+  for(let row=0;row<Math.ceil(H/S)+1;row++){
+    for(let col=0;col<Math.ceil(W/S)+1;col++){
+      const ox=col*S*1.5,oy=row*S*Math.sqrt(3)+(col%2)*S*Math.sqrt(3)/2;
+      ctx.beginPath();
+      for(let i=0;i<6;i++){const a=i/6*Math.PI*2-Math.PI/6;ctx.lineTo(ox+Math.cos(a)*S*.55,oy+Math.sin(a)*S*.55);}
+      ctx.closePath();ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function drawPoisonZones(){
+  for(const z of poisonZones){
+    if(z.poly.length<3)continue;
+    ctx.save();
+    // Fill
+    ctx.globalAlpha=z.life*0.22;
+    ctx.fillStyle='#00ff88';
+    ctx.beginPath();
+    ctx.moveTo(z.poly[0].x,z.poly[0].y);
+    for(let i=1;i<z.poly.length;i++)ctx.lineTo(z.poly[i].x,z.poly[i].y);
+    ctx.closePath();ctx.fill();
+    // Border
+    ctx.globalAlpha=z.life*0.6;
+    ctx.strokeStyle='#00ff88';ctx.lineWidth=1.5;
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawTrail(){
+  if(trailPoints.length<2)return;
+  ctx.save();
+  for(let i=1;i<trailPoints.length;i++){
+    const a=(1-i/trailPoints.length);
+    ctx.globalAlpha=a*0.7;
+    ctx.strokeStyle=TRAIL_COL;
+    ctx.lineWidth=2.5*(1-i/trailPoints.length*0.4);
+    ctx.lineCap='round';
+    ctx.beginPath();
+    ctx.moveTo(trailPoints[i-1].x,trailPoints[i-1].y);
+    ctx.lineTo(trailPoints[i].x,trailPoints[i].y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawEnemies(){
+  for(const e of enemies){
+    if(e.dead)continue;
+    e.wobble+=0.08;
+    // Glow
+    ctx.save();
+    ctx.globalAlpha=0.2+Math.sin(e.wobble)*0.1;
+    const grd=ctx.createRadialGradient(e.x,e.y,0,e.x,e.y,e.r*3);
+    grd.addColorStop(0,e.col+'88');grd.addColorStop(1,e.col+'00');
+    ctx.fillStyle=grd;ctx.beginPath();ctx.arc(e.x,e.y,e.r*3,0,Math.PI*2);ctx.fill();
+    ctx.globalAlpha=1;
+    // Core
+    ctx.fillStyle=e.col;
+    ctx.beginPath();ctx.arc(e.x,e.y,e.r,0,Math.PI*2);ctx.fill();
+    // Highlight
+    ctx.globalAlpha=0.5;ctx.fillStyle='#fff';
+    ctx.beginPath();ctx.arc(e.x-e.r*.3,e.y-e.r*.3,e.r*.35,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawPlayer(){
+  const{x,y,r}=player;
+  // Outer pulse
+  ctx.save();
+  const pulse=0.5+Math.sin(Date.now()*.006)*0.3;
+  ctx.globalAlpha=pulse*.3;
+  const grd=ctx.createRadialGradient(x,y,0,x,y,r*4);
+  grd.addColorStop(0,'#00ff8888');grd.addColorStop(1,'#00ff8800');
+  ctx.fillStyle=grd;ctx.beginPath();ctx.arc(x,y,r*4,0,Math.PI*2);ctx.fill();
+  ctx.globalAlpha=1;
+  // Body
+  const bg=ctx.createRadialGradient(x-r*.3,y-r*.3,0,x,y,r);
+  bg.addColorStop(0,'#aaffdd');bg.addColorStop(0.5,PLAYER_COL);bg.addColorStop(1,'#006633');
+  ctx.fillStyle=bg;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+  // Ring
+  ctx.strokeStyle=PLAYER_COL;ctx.lineWidth=1.5;ctx.globalAlpha=0.6;
+  ctx.beginPath();ctx.arc(x,y,r+3,0,Math.PI*2);ctx.stroke();
+  ctx.restore();
+}
+
+function drawParticles(){
+  for(const p of particles){
+    ctx.save();ctx.globalAlpha=p.life;ctx.fillStyle=p.col;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.r*p.life,0,Math.PI*2);ctx.fill();ctx.restore();
+  }
+}
+function drawScoreFloats(){
+  for(const f of scoreFloats){
+    ctx.save();ctx.globalAlpha=f.life;
+    ctx.font=`900 ${14+Math.floor((1-f.life)*8)}px 'Exo 2',sans-serif`;
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillStyle=f.col;
+    ctx.strokeStyle='rgba(0,0,0,0.5)';ctx.lineWidth=3;
+    ctx.strokeText(f.txt,f.x,f.y);ctx.fillText(f.txt,f.x,f.y);
+    ctx.restore();
+  }
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  let sx=0,sy=0;
+  if(screenShake>0){sx=(Math.random()-.5)*screenShake;sy=(Math.random()-.5)*screenShake;screenShake*=0.8;if(screenShake<.2)screenShake=0;}
+  ctx.save();ctx.translate(sx,sy);
+  drawBG();
+  drawPoisonZones();
+  drawTrail();
+  drawEnemies();
+  drawPlayer();
+  drawParticles();
+  // Screen flash
+  if(flashAlpha>0){
+    ctx.fillStyle=`rgba(0,255,136,${flashAlpha})`;
+    ctx.fillRect(-10,-10,W+20,H+20);
+    flashAlpha=Math.max(0,flashAlpha-0.015);
+  }
+  ctx.restore();
+  drawScoreFloats();
+}
+
+// ── UPDATE ──
+function update(){
+  // Move player toward touch target
+  if(player.moving){
+    const dx=targetX-player.x,dy=targetY-player.y;
+    const d=Math.sqrt(dx*dx+dy*dy);
+    if(d>2){
+      const spd=Math.min(d,player.speed+(wave*.08));
+      player.x+=dx/d*spd;
+      player.y+=dy/d*spd;
+    }
+  }
+  // Clamp to field
+  player.x=Math.max(player.r,Math.min(W-player.r,player.x));
+  player.y=Math.max(player.r+50,Math.min(H-player.r,player.y));
+
+  // Build trail
+  lastTrailDist+=player.speed;
+  if(lastTrailDist>=TRAIL_SPACING){
+    lastTrailDist=0;
+    trailPoints.unshift({x:player.x,y:player.y});
+    if(trailPoints.length>TRAIL_LEN)trailPoints.pop();
+    // Check for loop
+    if(trailPoints.length>30){
+      const loop=checkLoop();
+      if(loop) activatePoisonZone(loop);
+    }
+  }
+
+  // Update enemies — chase player
+  for(const e of enemies){
+    if(e.dead)continue;
+    const dx=player.x-e.x,dy=player.y-e.y;
+    const d=Math.sqrt(dx*dx+dy*dy)||1;
+    // Swarm behaviour: slight randomness + neighbour avoidance
+    const wobX=Math.sin(e.wobble*1.3)*0.4,wobY=Math.cos(e.wobble*.9)*0.4;
+    e.vx=e.vx*.88+(dx/d*e.spd+wobX)*.12;
+    e.vy=e.vy*.88+(dy/d*e.spd+wobY)*.12;
+    e.x+=e.vx;e.y+=e.vy;
+
+    // Check if enemy hits player trail (they can hit trail too)
+    for(let i=0;i<trailPoints.length-1;i+=3){
+      const t=trailPoints[i];
+      const ddx=e.x-t.x,ddy=e.y-t.y;
+      if(ddx*ddx+ddy*ddy<(e.r+3)*(e.r+3)){
+        e.dead=true;
+        spawnDeathParticles(e.x,e.y,e.col,5);
+        score+=5;document.getElementById('score-hud').textContent=score;
+        break;
+      }
+    }
+
+    // Check if enemy hits player directly
+    if(!e.dead){
+      const ddx=e.x-player.x,ddy=e.y-player.y;
+      if(ddx*ddx+ddy*ddy<(e.r+player.r)*(e.r+player.r)){
+        playerHit();
+        return;
+      }
+    }
+  }
+
+  // Trickle new enemies in
+  if(Math.random()<0.008+wave*.003&&enemies.filter(e=>!e.dead).length<80){
+    enemies.push(spawnEnemy());
+  }
+  enemies=enemies.filter(e=>!e.dead);
+
+  // Poison zones fade
+  for(const z of poisonZones)z.life-=0.008;
+  poisonZones=poisonZones.filter(z=>z.life>0);
+
+  // Particles
+  for(const p of particles){p.x+=p.vx;p.y+=p.vy;p.vy+=0.06;p.vx*=0.95;p.life-=p.decay;}
+  particles=particles.filter(p=>p.life>0);
+  for(const f of scoreFloats){f.y+=f.vy;f.life-=f.decay;}
+  scoreFloats=scoreFloats.filter(f=>f.life>0);
+}
+
+function playerHit(){
+  if(state!=='playing')return;
+  lives--;
+  lives=Math.max(0,lives);
+  document.getElementById('lives-hud').textContent=('● '.repeat(lives)+'○ '.repeat(Math.max(0,3-lives))).trim();
+  trailPoints=[];
+  screenShake=18;
+  flashAlpha=0.35;
+  spawnDeathParticles(player.x,player.y,'#ff3355',20);
+  if(lives<=0){
+    setTimeout(endGame,500);
+  } else {
+    // Brief invincible flash
+    player.x=W/2;player.y=H/2;
+  }
+}
+
+function endGame(){
+  if(state==='over')return;
+  state='over';
+  if(score>best){best=score;localStorage.setItem('swarm_best',best);}
+  document.getElementById('over-score').textContent=score;
+  document.getElementById('over-best').textContent='BEST: '+best;
+  document.getElementById('over-screen').classList.remove('hide');
+}
+
+function loop(){raf=requestAnimationFrame(loop);if(state==='playing'){update();}draw();}
+
+// ── INPUT ──
+function getPos(e){
+  const r=canvas.getBoundingClientRect();
+  const src=e.touches?e.touches[0]:e;
+  return{x:(src.clientX-r.left)*(W/r.width),y:(src.clientY-r.top)*(H/r.height)};
+}
+canvas.addEventListener('touchstart',e=>{e.preventDefault();const p=getPos(e);targetX=p.x;targetY=p.y;player.moving=true;},{passive:false});
+canvas.addEventListener('touchmove',e=>{e.preventDefault();const p=getPos(e);targetX=p.x;targetY=p.y;},{passive:false});
+canvas.addEventListener('touchend',e=>{e.preventDefault();player.moving=false;},{passive:false});
+canvas.addEventListener('mousedown',e=>{const p=getPos(e);targetX=p.x;targetY=p.y;player.moving=true;});
+canvas.addEventListener('mousemove',e=>{if(!player.moving)return;const p=getPos(e);targetX=p.x;targetY=p.y;});
+canvas.addEventListener('mouseup',()=>player.moving=false);
+
+// ── START ──
+function startGame(){
+  score=0;wave=1;lives=3;
+  player={x:W/2,y:H/2,r:8,trail:[],speed:3.2,angle:0,moving:false};
+  targetX=W/2;targetY=H/2;
+  trailPoints=[];lastTrailDist=0;
+  enemies=[];particles=[];poisonZones=[];scoreFloats=[];
+  flashAlpha=0;screenShake=0;
+  document.getElementById('score-hud').textContent='0';
+  document.getElementById('wave-hud').textContent='WAVE 1';
+  document.getElementById('lives-hud').textContent='● ● ●';
+  state='playing';
+  initWave();
+  if(!raf)loop();
+}
+
+document.getElementById('start-btn').addEventListener('click',()=>{
+  document.getElementById('start-screen').classList.add('hide');startGame();
+});
+document.getElementById('retry-btn').addEventListener('click',()=>{
+  document.getElementById('over-screen').classList.add('hide');startGame();
+});
+
+loop();
+</script>
+</body>
+</html>

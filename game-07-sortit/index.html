@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>SORT IT</title>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka+One&family=Nunito:wght@600;800;900&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;touch-action:none;}
+html,body{width:100%;height:100%;overflow:hidden;}
+body{
+  background:#1a2e1a;
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Nunito',sans-serif;
+  user-select:none;-webkit-user-select:none;
+}
+#wrap{
+  position:relative;
+  width:min(100vw,calc(100dvh*.6));
+  height:min(100dvh,calc(100vw/.6));
+  max-width:400px;max-height:667px;
+  overflow:hidden;
+  border-radius:12px;
+  box-shadow:0 8px 40px rgba(0,0,0,0.5);
+}
+canvas{display:block;width:100%;height:100%;}
+
+/* SCREENS */
+.screen{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;z-index:20;
+  border-radius:12px;
+}
+.screen.hide{display:none;}
+
+/* START */
+#start-screen{background:linear-gradient(160deg,#1a3a1a 0%,#0e1e0e 100%);}
+.game-title{
+  font-family:'Fredoka One',cursive;
+  font-size:clamp(52px,14vw,78px);
+  color:#4ade80;
+  text-shadow:3px 3px 0 #166534,0 0 30px #4ade8044;
+  letter-spacing:3px;margin-bottom:2px;
+}
+.game-sub{
+  font-size:clamp(10px,2.8vw,12px);letter-spacing:4px;
+  color:#166534;text-transform:uppercase;margin-bottom:8px;
+}
+.planet{font-size:clamp(40px,11vw,56px);margin-bottom:20px;}
+.how-list{
+  display:flex;flex-direction:column;gap:8px;
+  margin-bottom:28px;max-width:270px;
+}
+.how-item{
+  display:flex;align-items:center;gap:10px;
+  font-size:clamp(12px,3.2vw,14px);color:#86efac;font-weight:600;
+}
+.how-item span:first-child{font-size:clamp(18px,4.5vw,22px);}
+.play-btn{
+  font-family:'Fredoka One',cursive;
+  font-size:clamp(18px,5vw,24px);letter-spacing:3px;
+  color:#fff;background:#16a34a;border:none;
+  padding:14px 52px;border-radius:50px;cursor:pointer;
+  box-shadow:0 4px 0 #14532d,0 0 20px #4ade8033;
+  transition:transform .1s,box-shadow .1s;
+  -webkit-tap-highlight-color:transparent;
+}
+.play-btn:active{transform:translateY(3px);box-shadow:0 1px 0 #14532d;}
+
+/* OVER */
+#over-screen{background:rgba(14,30,14,0.95);}
+.over-title{
+  font-family:'Fredoka One',cursive;
+  font-size:clamp(38px,10vw,56px);
+  margin-bottom:6px;letter-spacing:2px;
+}
+.over-score{
+  font-family:'Fredoka One',cursive;
+  font-size:clamp(52px,14vw,72px);
+  color:#4ade80;margin-bottom:4px;
+}
+.over-lbl{font-size:11px;letter-spacing:4px;color:#166534;margin-bottom:6px;text-transform:uppercase;}
+.over-best{font-size:12px;letter-spacing:3px;color:#14532d;margin-bottom:28px;}
+.over-grade{
+  font-family:'Fredoka One',cursive;
+  font-size:clamp(18px,5vw,24px);
+  margin-bottom:16px;letter-spacing:2px;
+}
+
+/* HUD overlay */
+#hud{
+  position:absolute;top:0;left:0;right:0;
+  display:flex;justify-content:space-between;align-items:center;
+  padding:10px 14px 0;pointer-events:none;z-index:10;
+}
+#score-hud{
+  font-family:'Fredoka One',cursive;
+  font-size:clamp(20px,5.5vw,28px);
+  color:#4ade80;text-shadow:1px 1px 0 #14532d;
+}
+#round-hud{font-size:11px;letter-spacing:3px;color:#166534;text-transform:uppercase;}
+#streak-hud{
+  font-family:'Fredoka One',cursive;
+  font-size:clamp(14px,4vw,18px);color:#fbbf24;
+  text-shadow:1px 1px 0 #78350f;
+  min-width:48px;text-align:right;
+}
+
+/* Wrong flash */
+#wrong-flash{
+  position:absolute;inset:0;background:rgba(220,38,38,0.25);
+  pointer-events:none;z-index:15;opacity:0;border-radius:12px;
+  transition:opacity .08s;
+}
+/* Right flash */
+#right-flash{
+  position:absolute;inset:0;background:rgba(74,222,128,0.15);
+  pointer-events:none;z-index:15;opacity:0;border-radius:12px;
+  transition:opacity .08s;
+}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="hud">
+    <div id="score-hud">0</div>
+    <div id="round-hud">ROUND 1</div>
+    <div id="streak-hud"></div>
+  </div>
+  <div id="wrong-flash"></div>
+  <div id="right-flash"></div>
+
+  <div class="screen" id="start-screen">
+    <div class="planet">🌍</div>
+    <div class="game-title">SORT IT</div>
+    <div class="game-sub">recycle or regret</div>
+    <div class="how-list">
+      <div class="how-item"><span>🫳</span><span>Drag trash into the right bin</span></div>
+      <div class="how-item"><span>⏱️</span><span>Queue grows — sort faster</span></div>
+      <div class="how-item"><span>🔀</span><span>Bins shuffle each round</span></div>
+      <div class="how-item"><span>🔥</span><span>Streaks multiply your score</span></div>
+    </div>
+    <div class="play-btn" id="start-btn">SORT IT!</div>
+  </div>
+
+  <div class="screen hide" id="over-screen">
+    <div class="over-title" id="over-title">🌱 NICE SORT!</div>
+    <div class="over-score" id="over-score">0</div>
+    <div class="over-lbl">POINTS</div>
+    <div class="over-grade" id="over-grade"></div>
+    <div class="over-best" id="over-best">BEST: 0</div>
+    <div class="play-btn" id="retry-btn">TRY AGAIN</div>
+  </div>
+</div>
+
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+const W=400,H=667;
+canvas.width=W;canvas.height=H;
+
+// ── BIN DEFINITIONS ──
+const BIN_TYPES=[
+  {id:'recycling', label:'RECYCLING', emoji:'♻️', col:'#3b82f6', dark:'#1e3a8a', light:'#93c5fd'},
+  {id:'compost',   label:'COMPOST',   emoji:'🌱', col:'#16a34a', dark:'#14532d', light:'#86efac'},
+  {id:'landfill',  label:'LANDFILL',  emoji:'🗑️', col:'#78716c', dark:'#292524', light:'#d6d3d1'},
+  {id:'hazmat',    label:'HAZMAT',    emoji:'☢️', col:'#dc2626', dark:'#7f1d1d', light:'#fca5a5'},
+];
+
+// ── ITEMS ──
+const ITEMS=[
+  // Recycling
+  {emoji:'🥤',name:'Soda Can',bin:'recycling',hint:'Metal = recycle'},
+  {emoji:'📰',name:'Newspaper',bin:'recycling',hint:'Paper recycles'},
+  {emoji:'🍾',name:'Glass Bottle',bin:'recycling',hint:'Glass is recyclable'},
+  {emoji:'📦',name:'Cardboard',bin:'recycling',hint:'Break it down first'},
+  {emoji:'🧴',name:'Shampoo Bottle',bin:'recycling',hint:'Plastic #2 recycles'},
+  {emoji:'🥛',name:'Milk Carton',bin:'recycling',hint:'Rinse & recycle'},
+  // Compost
+  {emoji:'🍌',name:'Banana Peel',bin:'compost',hint:'Food scraps = compost'},
+  {emoji:'🍎',name:'Apple Core',bin:'compost',hint:'Organic waste'},
+  {emoji:'🥦',name:'Veggie Scraps',bin:'compost',hint:'Green waste'},
+  {emoji:'☕',name:'Coffee Grounds',bin:'compost',hint:'Great for compost'},
+  {emoji:'🥚',name:'Eggshells',bin:'compost',hint:'Compostable!'},
+  {emoji:'🍞',name:'Stale Bread',bin:'compost',hint:'Food = compost'},
+  // Landfill
+  {emoji:'💿',name:'Old CD',bin:'landfill',hint:'Not recyclable'},
+  {emoji:'🪥',name:'Toothbrush',bin:'landfill',hint:'Goes to landfill'},
+  {emoji:'🧻',name:'Used Tissue',bin:'landfill',hint:'Contaminated'},
+  {emoji:'🩹',name:'Band-Aid',bin:'landfill',hint:'Medical = landfill'},
+  {emoji:'🥡',name:'Takeout Box',bin:'landfill',hint:'Greasy = landfill'},
+  {emoji:'🪣',name:'Dirty Diaper',bin:'landfill',hint:'Landfill only'},
+  // Hazmat
+  {emoji:'🔋',name:'Battery',bin:'hazmat',hint:'Never in regular bin'},
+  {emoji:'💡',name:'Light Bulb',bin:'hazmat',hint:'Contains mercury'},
+  {emoji:'🖨️',name:'Printer Ink',bin:'hazmat',hint:'Chemical waste'},
+  {emoji:'🧪',name:'Chemical Bottle',bin:'hazmat',hint:'Hazardous material'},
+  {emoji:'💊',name:'Old Medication',bin:'hazmat',hint:'Take to pharmacy'},
+  {emoji:'🔌',name:'Phone Charger',bin:'hazmat',hint:'E-waste drop-off'},
+];
+
+// ── GAME STATE ──
+let state='menu',score=0,round=1,streak=0,best=parseInt(localStorage.getItem('sortit_best')||'0');
+let bins=[],queue=[],dragging=null,particles=[],floaters=[],wrongFlashTO,rightFlashTO;
+let queueTimer=0,roundTimeLeft=0,roundDuration=0;
+let peopleInLine=0,impatience=0; // crowd pressure
+let raf;
+
+// ── LAYOUT ──
+const BIN_Y=H-110;
+const BIN_W=80,BIN_H=88;
+const QUEUE_Y=260; // where current item sits waiting
+const ITEM_SIZE=64;
+
+// ── BUILD BINS (shuffled each round) ──
+function buildBins(){
+  // Use 3 bins for round 1-2, 4 bins from round 3+
+  const count=round<=2?3:4;
+  const types=[...BIN_TYPES].sort(()=>Math.random()-.5).slice(0,count);
+  const spacing=W/(count+1);
+  bins=types.map((t,i)=>({
+    ...t,
+    x:spacing*(i+1),y:BIN_Y,
+    w:BIN_W,h:BIN_H,
+    wobble:0,
+    shake:0,
+  }));
+}
+
+// ── BUILD QUEUE ──
+function buildQueue(){
+  // Number of items scales with round
+  const itemCount=6+round*2;
+  const pool=[...ITEMS].sort(()=>Math.random()-.5);
+  // Filter to only items whose bin type exists in current bins
+  const validBinIds=bins.map(b=>b.id);
+  const valid=pool.filter(it=>validBinIds.includes(it.bin));
+  queue=[];
+  for(let i=0;i<itemCount;i++) queue.push({...valid[i%valid.length],id:i});
+  // People in line = remaining items beyond first
+  peopleInLine=queue.length-1;
+  impatience=0;
+  roundDuration=Math.max(8,20-round*1.5)*1000; // ms per item, shrinks
+  roundTimeLeft=roundDuration;
+}
+
+// ── CURRENT ITEM ──
+function currentItem(){ return queue[0]||null; }
+
+// ── DRAW BG ──
+function drawBG(){
+  // Sky / outdoor scene
+  const sky=ctx.createLinearGradient(0,0,0,H*.45);
+  sky.addColorStop(0,'#0ea5e9');sky.addColorStop(1,'#7dd3fc');
+  ctx.fillStyle=sky;ctx.fillRect(0,0,W,H*.45);
+  // Ground
+  ctx.fillStyle='#86efac';ctx.fillRect(0,H*.45,W,H*.55);
+  ctx.fillStyle='#4ade80';ctx.fillRect(0,H*.45,W,8);
+  // Sun
+  ctx.save();ctx.globalAlpha=0.9;
+  ctx.fillStyle='#fbbf24';ctx.beginPath();ctx.arc(W-55,55,28,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+  // Path / sorting area
+  ctx.fillStyle='#d4b896';ctx.fillRect(60,H*.44,W-120,H*.56);
+  ctx.strokeStyle='#c4a882';ctx.lineWidth=1;
+  ctx.strokeRect(60,H*.44,W-120,H*.56);
+  // Concrete platform under bins
+  ctx.fillStyle='#e2e8f0';ctx.fillRect(20,H-130,W-40,130);
+  ctx.strokeStyle='#cbd5e1';ctx.lineWidth=1.5;ctx.strokeRect(20,H-130,W-40,130);
+}
+
+// ── DRAW BINS ──
+function drawBins(){
+  for(const b of bins){
+    const x=b.x,y=b.y+b.shake;
+    ctx.save();ctx.translate(x,y);
+    if(b.wobble){ctx.rotate(Math.sin(b.wobble)*.04);}
+    // Shadow
+    ctx.fillStyle='rgba(0,0,0,0.15)';
+    ctx.beginPath();ctx.ellipse(0,b.h*.5+6,b.w*.45,8,0,0,Math.PI*2);ctx.fill();
+    // Bin body
+    const bx=-b.w/2,by=-b.h/2;
+    // Lid
+    ctx.fillStyle=b.dark;
+    ctx.beginPath();ctx.roundRect(bx-4,by-10,b.w+8,16,[4,4,0,0]);ctx.fill();
+    // Body gradient
+    const bg=ctx.createLinearGradient(bx,0,bx+b.w,0);
+    bg.addColorStop(0,b.dark);bg.addColorStop(0.4,b.col);bg.addColorStop(1,b.dark);
+    ctx.fillStyle=bg;
+    ctx.beginPath();ctx.roundRect(bx,by+6,b.w,b.h,[0,0,8,8]);ctx.fill();
+    // Shine
+    ctx.fillStyle='rgba(255,255,255,0.15)';
+    ctx.beginPath();ctx.roundRect(bx+6,by+10,b.w*.3,b.h*.6,[4]);ctx.fill();
+    // Emoji
+    ctx.font=`${Math.floor(b.w*.42)}px serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(b.emoji,0,4);
+    // Label
+    ctx.font=`700 9px 'Nunito',sans-serif`;ctx.fillStyle=b.light;ctx.textAlign='center';
+    ctx.textBaseline='top';ctx.fillText(b.label,0,by+b.h-2);
+    ctx.restore();
+  }
+}
+
+// ── DRAW QUEUE (people waiting) ──
+function drawQueue(){
+  const item=currentItem();
+  if(!item)return;
+
+  // Draw impatient crowd behind
+  for(let i=Math.min(peopleInLine,5);i>=1;i--){
+    const px=W/2+(i)*28,py=QUEUE_Y+10;
+    const scale=1-i*.08;
+    ctx.save();ctx.translate(px,py);ctx.scale(scale,scale);
+    drawPerson(i,impatience>0.7&&i===1);
+    ctx.restore();
+  }
+
+  // Timer bar above current item
+  const timerW=120,timerH=7;
+  const tx=W/2-timerW/2,ty=QUEUE_Y-ITEM_SIZE/2-22;
+  ctx.fillStyle='rgba(0,0,0,0.2)';ctx.beginPath();ctx.roundRect(tx,ty,timerW,timerH,4);ctx.fill();
+  const pct=roundTimeLeft/roundDuration;
+  const barCol=pct>.5?'#4ade80':pct>.25?'#fbbf24':'#ef4444';
+  ctx.fillStyle=barCol;ctx.beginPath();ctx.roundRect(tx,ty,timerW*pct,timerH,4);ctx.fill();
+
+  // Current item (draggable)
+  const it=dragging&&dragging.id===item.id?dragging:null;
+  const ix=it?it.cx:W/2;
+  const iy=it?it.cy:QUEUE_Y;
+
+  // Shadow when dragging
+  if(it){
+    ctx.save();ctx.globalAlpha=0.2;ctx.fillStyle='#000';
+    ctx.beginPath();ctx.ellipse(ix,iy+ITEM_SIZE/2+4,ITEM_SIZE*.4,8,0,0,Math.PI*2);ctx.fill();ctx.restore();
+  }
+
+  // Item bg pill
+  const scale=it?1.15:1+Math.sin(Date.now()*.003)*.03;
+  ctx.save();ctx.translate(ix,iy);ctx.scale(scale,scale);
+  ctx.fillStyle='rgba(255,255,255,0.92)';
+  ctx.beginPath();ctx.roundRect(-ITEM_SIZE/2,-ITEM_SIZE/2,ITEM_SIZE,ITEM_SIZE,16);ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,0.08)';ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.roundRect(-ITEM_SIZE/2,-ITEM_SIZE/2,ITEM_SIZE,ITEM_SIZE,16);ctx.stroke();
+  // Emoji
+  ctx.font=`${ITEM_SIZE*.55}px serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(item.emoji,0,2);
+  // Name tag
+  ctx.font=`700 9px 'Nunito',sans-serif`;ctx.fillStyle='#475569';ctx.textAlign='center';
+  ctx.fillText(item.name,0,ITEM_SIZE/2-7);
+  ctx.restore();
+}
+
+// ── DRAW PERSON (stick figure with personality) ──
+function drawPerson(idx,impatient){
+  const colors=['#fbbf24','#f97316','#a78bfa','#34d399','#fb7185'];
+  const col=colors[idx%colors.length];
+  const imp=impatient;
+  // Body
+  ctx.fillStyle=col;ctx.beginPath();ctx.ellipse(0,0,10,12,0,0,Math.PI*2);ctx.fill();
+  // Head
+  ctx.fillStyle='#fcd34d';ctx.beginPath();ctx.arc(0,-17,9,0,Math.PI*2);ctx.fill();
+  // Angry eyebrows if impatient
+  if(imp){
+    ctx.strokeStyle='#dc2626';ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(-6,-20);ctx.lineTo(-2,-18);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(6,-20);ctx.lineTo(2,-18);ctx.stroke();
+    // Mouth frown
+    ctx.beginPath();ctx.arc(0,-14,4,Math.PI*.1,Math.PI*.9,true);ctx.stroke();
+    // Exclamation
+    ctx.font='bold 14px sans-serif';ctx.fillStyle='#dc2626';ctx.textAlign='center';
+    ctx.fillText('!',0,-32);
+  } else {
+    ctx.strokeStyle='#92400e';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.arc(0,-15,3,0,Math.PI);ctx.stroke();
+  }
+  // Arms (waving if impatient)
+  const armOff=imp?Math.sin(Date.now()*.01)*15:0;
+  ctx.strokeStyle=col;ctx.lineWidth=3;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(-8,-2);ctx.lineTo(-18,8+armOff);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(8,-2);ctx.lineTo(18,8-armOff);ctx.stroke();
+  // Legs
+  ctx.beginPath();ctx.moveTo(-4,10);ctx.lineTo(-6,22);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(4,10);ctx.lineTo(6,22);ctx.stroke();
+}
+
+// ── DRAW HINT ──
+function drawHint(){
+  const item=currentItem();if(!item||dragging)return;
+  ctx.save();ctx.globalAlpha=0.45;
+  ctx.font=`600 11px 'Nunito',sans-serif`;ctx.fillStyle='#166534';
+  ctx.textAlign='center';ctx.fillText(item.hint,W/2,QUEUE_Y+ITEM_SIZE/2+16);
+  ctx.restore();
+}
+
+// ── PARTICLES & FLOATERS ──
+function drawParticles(){
+  for(const p of particles){
+    ctx.save();ctx.globalAlpha=p.life;ctx.fillStyle=p.col;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.r*p.life,0,Math.PI*2);ctx.fill();ctx.restore();
+  }
+}
+function drawFloaters(){
+  for(const f of floaters){
+    ctx.save();ctx.globalAlpha=f.life;
+    ctx.font=`900 ${f.size}px 'Fredoka One',cursive`;
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillStyle=f.col;
+    ctx.strokeStyle='rgba(0,0,0,0.3)';ctx.lineWidth=3;
+    ctx.strokeText(f.txt,f.x,f.y);ctx.fillText(f.txt,f.x,f.y);
+    ctx.restore();
+  }
+}
+
+function spawnConfetti(x,y,col){
+  for(let i=0;i<14;i++){
+    const a=Math.random()*Math.PI*2,s=3+Math.random()*5;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s-3,life:1,decay:0.03+Math.random()*.03,r:3+Math.random()*4,col});
+  }
+}
+function spawnFloat(x,y,txt,col,size=22){
+  floaters.push({x,y,txt,col,size,life:1,decay:0.022,vy:-1.8});
+}
+
+// ── UPDATE ──
+function update(){
+  const item=currentItem();
+  if(!item){
+    // Round complete!
+    nextRound();return;
+  }
+
+  // Timer countdown
+  roundTimeLeft-=16;
+  if(roundTimeLeft<=0){
+    // Time's up — auto-wrong
+    wrongSort(item);
+    return;
+  }
+
+  // Impatience builds as timer runs low
+  impatience=1-(roundTimeLeft/roundDuration);
+  peopleInLine=Math.max(0,queue.length-1);
+
+  // Bins wobble from crowd pressure
+  if(impatience>.7){
+    for(const b of bins) b.wobble+=0.15;
+  }
+
+  // Particle physics
+  for(const p of particles){p.x+=p.vx;p.y+=p.vy;p.vy+=.15;p.vx*=.95;p.life-=p.decay;}
+  particles=particles.filter(p=>p.life>0);
+  for(const f of floaters){f.y+=f.vy;f.life-=f.decay;}
+  floaters=floaters.filter(f=>f.life>0);
+  for(const b of bins){if(b.wobble>0)b.wobble-=.08;if(b.shake!==0)b.shake*=.8;}
+}
+
+// ── SORT LOGIC ──
+function trySort(binId){
+  const item=currentItem();if(!item)return;
+  const bin=bins.find(b=>b.id===binId);
+  if(!bin)return;
+
+  if(item.bin===binId){
+    // CORRECT
+    streak++;
+    const pts=10*(1+Math.floor(streak/3));
+    score+=pts;
+    document.getElementById('score-hud').textContent=score;
+    document.getElementById('streak-hud').textContent=streak>=3?`🔥x${streak}`:'';
+    spawnConfetti(bin.x,bin.y-bin.h/2,bin.col);
+    spawnFloat(bin.x,bin.y-80,'+'+pts,streak>=5?'#fbbf24':'#4ade80');
+    bin.shake=-8;
+    // Right flash
+    const rf=document.getElementById('right-flash');
+    rf.style.opacity='.8';clearTimeout(rightFlashTO);
+    rightFlashTO=setTimeout(()=>rf.style.opacity='0',120);
+  } else {
+    wrongSort(item,bin);
+    return;
+  }
+
+  queue.shift();
+  roundTimeLeft=roundDuration; // reset timer for next item
+  dragging=null;
+}
+
+function wrongSort(item,bin){
+  streak=0;
+  document.getElementById('streak-hud').textContent='';
+  score=Math.max(0,score-5);
+  document.getElementById('score-hud').textContent=score;
+  if(bin) bin.shake=10;
+  spawnFloat(bin?bin.x:W/2,bin?bin.y-60:H/2,'WRONG! -5','#ef4444',20);
+  // Wrong flash
+  const wf=document.getElementById('wrong-flash');
+  wf.style.opacity='1';clearTimeout(wrongFlashTO);
+  wrongFlashTO=setTimeout(()=>wf.style.opacity='0',200);
+  // Show correct answer briefly
+  const correct=bins.find(b=>b.id===item.bin);
+  if(correct){
+    spawnFloat(correct.x,correct.y-80,'← HERE','#fbbf24',16);
+    correct.shake=-6;
+  }
+  queue.shift();
+  roundTimeLeft=roundDuration;
+  dragging=null;
+  // Game over if score goes too negative (or after all items done)
+  if(score<-20) endGame();
+}
+
+// ── NEXT ROUND ──
+function nextRound(){
+  round++;
+  document.getElementById('round-hud').textContent=`ROUND ${round}`;
+  buildBins();
+  buildQueue();
+  // Announce shuffle
+  spawnFloat(W/2,H/2,'BINS SHUFFLED!','#fbbf24',18);
+}
+
+// ── END GAME ──
+function endGame(){
+  state='over';
+  if(score>best){best=score;localStorage.setItem('sortit_best',best);}
+  // Grade
+  const grades=[
+    [200,'🌍 ECO HERO!','#4ade80'],
+    [100,'♻️ GREAT SORT!','#86efac'],
+    [50,'🌱 NOT BAD!','#fbbf24'],
+    [0,'🗑️ KEEP TRYING','#94a3b8'],
+  ];
+  const [,title,col]=grades.find(([min])=>score>=min)||grades[grades.length-1];
+  document.getElementById('over-title').textContent=title;
+  document.getElementById('over-title').style.color=col;
+  document.getElementById('over-score').textContent=score;
+  document.getElementById('over-grade').textContent=`Round ${round} · ${streak} streak`;
+  document.getElementById('over-best').textContent=`BEST: ${best} pts`;
+  document.getElementById('over-screen').classList.remove('hide');
+}
+
+// ── MAIN LOOP ──
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  drawBG();
+  drawBins();
+  drawQueue();
+  drawHint();
+  drawParticles();
+  drawFloaters();
+}
+function loop(){raf=requestAnimationFrame(loop);if(state==='playing')update();draw();}
+
+// ── INPUT ──
+function getPos(e){
+  const r=canvas.getBoundingClientRect();
+  const s=e.touches?e.touches[0]:e;
+  return{x:(s.clientX-r.left)*(W/r.width),y:(s.clientY-r.top)*(H/r.height)};
+}
+
+function hitItem(px,py){
+  const item=currentItem();if(!item)return false;
+  const ix=W/2,iy=QUEUE_Y;
+  return Math.abs(px-ix)<ITEM_SIZE/2+8&&Math.abs(py-iy)<ITEM_SIZE/2+8;
+}
+
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  const p=getPos(e);
+  if(hitItem(p.x,p.y)&&currentItem()){
+    dragging={...currentItem(),cx:p.x,cy:p.y};
+  }
+},{passive:false});
+
+canvas.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  if(!dragging)return;
+  const p=getPos(e);
+  dragging.cx=p.x;dragging.cy=p.y;
+},{passive:false});
+
+canvas.addEventListener('touchend',e=>{
+  e.preventDefault();
+  if(!dragging)return;
+  // Check which bin we dropped on
+  const px=dragging.cx,py=dragging.cy;
+  let hit=null;
+  for(const b of bins){
+    if(Math.abs(px-b.x)<b.w/2+12&&Math.abs(py-b.y)<b.h/2+16) hit=b;
+  }
+  if(hit) trySort(hit.id);
+  else dragging=null;
+},{passive:false});
+
+// Mouse
+let mouseDown=false;
+canvas.addEventListener('mousedown',e=>{
+  const p=getPos(e);
+  if(hitItem(p.x,p.y)&&currentItem()){dragging={...currentItem(),cx:p.x,cy:p.y};mouseDown=true;}
+});
+canvas.addEventListener('mousemove',e=>{
+  if(!dragging||!mouseDown)return;
+  const p=getPos(e);dragging.cx=p.x;dragging.cy=p.y;
+});
+canvas.addEventListener('mouseup',e=>{
+  mouseDown=false;
+  if(!dragging)return;
+  const p=getPos(e);
+  dragging.cx=p.x;dragging.cy=p.y;
+  let hit=null;
+  for(const b of bins){if(Math.abs(p.x-b.x)<b.w/2+12&&Math.abs(p.y-b.y)<b.h/2+16)hit=b;}
+  if(hit) trySort(hit.id);
+  else dragging=null;
+});
+
+// ── START ──
+function startGame(){
+  score=0;round=1;streak=0;
+  particles=[];floaters=[];dragging=null;
+  document.getElementById('score-hud').textContent='0';
+  document.getElementById('round-hud').textContent='ROUND 1';
+  document.getElementById('streak-hud').textContent='';
+  buildBins();buildQueue();
+  state='playing';
+  if(!raf)loop();
+}
+
+document.getElementById('start-btn').addEventListener('click',()=>{
+  document.getElementById('start-screen').classList.add('hide');startGame();
+});
+document.getElementById('retry-btn').addEventListener('click',()=>{
+  document.getElementById('over-screen').classList.add('hide');startGame();
+});
+
+loop();
+</script>
+</body>
+</html>

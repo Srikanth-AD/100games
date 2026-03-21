@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>BARRAGE</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;touch-action:none;}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;}
+body{display:flex;align-items:center;justify-content:center;font-family:'Share Tech Mono',monospace;}
+#wrap{
+  position:relative;
+  width:min(100vw,calc(100dvh*.62));
+  height:min(100dvh,calc(100vw/.62));
+  max-width:420px;max-height:680px;
+}
+canvas{display:block;width:100%;height:100%;}
+.screen{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;z-index:20;
+  background:rgba(0,0,0,0.92);
+}
+.screen.hide{display:none;}
+.game-title{
+  font-family:'Orbitron',monospace;font-weight:900;
+  font-size:clamp(44px,13vw,70px);
+  color:#00ffcc;letter-spacing:6px;
+  text-shadow:0 0 20px #00ffcc,0 0 60px #00ffcc44;
+  margin-bottom:4px;
+}
+.game-sub{
+  font-size:clamp(9px,2.5vw,11px);letter-spacing:5px;
+  color:#006644;text-transform:uppercase;margin-bottom:36px;
+}
+.stat-row{
+  display:flex;gap:32px;margin-bottom:10px;
+}
+.stat{text-align:center;}
+.stat-val{
+  font-family:'Orbitron',monospace;font-weight:700;
+  font-size:clamp(28px,8vw,44px);color:#00ffcc;
+  text-shadow:0 0 12px #00ffcc88;
+}
+.stat-lbl{font-size:10px;letter-spacing:3px;color:#006644;text-transform:uppercase;margin-top:2px;}
+.best-row{font-size:11px;letter-spacing:3px;color:#004433;margin-bottom:30px;margin-top:8px;}
+.go-btn{
+  font-family:'Orbitron',monospace;font-weight:700;
+  font-size:clamp(13px,3.5vw,16px);letter-spacing:4px;
+  color:#000;background:#00ffcc;border:none;
+  padding:14px 44px;cursor:pointer;
+  box-shadow:0 0 20px #00ffcc66,0 0 40px #00ffcc22;
+  transition:transform .1s,box-shadow .1s;
+  clip-path:polygon(6px 0%,100% 0%,calc(100% - 6px) 100%,0% 100%);
+  -webkit-tap-highlight-color:transparent;margin:6px;
+}
+.go-btn:active{transform:scale(0.95);}
+.go-btn.sec{background:transparent;color:#006644;border:1px solid #003322;box-shadow:none;font-size:clamp(11px,2.8vw,13px);padding:10px 28px;}
+#hud{
+  position:absolute;top:0;left:0;right:0;
+  display:flex;justify-content:space-between;align-items:flex-start;
+  padding:10px 14px 0;pointer-events:none;z-index:5;
+}
+.hud-block{text-align:center;}
+.hud-val{font-family:'Orbitron',monospace;font-weight:700;font-size:clamp(16px,4.5vw,22px);color:#00ffcc;text-shadow:0 0 8px #00ffcc66;}
+.hud-lbl{font-size:9px;letter-spacing:2px;color:#004433;text-transform:uppercase;}
+#level-banner{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  font-family:'Orbitron',monospace;font-weight:900;
+  font-size:clamp(24px,7vw,36px);letter-spacing:6px;
+  color:#00ffcc;text-shadow:0 0 24px #00ffcc;
+  pointer-events:none;z-index:10;opacity:0;transition:opacity .2s;
+  white-space:nowrap;
+}
+#level-banner.show{opacity:1;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="hud">
+    <div class="hud-block">
+      <div class="hud-val" id="score-hud">0</div>
+      <div class="hud-lbl">SCORE</div>
+    </div>
+    <div class="hud-block">
+      <div class="hud-val" id="level-hud">1</div>
+      <div class="hud-lbl">LEVEL</div>
+    </div>
+    <div class="hud-block">
+      <div class="hud-val" id="lives-hud">♦♦♦</div>
+      <div class="hud-lbl">LIVES</div>
+    </div>
+  </div>
+  <div id="level-banner"></div>
+
+  <div class="screen" id="start-screen">
+    <div class="game-title">BARRAGE</div>
+    <div class="game-sub">multi-ball · multi-paddle · mayhem</div>
+    <div style="font-size:clamp(11px,3vw,13px);color:#006644;text-align:center;line-height:2.2;margin-bottom:32px;max-width:260px;">
+      Drag to move your paddles<br>
+      Don't let balls past your side<br>
+      More balls each level<br>
+      AI gets faster every round
+    </div>
+    <div class="go-btn" id="start-btn">LAUNCH</div>
+  </div>
+
+  <div class="screen hide" id="over-screen">
+    <div class="game-title" style="font-size:clamp(34px,10vw,52px);margin-bottom:12px;">GAME<br>OVER</div>
+    <div class="stat-row">
+      <div class="stat"><div class="stat-val" id="over-score">0</div><div class="stat-lbl">SCORE</div></div>
+      <div class="stat"><div class="stat-val" id="over-level">1</div><div class="stat-lbl">LEVEL</div></div>
+    </div>
+    <div class="best-row" id="over-best">BEST: 0</div>
+    <div class="go-btn" id="retry-btn">RETRY</div>
+  </div>
+</div>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+const W=420,H=680;
+canvas.width=W;canvas.height=H;
+
+// ── CONSTANTS ──
+const PLAYER_X=28;    // player paddles on left
+const AI_X=W-28;      // AI paddles on right
+const BALL_R=6;
+const TOP_MARGIN=54;  // below HUD
+const BOT_MARGIN=10;
+const PLAY_H=H-TOP_MARGIN-BOT_MARGIN;
+const PLAY_TOP=TOP_MARGIN;
+const PLAY_BOT=H-BOT_MARGIN;
+
+// ── STATE ──
+let state='menu',score=0,level=1,lives=3,best=parseInt(localStorage.getItem('barrage_best')||'0');
+let raf,balls=[],playerPaddles=[],aiPaddles=[],particles=[],trails=[];
+let touchMap={};  // touch id -> paddle index
+let animFrame=0;
+
+// ── LEVEL CONFIG ──
+function levelCfg(l){
+  return {
+    balls:    Math.min(1+Math.floor(l/2), 5),        // 1,1,2,2,3,3,4,4,5...
+    paddleCount: l<=2?1:l<=4?2:3,                    // player paddle count
+    aiPaddleCount: l<=1?1:l<=3?2:3,                  // ai paddle count
+    ballSpeed:  3.5+l*0.55,                           // base ball speed
+    aiSpeed:    4+l*0.7,                              // ai paddle speed
+    paddleSizes: getPaddleSizes(l),                   // array of heights
+  };
+}
+function getPaddleSizes(l){
+  // As level increases, paddles get smaller and more varied
+  if(l<=2) return [90];
+  if(l<=4) return [80,55];
+  if(l<=6) return [70,50,36];
+  return [60,44,30];
+}
+
+// ── INIT LEVEL ──
+function initLevel(){
+  const cfg=levelCfg(level);
+  balls=[];
+  trails=[];
+
+  // Spawn balls
+  for(let i=0;i<cfg.balls;i++){
+    spawnBall(i,cfg.balls,cfg.ballSpeed);
+  }
+
+  // Player paddles
+  playerPaddles=[];
+  for(let i=0;i<cfg.paddleCount;i++){
+    const h=cfg.paddleSizes[i]||36;
+    const segment=PLAY_H/cfg.paddleCount;
+    playerPaddles.push({
+      x:PLAYER_X,
+      y:PLAY_TOP+segment*(i+0.5),
+      h,w:14,
+      shapeId:SHAPE_IDS[Math.floor(Math.random()*SHAPE_IDS.length)],
+      shapeTimer:60+Math.floor(Math.random()*80),
+      dragging:false,
+      touchId:null,
+      targetY:PLAY_TOP+segment*(i+0.5),
+      glow:0,
+    });
+  }
+
+  // AI paddles
+  aiPaddles=[];
+  for(let i=0;i<cfg.aiPaddleCount;i++){
+    const h=cfg.paddleSizes[i]||36;
+    const segment=PLAY_H/cfg.aiPaddleCount;
+    aiPaddles.push({
+      x:AI_X,
+      y:PLAY_TOP+segment*(i+0.5),
+      h,w:14,
+      shapeId:SHAPE_IDS[Math.floor(Math.random()*SHAPE_IDS.length)],
+      shapeTimer:60+Math.floor(Math.random()*80),
+      targetY:PLAY_TOP+segment*(i+0.5),
+      glow:0,
+      assignedBall:-1,
+    });
+  }
+
+  updateHUD();
+}
+
+function spawnBall(idx,total,speed){
+  // Spread balls vertically
+  const segment=PLAY_H/total;
+  const y=PLAY_TOP+segment*(idx+0.5)+(Math.random()-0.5)*segment*0.5;
+  const angle=(Math.random()-0.5)*0.7; // angle from horizontal
+  const dir=Math.random()<0.5?1:-1;
+  balls.push({
+    x:W/2,y,
+    vx:Math.cos(angle)*speed*dir,
+    vy:Math.sin(angle)*speed,
+    r:BALL_R,
+    col:BALL_COLS[idx%BALL_COLS.length],
+    trail:[],
+    dead:false,
+    glow:0,
+  });
+}
+const BALL_COLS=['#00ffcc','#ff6b35','#f9c74f','#c77dff','#ff4d6d'];
+
+// ── AI BRAIN ──
+function updateAI(){
+  const cfg=levelCfg(level);
+  const speed=cfg.aiSpeed;
+
+  // Assign each AI paddle to track the nearest ball heading its way
+  for(let i=0;i<aiPaddles.length;i++){
+    const pad=aiPaddles[i];
+    // Find most dangerous ball (heading right, closest to right wall)
+    let bestBall=null,bestScore2=-Infinity;
+    for(const b of balls){
+      if(b.dead)continue;
+      if(b.vx<=0)continue; // only care about balls heading toward AI
+      const threat=b.x+(b.vx>0?100:0);
+      const dist=Math.abs(b.y-pad.y);
+      const sc=threat-dist*0.3;
+      if(sc>bestScore2){bestScore2=sc;bestBall=b;}
+    }
+    // If no threatening ball, track all balls loosely
+    if(!bestBall){
+      // Find closest ball regardless
+      let minD=Infinity;
+      for(const b of balls){if(b.dead)continue;const d=Math.abs(b.y-pad.y);if(d<minD){minD=d;bestBall=b;}}
+    }
+    if(bestBall){
+      // Predict where ball will be at AI wall
+      let predY=bestBall.y;
+      if(bestBall.vx>0){
+        const t=(AI_X-bestBall.x)/bestBall.vx;
+        predY=bestBall.y+bestBall.vy*t;
+        // Bounce prediction
+        const range=PLAY_BOT-PLAY_TOP;
+        predY=PLAY_TOP+Math.abs(((predY-PLAY_TOP)%( range*2)+range*2)%(range*2)-range);
+      }
+      pad.targetY=Math.max(PLAY_TOP+pad.h/2,Math.min(PLAY_BOT-pad.h/2,predY));
+    }
+    // Move toward target
+    const dy=pad.targetY-pad.y;
+    const move=Math.min(Math.abs(dy),speed)*Math.sign(dy);
+    pad.y+=move;
+  }
+}
+
+// ── BALL UPDATE ──
+function updateBalls(){
+  for(const b of balls){
+    if(b.dead)continue;
+    b.glow=Math.max(0,b.glow-0.08);
+
+    // Trail
+    b.trail.unshift({x:b.x,y:b.y});
+    if(b.trail.length>16)b.trail.pop();
+
+    b.x+=b.vx;b.y+=b.vy;
+
+    // Wall bounce top/bottom
+    if(b.y-b.r<PLAY_TOP){b.y=PLAY_TOP+b.r;b.vy=Math.abs(b.vy);spawnBounceParticle(b.x,b.y,b.col);}
+    if(b.y+b.r>PLAY_BOT){b.y=PLAY_BOT-b.r;b.vy=-Math.abs(b.vy);spawnBounceParticle(b.x,b.y,b.col);}
+
+    // Player paddle collision (left side)
+    if(b.vx<0&&b.x-b.r<=PLAYER_X+14&&b.x-b.r>=PLAYER_X-8){
+      for(const p of playerPaddles){
+        const bb=paddleBBox(p);
+        if(b.y>=bb.top-b.r&&b.y<=bb.bot+b.r){
+          if(pointInPaddle(b.x-b.r,b.y,p)||pointInPaddle(b.x,b.y,p)){
+            b.x=PLAYER_X+14+b.r;
+            const rel=(b.y-p.y)/(p.h/2);
+            const angle=rel*0.65;
+            const spd=Math.sqrt(b.vx*b.vx+b.vy*b.vy)*1.04;
+            b.vx=Math.cos(angle)*spd;
+            b.vy=Math.sin(angle)*spd;
+            if(b.vx<0)b.vx*=-1;
+            b.glow=1;p.glow=1;
+            score+=10;
+            document.getElementById('score-hud').textContent=score;
+            spawnHitParticles(b.x,b.y,b.col);
+            break;
+          }
+        }
+      }
+    }
+
+    // AI paddle collision (right side)
+    if(b.vx>0&&b.x+b.r>=AI_X-14&&b.x+b.r<=AI_X+8){
+      for(const p of aiPaddles){
+        const bb=paddleBBox(p);
+        if(b.y>=bb.top-b.r&&b.y<=bb.bot+b.r){
+          if(pointInPaddle(b.x+b.r,b.y,p)||pointInPaddle(b.x,b.y,p)){
+            b.x=AI_X-14-b.r;
+            const rel=(b.y-p.y)/(p.h/2);
+            const angle=rel*0.65;
+            const spd=Math.sqrt(b.vx*b.vx+b.vy*b.vy);
+            b.vx=-Math.cos(angle)*spd;
+            b.vy=Math.sin(angle)*spd;
+            if(b.vx>0)b.vx*=-1;
+            b.glow=1;p.glow=1;
+            spawnHitParticles(b.x,b.y,b.col);
+            break;
+          }
+        }
+      }
+    }
+
+    // Ball exits left (player missed)
+    if(b.x+b.r<0){
+      b.dead=true;
+      spawnExplosion(0,b.y,b.col);
+      lives--;
+      updateHUD();
+      if(lives<=0){setTimeout(()=>endGame(),600);}
+      else{setTimeout(()=>{b.dead=false;b.x=W/2;b.trail=[];b.vx*=-1;},800);}
+    }
+    // Ball exits right (AI missed — score bonus)
+    if(b.x-b.r>W){
+      b.dead=true;
+      spawnExplosion(W,b.y,b.col);
+      score+=50;
+      document.getElementById('score-hud').textContent=score;
+      setTimeout(()=>{b.dead=false;b.x=W/2;b.trail=[];b.vx=Math.abs(b.vx)*-1;},600);
+    }
+  }
+}
+
+// ── PARTICLES ──
+function spawnBounceParticle(x,y,col){
+  particles.push({x,y,vx:(Math.random()-.5)*2,vy:(Math.random()-.5)*2,life:1,decay:0.12,r:3,col});
+}
+function spawnHitParticles(x,y,col){
+  for(let i=0;i<10;i++){
+    const a=Math.random()*Math.PI*2,s=1.5+Math.random()*4;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:1,decay:0.04+Math.random()*.04,r:2+Math.random()*3,col});
+  }
+}
+function spawnExplosion(x,y,col){
+  for(let i=0;i<24;i++){
+    const a=Math.random()*Math.PI*2,s=2+Math.random()*7;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:1,decay:0.025+Math.random()*.025,r:2+Math.random()*5,col});
+  }
+}
+
+
+// ── PADDLE SHAPES ──
+// Each shape defined as polygon points relative to center (0,0)
+// h = paddle's height, w = paddle's width
+// Returns array of {x,y}
+function getPaddleShape(shapeId, w, h){
+  const hw=w/2, hh=h/2, qh=h/4, th=h/3, eh=h/8;
+  switch(shapeId){
+    case 'plus': // Plus / cross shape
+      return [
+        {x:-hw,y:-eh*1.5},{x:-eh,y:-eh*1.5},{x:-eh,y:-hh},
+        {x:eh,y:-hh},{x:eh,y:-eh*1.5},{x:hw,y:-eh*1.5},
+        {x:hw,y:eh*1.5},{x:eh,y:eh*1.5},{x:eh,y:hh},
+        {x:-eh,y:hh},{x:-eh,y:eh*1.5},{x:-hw,y:eh*1.5},
+      ];
+    case 'chevron': // Arrow/chevron pointing outward
+      return [
+        {x:-hw,y:-hh},{x:hw*.3,y:0},
+        {x:-hw,y:hh},{x:-hw*.2,y:hh},
+        {x:hw*.8,y:qh},{x:hw,y:0},
+        {x:hw*.8,y:-qh},{x:-hw*.2,y:-hh},
+      ];
+    case 'bone': // Bone / dumbbell
+      return [
+        {x:-hw,y:-hh},{x:-hw+eh*2,y:-hh},
+        {x:-hw+eh,y:-qh},{x:hw-eh,y:-qh},
+        {x:hw-eh*2,y:-hh},{x:hw,y:-hh},
+        {x:hw,y:hh},{x:hw-eh*2,y:hh},
+        {x:hw-eh,y:qh},{x:-hw+eh,y:qh},
+        {x:-hw+eh*2,y:hh},{x:-hw,y:hh},
+      ];
+    case 'zigzag': // Jagged/serrated edge
+      return [
+        {x:hw,y:-hh},{x:-hw*.2,y:-hh},
+        {x:-hw,y:-hh+th*.3},{x:-hw*.2,y:-hh+th*.6},
+        {x:-hw,y:-hh+th},{x:-hw*.2,y:-hh+th*1.3},
+        {x:-hw,y:-hh+th*1.7},{x:-hw*.2,y:-hh+th*2},
+        {x:-hw,y:hh},{x:hw,y:hh},
+      ];
+    case 'claw': // Claw / trident with 3 prongs
+      return [
+        {x:-hw,y:-hh},{x:-hw+eh*1.5,y:-hh},{x:-hw+eh,y:-qh},
+        {x:-eh*.8,y:-qh},{x:-eh*.8,y:-hh+eh},{x:eh*.8,y:-hh+eh},
+        {x:eh*.8,y:-qh},{x:hw-eh,y:-qh},
+        {x:hw-eh*1.5,y:-hh},{x:hw,y:-hh},{x:hw,y:hh},
+        {x:hw-eh,y:hh},{x:hw-eh*.5,y:qh},
+        {x:eh*.8,y:qh},{x:eh*.8,y:hh-eh},{x:-eh*.8,y:hh-eh},
+        {x:-eh*.8,y:qh},{x:-hw+eh*.5,y:qh},
+        {x:-hw+eh,y:hh},{x:-hw,y:hh},
+      ];
+    case 'wave': // Smooth wave / S-curve approximation
+      // Use bezier via points — approximated with polygon
+      const pts2=[];const steps=16;
+      for(let i=0;i<=steps;i++){
+        const t=i/steps;
+        const wx=hw-(t*hw*2); // right to left
+        const wy=(hh)*Math.sin(t*Math.PI*2)*0.7;
+        // top edge with wave
+        pts2.push({x:wx,y:-eh+wy});
+      }
+      for(let i=steps;i>=0;i--){
+        const t=i/steps;
+        const wx=hw-(t*hw*2);
+        const wy=(hh)*Math.sin(t*Math.PI*2)*0.7;
+        pts2.push({x:wx,y:eh+wy});
+      }
+      return pts2;
+    case 'arrow': // Wide arrow head
+      return [
+        {x:hw,y:0},{x:hw*.2,y:-hh},{x:hw*.2,y:-qh*.7},
+        {x:-hw,y:-qh*.7},{x:-hw,y:qh*.7},
+        {x:hw*.2,y:qh*.7},{x:hw*.2,y:hh},
+      ];
+    default:
+      return [{x:-hw,y:-hh},{x:hw,y:-hh},{x:hw,y:hh},{x:-hw,y:hh}];
+  }
+}
+
+const SHAPE_IDS=['plus','chevron','bone','zigzag','claw','wave','arrow'];
+
+// Hit-test: is point (px,py) inside paddle polygon?
+function pointInPaddle(px,py,paddle){
+  const pts=getPaddleShape(paddle.shapeId,paddle.w,paddle.h);
+  // translate to paddle space
+  const lx=px-paddle.x,ly=py-paddle.y;
+  let inside=false;
+  for(let i=0,j=pts.length-1;i<pts.length;j=i++){
+    const xi=pts[i].x,yi=pts[i].y,xj=pts[j].x,yj=pts[j].y;
+    if((yi>ly)!==(yj>ly)&&lx<(xj-xi)*(ly-yi)/(yj-yi)+xi)inside=!inside;
+  }
+  return inside;
+}
+
+// Bounding box for collision (fast check before polygon test)
+function paddleBBox(p){
+  return {top:p.y-p.h/2,bot:p.y+p.h/2};
+}
+
+// ── DRAW ──
+function drawBG(){
+  ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);
+  // Scanlines
+  ctx.save();ctx.globalAlpha=0.03;
+  for(let y=0;y<H;y+=3){ctx.fillStyle='#fff';ctx.fillRect(0,y,W,1);}
+  ctx.restore();
+  // Center dashed line
+  ctx.save();ctx.setLineDash([8,10]);ctx.strokeStyle='#00332200';ctx.lineWidth=1;
+  ctx.globalAlpha=0.2;ctx.strokeStyle='#00ffcc';
+  ctx.beginPath();ctx.moveTo(W/2,PLAY_TOP);ctx.lineTo(W/2,PLAY_BOT);ctx.stroke();
+  ctx.setLineDash([]);ctx.restore();
+  // Top/bot walls
+  ctx.fillStyle='#00ffcc22';ctx.fillRect(0,PLAY_TOP-2,W,2);ctx.fillRect(0,PLAY_BOT,W,2);
+  ctx.fillStyle='#00ffcc';ctx.fillRect(0,PLAY_TOP-2,W,1);ctx.fillRect(0,PLAY_BOT,W,1);
+
+  // Grid glow in background
+  ctx.save();ctx.globalAlpha=0.015;ctx.strokeStyle='#00ffcc';ctx.lineWidth=0.5;
+  for(let x=0;x<W;x+=28){ctx.beginPath();ctx.moveTo(x,PLAY_TOP);ctx.lineTo(x,PLAY_BOT);ctx.stroke();}
+  for(let y=PLAY_TOP;y<PLAY_BOT;y+=28){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+  ctx.restore();
+}
+
+function drawPaddle(p,isPlayer){
+  p.glow=Math.max(0,p.glow-0.06);
+  const col=isPlayer?'#00ffcc':'#ff6b35';
+  ctx.save();ctx.translate(p.x,p.y);
+
+  // Glow halo
+  if(p.glow>0){
+    const grd=ctx.createRadialGradient(0,0,0,0,0,48);
+    grd.addColorStop(0,isPlayer?`rgba(0,255,204,${p.glow*.55})`:`rgba(255,107,53,${p.glow*.55})`);
+    grd.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=grd;ctx.beginPath();ctx.arc(0,0,48,0,Math.PI*2);ctx.fill();
+  }
+
+  const pts=getPaddleShape(p.shapeId,p.w,p.h);
+
+  // Build path
+  function buildPath(){
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x,pts[0].y);
+    for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i].x,pts[i].y);
+    ctx.closePath();
+  }
+
+  // Drop shadow
+  ctx.save();ctx.translate(2,3);ctx.globalAlpha=0.35;ctx.fillStyle='#000';
+  buildPath();ctx.fill();ctx.restore();
+
+  // Body fill gradient
+  const gradDir=isPlayer?1:-1;
+  const padGrd=ctx.createLinearGradient(-p.w/2*gradDir,0,p.w/2*gradDir,0);
+  padGrd.addColorStop(0,col+'33');
+  padGrd.addColorStop(0.5,col);
+  padGrd.addColorStop(1,col+'55');
+  ctx.fillStyle=padGrd;
+  buildPath();ctx.fill();
+
+  // Inner glow
+  ctx.save();ctx.globalAlpha=0.25;ctx.fillStyle='#fff';
+  buildPath();ctx.fill();ctx.restore();
+
+  // Outline
+  ctx.strokeStyle=col;ctx.lineWidth=1.5;ctx.lineJoin='round';
+  buildPath();ctx.stroke();
+  // Bright inner outline
+  ctx.save();ctx.globalAlpha=0.5;ctx.strokeStyle='#fff';ctx.lineWidth=0.5;
+  buildPath();ctx.stroke();ctx.restore();
+
+  ctx.restore();
+}
+
+function drawBall(b){
+  if(b.dead)return;
+  // Trail
+  for(let i=b.trail.length-1;i>=0;i--){
+    const t=b.trail[i];
+    const a=(1-i/b.trail.length)*0.4;
+    const r=b.r*(1-i/b.trail.length)*0.8;
+    ctx.save();ctx.globalAlpha=a;ctx.fillStyle=b.col;
+    ctx.beginPath();ctx.arc(t.x,t.y,r,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+  // Glow
+  if(b.glow>0){
+    const grd=ctx.createRadialGradient(b.x,b.y,0,b.x,b.y,b.r*5);
+    grd.addColorStop(0,b.col+Math.floor(b.glow*200).toString(16).padStart(2,'0'));
+    grd.addColorStop(1,b.col+'00');
+    ctx.fillStyle=grd;ctx.beginPath();ctx.arc(b.x,b.y,b.r*5,0,Math.PI*2);ctx.fill();
+  }
+  // Core
+  const bGrd=ctx.createRadialGradient(b.x-b.r*.3,b.y-b.r*.3,0,b.x,b.y,b.r);
+  bGrd.addColorStop(0,'#fff');bGrd.addColorStop(0.4,b.col);bGrd.addColorStop(1,b.col+'88');
+  ctx.fillStyle=bGrd;ctx.beginPath();ctx.arc(b.x,b.y,b.r,0,Math.PI*2);ctx.fill();
+}
+
+function drawParticles(){
+  for(const p of particles){
+    ctx.save();ctx.globalAlpha=p.life;ctx.fillStyle=p.col;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.r*p.life,0,Math.PI*2);ctx.fill();ctx.restore();
+  }
+}
+
+function draw(){
+  drawBG();
+  for(const p of playerPaddles)drawPaddle(p,true);
+  for(const p of aiPaddles)drawPaddle(p,false);
+  for(const b of balls)drawBall(b);
+  drawParticles();
+}
+
+// ── UPDATE ──
+function update(){
+  animFrame++;
+  updateAI();
+  // Randomly cycle paddle shapes over time
+  for(const p of [...playerPaddles,...aiPaddles]){
+    p.shapeTimer--;
+    if(p.shapeTimer<=0){
+      // Pick a different shape than current
+      let newShape;
+      do{ newShape=SHAPE_IDS[Math.floor(Math.random()*SHAPE_IDS.length)]; }
+      while(newShape===p.shapeId);
+      p.shapeId=newShape;
+      p.shapeTimer=50+Math.floor(Math.random()*90);
+      p.glow=0.6; // brief flash on change
+    }
+  }
+  updateBalls();
+  for(const p of particles){p.x+=p.vx;p.y+=p.vy;p.vy+=0.05;p.vx*=0.95;p.life-=p.decay;}
+  particles=particles.filter(p=>p.life>0);
+  // Level up: all balls alive and score threshold
+  if(balls.every(b=>!b.dead)&&score>0&&score%(level*120)===0&&animFrame%60===0){
+    nextLevel();
+  }
+}
+
+function loop(){raf=requestAnimationFrame(loop);if(state==='playing'){update();draw();}else{draw();}}
+
+// ── LEVEL PROGRESSION ──
+function nextLevel(){
+  level++;
+  document.getElementById('level-hud').textContent=level;
+  const banner=document.getElementById('level-banner');
+  banner.textContent=`LEVEL ${level}`;
+  banner.classList.add('show');
+  setTimeout(()=>banner.classList.remove('show'),1200);
+  initLevel();
+}
+
+// ── HUD ──
+function updateHUD(){
+  document.getElementById('score-hud').textContent=score;
+  document.getElementById('level-hud').textContent=level;
+  document.getElementById('lives-hud').textContent='♦'.repeat(lives)+'◇'.repeat(Math.max(0,3-lives));
+}
+function endGame(){
+  state='over';
+  if(score>best){best=score;localStorage.setItem('barrage_best',best);}
+  document.getElementById('over-score').textContent=score;
+  document.getElementById('over-level').textContent=level;
+  document.getElementById('over-best').textContent='BEST: '+best;
+  document.getElementById('over-screen').classList.remove('hide');
+}
+
+// ── INPUT ──
+function getPaddleY(clientY){
+  const rect=canvas.getBoundingClientRect();
+  return (clientY-rect.top)*(H/rect.height);
+}
+function nearestPlayerPaddle(y){
+  let best=-1,bestD=80;
+  for(let i=0;i<playerPaddles.length;i++){
+    const d=Math.abs(y-playerPaddles[i].y);
+    if(d<bestD){bestD=d;best=i;}
+  }
+  return best;
+}
+
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();if(state!=='playing')return;
+  for(const t of e.changedTouches){
+    const y=getPaddleY(t.clientY);
+    const pi=nearestPlayerPaddle(y);
+    if(pi!==-1&&!playerPaddles[pi].touchId){
+      playerPaddles[pi].dragging=true;
+      playerPaddles[pi].touchId=t.identifier;
+      touchMap[t.identifier]=pi;
+    }
+  }
+},{passive:false});
+
+canvas.addEventListener('touchmove',e=>{
+  e.preventDefault();if(state!=='playing')return;
+  for(const t of e.changedTouches){
+    const pi=touchMap[t.identifier];
+    if(pi!==undefined){
+      const y=getPaddleY(t.clientY);
+      const p=playerPaddles[pi];
+      p.y=Math.max(PLAY_TOP+p.h/2,Math.min(PLAY_BOT-p.h/2,y));
+    }
+  }
+},{passive:false});
+
+canvas.addEventListener('touchend',e=>{
+  e.preventDefault();
+  for(const t of e.changedTouches){
+    const pi=touchMap[t.identifier];
+    if(pi!==undefined){playerPaddles[pi].dragging=false;playerPaddles[pi].touchId=null;delete touchMap[t.identifier];}
+  }
+},{passive:false});
+
+// Mouse fallback
+let mouseDown=false,mousePaddleIdx=-1;
+canvas.addEventListener('mousedown',e=>{
+  if(state!=='playing')return;
+  const y=getPaddleY(e.clientY);
+  const pi=nearestPlayerPaddle(y);
+  if(pi!==-1){mouseDown=true;mousePaddleIdx=pi;}
+});
+canvas.addEventListener('mousemove',e=>{
+  if(!mouseDown||mousePaddleIdx===-1)return;
+  const y=getPaddleY(e.clientY);
+  const p=playerPaddles[mousePaddleIdx];
+  p.y=Math.max(PLAY_TOP+p.h/2,Math.min(PLAY_BOT-p.h/2,y));
+});
+canvas.addEventListener('mouseup',()=>{mouseDown=false;mousePaddleIdx=-1;});
+
+// ── START ──
+function startGame(){
+  score=0;level=1;lives=3;balls=[];particles=[];touchMap={};
+  initLevel();updateHUD();state='playing';
+  if(!raf)loop();
+}
+document.getElementById('start-btn').addEventListener('click',()=>{
+  document.getElementById('start-screen').classList.add('hide');startGame();
+});
+document.getElementById('retry-btn').addEventListener('click',()=>{
+  document.getElementById('over-screen').classList.add('hide');startGame();
+});
+
+loop();
+</script>
+</body>
+</html>

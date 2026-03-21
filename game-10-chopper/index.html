@@ -1,0 +1,971 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>CHOPPER</title>
+<link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Rajdhani:wght@600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;touch-action:none;}
+html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0a;}
+body{display:flex;align-items:center;justify-content:center;font-family:'Rajdhani',sans-serif;}
+#wrap{
+  position:relative;
+  width:min(100vw,calc(100dvh*.62));
+  height:min(100dvh,calc(100vw/.62));
+  max-width:420px;max-height:680px;
+  overflow:hidden;
+}
+canvas{display:block;width:100%;height:100%;}
+.screen{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;z-index:20;
+  background:rgba(0,0,0,0.92);
+}
+.screen.hide{display:none;}
+.game-title{
+  font-family:'Black Ops One',cursive;
+  font-size:clamp(58px,15vw,88px);
+  color:#ff4400;letter-spacing:6px;
+  text-shadow:3px 3px 0 #660000,0 0 40px #ff440055;
+  margin-bottom:4px;
+}
+.title-sub{font-size:clamp(10px,2.8vw,13px);letter-spacing:5px;color:#442200;text-transform:uppercase;margin-bottom:36px;}
+.how{font-size:clamp(12px,3.2vw,15px);color:#664422;text-align:center;line-height:2.2;margin-bottom:32px;max-width:270px;font-weight:600;}
+.how b{color:#ff6633;}
+.go-btn{
+  font-family:'Black Ops One',cursive;font-size:clamp(16px,4.5vw,20px);letter-spacing:4px;
+  color:#000;background:#ff4400;border:none;padding:14px 52px;cursor:pointer;
+  clip-path:polygon(8px 0%,100% 0%,calc(100% - 8px) 100%,0% 100%);
+  box-shadow:0 0 24px #ff440055;transition:transform .1s;
+  -webkit-tap-highlight-color:transparent;margin:6px;
+}
+.go-btn:active{transform:scale(0.95);}
+#hud{
+  position:absolute;top:0;left:0;right:0;
+  display:flex;justify-content:space-between;align-items:flex-start;
+  padding:10px 14px 0;pointer-events:none;z-index:10;
+}
+#score-hud{font-family:'Black Ops One',cursive;font-size:clamp(18px,5vw,26px);color:#ff4400;text-shadow:0 0 10px #ff440066;}
+#wave-hud{font-size:11px;letter-spacing:3px;color:#442200;text-transform:uppercase;text-align:center;}
+#hp-hud{display:flex;gap:4px;align-items:center;}
+.hp-pip{width:clamp(12px,3vw,16px);height:clamp(12px,3vw,16px);background:#ff4400;clip-path:polygon(50% 0%,100% 38%,82% 100%,18% 100%,0% 38%);transition:opacity .2s;}
+.hp-pip.dead{background:#333;opacity:.4;}
+#ammo-hud{
+  position:absolute;bottom:14px;left:50%;transform:translateX(-50%);
+  display:flex;gap:3px;pointer-events:none;z-index:10;
+}
+.ammo-pip{width:6px;height:14px;background:#ff6633;border-radius:2px;transition:opacity .15s;}
+.ammo-pip.used{background:#333;opacity:.3;}
+#reload-msg{
+  position:absolute;bottom:36px;left:50%;transform:translateX(-50%);
+  font-family:'Black Ops One',cursive;font-size:clamp(14px,4vw,18px);letter-spacing:3px;
+  color:#ff4400;pointer-events:none;z-index:10;opacity:0;transition:opacity .15s;
+}
+#reload-msg.show{opacity:1;}
+#wave-banner{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  font-family:'Black Ops One',cursive;font-size:clamp(24px,7vw,36px);letter-spacing:4px;
+  color:#ff4400;text-shadow:0 0 20px #ff4400;
+  pointer-events:none;z-index:15;opacity:0;transition:opacity .2s;text-align:center;
+}
+#wave-banner.show{opacity:1;}
+.over-title{font-family:'Black Ops One',cursive;font-size:clamp(42px,12vw,62px);color:#ff4400;text-shadow:2px 2px 0 #660000;margin-bottom:8px;}
+.over-score{font-family:'Black Ops One',cursive;font-size:clamp(48px,13vw,68px);color:#fff;margin-bottom:4px;}
+.over-lbl{font-size:11px;letter-spacing:4px;color:#442200;margin-bottom:6px;text-transform:uppercase;}
+.over-best{font-size:12px;letter-spacing:3px;color:#331100;margin-bottom:28px;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="hud">
+    <div id="hp-hud">
+      <div class="hp-pip" id="hp1"></div>
+      <div class="hp-pip" id="hp2"></div>
+      <div class="hp-pip" id="hp3"></div>
+      <div class="hp-pip" id="hp4"></div>
+      <div class="hp-pip" id="hp5"></div>
+    </div>
+    <div id="wave-hud">WAVE 1</div>
+    <div id="score-hud">0</div>
+  </div>
+  <div id="ammo-hud"></div>
+  <div id="reload-msg">RELOADING...</div>
+  <div id="wave-banner"></div>
+
+  <div class="screen" id="start-screen">
+    <div class="game-title">CHOPPER</div>
+    <div class="title-sub">zombie air assault</div>
+    <div class="how">
+      <b>MOVE</b> finger/mouse to steer<br>
+      <b>TAP/CLICK</b> to shoot below<br>
+      Some <b>throw rocks</b> back — dodge!<br>
+      Don't let them reach the base
+    </div>
+    <div class="go-btn" id="start-btn">DEPLOY</div>
+  </div>
+
+  <div class="screen hide" id="over-screen">
+    <div class="over-title">OVERRUN</div>
+    <div class="over-score" id="over-score">0</div>
+    <div class="over-lbl">ZOMBIES DOWN</div>
+    <div class="over-best" id="over-best">BEST: 0</div>
+    <div class="go-btn" id="retry-btn">REDEPLOY</div>
+  </div>
+</div>
+
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+const W=420,H=680;
+canvas.width=W;canvas.height=H;
+
+// ── LAYOUT ──
+const SKY_H=H*.55;       // sky takes top 55%
+const STREET_Y=SKY_H;    // street starts here
+const CHOPPER_Y=H*.22;   // chopper altitude
+const MAX_AMMO=40;
+
+// ── STATE ──
+let state='menu',score=0,wave=1,hp=5,kills=0;
+let best=parseInt(localStorage.getItem('chopper_best')||'0');
+let raf;
+
+// entities
+let chopper={x:W/2,y:CHOPPER_Y,targetX:W/2,dir:1,blade:0,smoking:false,smokeTimer:0};
+let bullets=[];
+let zombies=[];
+let rocks=[];      // thrown by zombies
+let explosions=[];
+let particles=[];
+let buildings=[];
+let clouds=[];
+let ammo=MAX_AMMO;
+let reloading=false,reloadTimer=0;
+const RELOAD_TIME=30; // frames
+let waveClear=false,waveTimer=0,breachCount=0;
+let scrollX=0; // city scroll
+
+// ── BUILDING GENERATOR ──
+// ── COLOUR HELPERS ──
+function lighten(hex,a){const n=parseInt(hex.replace('#',''),16);return`rgb(${Math.min(255,(n>>16)+a)},${Math.min(255,((n>>8)&255)+a)},${Math.min(255,(n&255)+a)})`;}
+function darken(hex,a){return lighten(hex,-a);}
+
+let streetProps=[];
+function genStreetProps(){
+  streetProps=[];
+  const CAR_COLS=['#4a2a2a','#2a3a4a','#3a4a2a','#2a2a3a','#5a3a1a','#1a1a1a'];
+  let x=60;
+  while(x<W*12){
+    const r=Math.random();
+    if(r<.35){
+      // Car
+      const w=55+Math.random()*30,h=16+Math.random()*6;
+      streetProps.push({type:'car',x,y:STREET_Y+h,w,h,col:CAR_COLS[Math.floor(Math.random()*CAR_COLS.length)],damaged:Math.random()<.6});
+      x+=w+30+Math.random()*60;
+    } else if(r<.6){
+      // Bush cluster
+      const clusters=[];
+      const n=2+Math.floor(Math.random()*3);
+      for(let i=0;i<n;i++) clusters.push({x:(Math.random()-.5)*18,y:-8-Math.random()*6,r:8+Math.random()*8});
+      streetProps.push({type:'bush',x,y:STREET_Y+2,clusters});
+      x+=40+Math.random()*50;
+    } else if(r<.72){
+      // Barrel
+      streetProps.push({type:'barrel',x,y:STREET_Y});
+      x+=30+Math.random()*40;
+    } else {
+      x+=20+Math.random()*80;
+    }
+  }
+}
+
+function genBuildings(){
+  buildings=[];
+  let x=0;
+  while(x<W*12){
+    const w=50+Math.random()*80;
+    const h=40+Math.random()*120;
+    const floors=Math.floor(h/18);
+    buildings.push({x,w,h,floors,
+      col:`hsl(${200+Math.random()*40},${10+Math.random()*15}%,${12+Math.random()*12}%)`,
+      winCol:`hsl(${40+Math.random()*30},${60+Math.random()*30}%,${50+Math.random()*20}%)`
+    });
+    x+=w+2+Math.random()*20;
+  }
+}
+
+function initClouds(){
+  clouds=[];
+  for(let i=0;i<6;i++) clouds.push({x:Math.random()*W,y:30+Math.random()*80,w:60+Math.random()*80,spd:.2+Math.random()*.3,alpha:.3+Math.random()*.25});
+}
+
+// ── ZOMBIE FACTORY ──
+const ZOMBIE_TYPES=[
+  {col:'#2a2a6a',eyeCol:'#ff0066',spd:.5,hp:2,pts:40,thrower:true, size:26,name:'Axeman',weapon:'axe'},
+  {col:'#6a1a1a',eyeCol:'#ff8800',spd:1.1,hp:2,pts:35,thrower:false,size:25,name:'Berserker',weapon:null},
+  {col:'#1a1a0a',eyeCol:'#00ff44',spd:.3,hp:3,pts:80,thrower:true, size:28,name:'Rocketeer',weapon:'bazooka'},
+  {col:'#4a8a4a',eyeCol:'#ff0000',spd:.35,hp:1,pts:10,thrower:false,size:28,name:'Shambler',weapon:null},
+  {col:'#6a5a3a',eyeCol:'#ff4400',spd:.75,hp:1,pts:20,thrower:false,size:23,name:'Runner',weapon:null},
+  {col:'#5a3a6a',eyeCol:'#aa00ff',spd:.25,hp:3,pts:50,thrower:true, size:32,name:'Spitter',weapon:'rock'},
+  {col:'#8a2a2a',eyeCol:'#ffff00',spd:.18,hp:5,pts:100,thrower:false,size:40,name:'Brute',weapon:null},
+];
+
+function spawnZombie(){
+  const t=ZOMBIE_TYPES[Math.random()<.6?0:Math.random()<.6?1:Math.random()<.5?2:3];
+  const side=Math.random()<.5;
+  return{
+    ...t,
+    x:side?scrollX-40:scrollX+W+40,
+    y:STREET_Y+8,
+    dir:side?1:-1,
+    maxHp:t.hp,
+    walkCycle:Math.random()*Math.PI*2,
+    throwTimer:Math.floor(120+Math.random()*200),
+    dead:false,hit:0,
+    splat:false,
+  };
+}
+
+// ── BUILD AMMO HUD ──
+function buildAmmoHUD(){
+  const el=document.getElementById('ammo-hud');
+  el.innerHTML='';
+  for(let i=0;i<MAX_AMMO;i++){
+    const d=document.createElement('div');
+    d.className='ammo-pip'+(i>=ammo?' used':'');
+    el.appendChild(d);
+  }
+}
+
+function updateHUD(){
+  document.getElementById('score-hud').textContent=score;
+  document.getElementById('wave-hud').textContent=`WAVE ${wave}`;
+  ['hp1','hp2','hp3','hp4','hp5'].forEach((id,i)=>document.getElementById(id).classList.toggle('dead',i>=hp));
+  buildAmmoHUD();
+}
+
+// ── SHOOT ──
+function shoot(tapX,tapY){
+  if(reloading||ammo<=0)return;
+  ammo--;buildAmmoHUD();
+  if(ammo===0){reloading=true;reloadTimer=RELOAD_TIME;document.getElementById('reload-msg').classList.add('show');}
+  // Bullet from chopper gun
+  const bx=chopper.x+(chopper.dir>0?20:-20);
+  const by=chopper.y+12;
+  // Aim toward tap
+  const rect=canvas.getBoundingClientRect();
+  const tx=(tapX-rect.left)*(W/rect.width);
+  const ty=(tapY-rect.top)*(H/rect.height);
+  const dx=tx-bx,dy=ty-by;
+  const len=Math.sqrt(dx*dx+dy*dy)||1;
+  const spd=22;
+  bullets.push({x:bx,y:by,vx:dx/len*spd,vy:dy/len*spd,life:1});
+}
+
+// ── EXPLOSIONS ──
+function boom(x,y,big){
+  const n=big?24:14;
+  for(let i=0;i<n;i++){
+    const a=Math.random()*Math.PI*2,s=big?(2+Math.random()*7):(1+Math.random()*4);
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s-(big?3:1.5),life:1,decay:.04+Math.random()*.04,r:big?(3+Math.random()*6):(1.5+Math.random()*3),
+      col:Math.random()<.5?'#ff6600':Math.random()<.5?'#ffcc00':'#ff3300'});
+  }
+  // Smoke
+  for(let i=0;i<(big?8:4);i++){
+    const a=Math.random()*Math.PI*2,s=.5+Math.random()*1.5;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s-1,life:.7,decay:.012+Math.random()*.01,r:big?(8+Math.random()*12):(4+Math.random()*6),col:'#444'});
+  }
+  explosions.push({x,y,r:big?40:20,life:1,big});
+}
+
+function scoreFloat(x,y,pts){
+  particles.push({x,y,vx:(Math.random()-.5)*.5,vy:-1.5,life:1,decay:.02,r:0,txt:'+'+pts,col:'#ff6633'});
+}
+
+// ── DRAW CITY BACKGROUND ──
+function drawCity(){
+  // Eerie red/orange sky
+  const sky=ctx.createLinearGradient(0,0,0,SKY_H);
+  sky.addColorStop(0,'#1a0500');sky.addColorStop(.4,'#2d0800');sky.addColorStop(.8,'#4a1500');sky.addColorStop(1,'#5a2000');
+  ctx.fillStyle=sky;ctx.fillRect(0,0,W,SKY_H);
+
+  // Moon
+  ctx.save();ctx.globalAlpha=.7;ctx.fillStyle='#ffeecc';ctx.beginPath();ctx.arc(W*.8,60,22,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#2d0800';ctx.beginPath();ctx.arc(W*.8+8,54,18,0,Math.PI*2);ctx.fill();ctx.restore();
+
+  // Smoke columns rising
+  for(let i=0;i<4;i++){
+    const sx=(i*W/3.5+scrollX*.05)%W;
+    ctx.save();ctx.globalAlpha=.12+Math.sin(Date.now()*.001+i)*.05;
+    const sg=ctx.createLinearGradient(sx,SKY_H*.4,sx,SKY_H);
+    sg.addColorStop(0,'rgba(80,80,80,0)');sg.addColorStop(1,'rgba(60,60,60,0.4)');
+    ctx.fillStyle=sg;ctx.fillRect(sx-12,SKY_H*.2,24,SKY_H*.8);ctx.restore();
+  }
+
+  // Buildings
+  for(const b of buildings){
+    const bx=b.x-scrollX;
+    if(bx>W+b.w||bx+b.w<0)continue;
+    const by=SKY_H-b.h;
+    // Building body
+    ctx.fillStyle=b.col;ctx.fillRect(bx,by,b.w,b.h);
+    // Dark silhouette top
+    ctx.fillStyle='rgba(0,0,0,0.4)';ctx.fillRect(bx,by,b.w,4);
+    // Windows — static state stored on building
+    if(!b.windows){
+      b.windows=[];
+      for(let fy=0;fy<b.floors;fy++)for(let fx=0;fx<Math.floor(b.w/16);fx++){
+        b.windows.push({fy,fx,fire:Math.random()<.08,lit:Math.random()<.3,fireBright:80+Math.floor(Math.random()*60)});
+      }
+    }
+    for(const w of b.windows){
+      const wy=by+8+w.fy*18,wx=bx+6+w.fx*16;
+      if(wy>SKY_H-4)continue;
+      ctx.fillStyle=w.fire?`rgba(255,${w.fireBright},0,0.85)`:w.lit?`rgba(255,180,80,0.6)`:'rgba(0,0,0,0.5)';
+      ctx.fillRect(wx,wy,8,10);
+    }
+    // Rooftop details
+    ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(bx,by,b.w,2);
+    // Random water towers / antennae
+    if(b.w>60){
+      ctx.fillStyle='#1a1a1a';ctx.fillRect(bx+b.w*.6-4,by-14,8,14);
+      ctx.beginPath();ctx.arc(bx+b.w*.6,by-14,7,Math.PI,0);ctx.fill();
+    }
+  }
+
+  // Street
+  const stGrad=ctx.createLinearGradient(0,STREET_Y,0,H);
+  stGrad.addColorStop(0,'#1a1210');stGrad.addColorStop(.3,'#120e0c');stGrad.addColorStop(1,'#0a0808');
+  ctx.fillStyle=stGrad;ctx.fillRect(0,STREET_Y,W,H-STREET_Y);
+  // Road markings
+  ctx.save();ctx.globalAlpha=.15;ctx.strokeStyle='#ffee88';ctx.lineWidth=2;ctx.setLineDash([20,20]);
+  ctx.beginPath();ctx.moveTo(0,STREET_Y+H*.06);ctx.lineTo(W,STREET_Y+H*.06);ctx.stroke();
+  ctx.setLineDash([]);ctx.restore();
+  // Cracks and grime
+  ctx.save();ctx.globalAlpha=.08;ctx.strokeStyle='#fff';ctx.lineWidth=1;
+  [[20,STREET_Y+10,80,STREET_Y+25],[150,STREET_Y+5,200,STREET_Y+20],[300,STREET_Y+15,380,STREET_Y+8]].forEach(([x1,y1,x2,y2])=>{
+    ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  });
+  ctx.restore();
+
+  // ── STREET PROPS ──
+  for(const prop of streetProps){
+    const px=prop.x-scrollX;
+    if(px<-80||px>W+80)continue;
+    if(prop.type==='car'){
+      ctx.save();ctx.translate(px,prop.y);
+      // Car body
+      const cg=ctx.createLinearGradient(-prop.w/2,-prop.h,prop.w/2,0);
+      cg.addColorStop(0,lighten(prop.col,20));cg.addColorStop(1,darken(prop.col,20));
+      ctx.fillStyle=cg;
+      ctx.beginPath();ctx.roundRect(-prop.w/2,-prop.h,prop.w,prop.h,4);ctx.fill();
+      // Roof
+      ctx.fillStyle=darken(prop.col,10);
+      ctx.beginPath();ctx.roundRect(-prop.w*.3,-prop.h*1.45,prop.w*.6,prop.h*.5,3);ctx.fill();
+      // Windows
+      ctx.fillStyle='rgba(100,160,200,0.5)';
+      ctx.fillRect(-prop.w*.25,-prop.h*1.4,prop.w*.22,prop.h*.35);
+      ctx.fillRect(prop.w*.03,-prop.h*1.4,prop.w*.22,prop.h*.35);
+      // Wheels
+      ctx.fillStyle='#111';
+      [-prop.w*.32,prop.w*.32].forEach(wx=>{
+        ctx.beginPath();ctx.arc(wx,0,prop.h*.28,0,Math.PI*2);ctx.fill();
+        ctx.fillStyle='#444';ctx.beginPath();ctx.arc(wx,0,prop.h*.15,0,Math.PI*2);ctx.fill();
+        ctx.fillStyle='#111';
+      });
+      // Damage scratches
+      if(prop.damaged){
+        ctx.save();ctx.globalAlpha=.4;ctx.strokeStyle='#222';ctx.lineWidth=1.5;
+        ctx.beginPath();ctx.moveTo(-prop.w*.4,-prop.h*.6);ctx.lineTo(-prop.w*.1,-prop.h*.2);ctx.stroke();
+        ctx.beginPath();ctx.moveTo(prop.w*.1,-prop.h*.8);ctx.lineTo(prop.w*.35,-prop.h*.3);ctx.stroke();
+        ctx.restore();
+      }
+      // Headlights (off/smashed)
+      ctx.fillStyle='rgba(60,40,20,0.8)';
+      ctx.fillRect(-prop.w*.48,-prop.h*.4,8,6);ctx.fillRect(prop.w*.38,-prop.h*.4,8,6);
+      ctx.restore();
+    } else if(prop.type==='bush'){
+      ctx.save();ctx.translate(px,prop.y);
+      // Multi-cluster bush
+      ctx.fillStyle='#1a3a0a';
+      for(const c of prop.clusters){
+        ctx.beginPath();ctx.arc(c.x,c.y,c.r,0,Math.PI*2);ctx.fill();
+      }
+      ctx.fillStyle='#2a4a14';
+      for(const c of prop.clusters){
+        ctx.beginPath();ctx.arc(c.x-2,c.y-3,c.r*.6,0,Math.PI*2);ctx.fill();
+      }
+      ctx.restore();
+    } else if(prop.type==='barrel'){
+      ctx.save();ctx.translate(px,prop.y);
+      ctx.fillStyle='#3a2a1a';ctx.beginPath();ctx.roundRect(-8,-20,16,20,3);ctx.fill();
+      ctx.strokeStyle='#555';ctx.lineWidth=2;
+      [-14,-7,0].forEach(y=>{ ctx.beginPath();ctx.moveTo(-8,y);ctx.lineTo(8,y);ctx.stroke(); });
+      ctx.restore();
+    }
+  }
+
+  // Clouds
+  for(const c of clouds){
+    c.x+=c.spd;if(c.x>W+c.w)c.x=-c.w;
+    ctx.save();ctx.globalAlpha=c.alpha*.4;ctx.fillStyle='#663300';
+    ctx.beginPath();ctx.ellipse(c.x,c.y,c.w*.5,c.w*.2,0,0,Math.PI*2);
+    ctx.ellipse(c.x-c.w*.2,c.y+c.w*.06,c.w*.3,c.w*.16,0,0,Math.PI*2);
+    ctx.fill();ctx.restore();
+  }
+}
+
+// ── DRAW CHOPPER ──
+function drawChopper(){
+  chopper.blade+=.3;
+  ctx.save();ctx.translate(chopper.x,chopper.y);
+  if(chopper.dir<0)ctx.scale(-1,1);
+
+  // Rotor blur
+  ctx.save();ctx.globalAlpha=.35;ctx.strokeStyle='#aaa';ctx.lineWidth=2;
+  ctx.beginPath();ctx.ellipse(0,-18,50+Math.sin(chopper.blade*2)*3,4,0,0,Math.PI*2);ctx.stroke();ctx.restore();
+
+  // Tail boom
+  ctx.fillStyle='#2a4a2a';ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(-55,8);ctx.lineTo(-55,14);ctx.lineTo(0,10);ctx.closePath();ctx.fill();
+  // Tail rotor
+  ctx.strokeStyle='#555';ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.ellipse(-55,11,2,8+Math.sin(chopper.blade*4)*2,0,0,Math.PI*2);ctx.stroke();
+
+  // Main body
+  const bodyGrad=ctx.createLinearGradient(-30,-18,30,14);
+  bodyGrad.addColorStop(0,'#3a6a3a');bodyGrad.addColorStop(.5,'#2a5a2a');bodyGrad.addColorStop(1,'#1a3a1a');
+  ctx.fillStyle=bodyGrad;
+  ctx.beginPath();ctx.moveTo(-28,0);ctx.bezierCurveTo(-28,-20,28,-20,28,0);ctx.bezierCurveTo(28,14,-28,14,-28,0);ctx.closePath();ctx.fill();
+
+  // Cockpit glass
+  const glassGrad=ctx.createLinearGradient(0,-16,0,6);
+  glassGrad.addColorStop(0,'rgba(100,200,255,0.7)');glassGrad.addColorStop(1,'rgba(50,100,150,0.5)');
+  ctx.fillStyle=glassGrad;
+  ctx.beginPath();ctx.moveTo(4,-14);ctx.bezierCurveTo(4,-14,26,-10,26,2);ctx.bezierCurveTo(26,8,10,12,4,8);ctx.closePath();ctx.fill();
+  // Glass highlight
+  ctx.save();ctx.globalAlpha=.4;ctx.fillStyle='#fff';
+  ctx.beginPath();ctx.moveTo(8,-12);ctx.bezierCurveTo(16,-12,22,-8,20,-4);ctx.bezierCurveTo(16,-10,10,-12,8,-12);ctx.closePath();ctx.fill();ctx.restore();
+
+  // Pilot silhouette
+  ctx.fillStyle='#1a1a1a';ctx.beginPath();ctx.arc(12,-4,5,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#333';ctx.fillRect(8,1,8,6);
+
+  // Gun pod
+  ctx.fillStyle='#1a2a1a';ctx.beginPath();ctx.roundRect(18,6,18,7,3);ctx.fill();
+  ctx.fillStyle='#333';ctx.fillRect(34,8,8,3);
+
+  // Landing skids
+  ctx.strokeStyle='#444';ctx.lineWidth=2;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(-20,14);ctx.lineTo(-20,22);ctx.lineTo(20,22);ctx.lineTo(20,14);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(-8,14);ctx.lineTo(-8,22);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(8,14);ctx.lineTo(8,22);ctx.stroke();
+
+  // Smoke if damaged
+  if(chopper.smoking){
+    ctx.save();ctx.globalAlpha=.5;ctx.fillStyle='#555';
+    ctx.beginPath();ctx.arc(-10+Math.random()*4,-(14+Math.random()*8),4+Math.random()*4,0,Math.PI*2);ctx.fill();ctx.restore();
+  }
+
+  // Searchlight beam
+  ctx.save();ctx.globalAlpha=.08;
+  const beam=ctx.createLinearGradient(0,14,0,H*.5);
+  beam.addColorStop(0,'#ffee88');beam.addColorStop(1,'rgba(255,238,136,0)');
+  ctx.fillStyle=beam;
+  ctx.beginPath();ctx.moveTo(-8,14);ctx.lineTo(-40,H*.5);ctx.lineTo(40,H*.5);ctx.lineTo(8,14);ctx.closePath();ctx.fill();
+  ctx.restore();
+
+  ctx.restore();
+}
+
+// ── DRAW ZOMBIE ──
+function drawZombie(z){
+  if(z.dead&&z.splat){
+    // Gore splat
+    ctx.save();ctx.translate(z.x-scrollX,z.y);ctx.globalAlpha=.6;
+    ctx.fillStyle='#550000';ctx.beginPath();ctx.ellipse(0,4,z.size*.8,z.size*.25,0,0,Math.PI*2);ctx.fill();
+    ctx.restore();return;
+  }
+  if(z.dead)return;
+
+  z.walkCycle+=.1*z.spd;
+  const sx=z.x-scrollX;
+  const jy=z.jumpY||0;
+  ctx.save();ctx.translate(sx,z.y+jy);
+  if(z.dir<0)ctx.scale(-1,1);
+
+  // Hit flash
+  if(z.hit>0){ctx.globalAlpha=.5+Math.sin(z.hit*.5)*.5;z.hit--;}
+
+  const s=z.size;
+  const walk=Math.sin(z.walkCycle);
+
+  // Shadow
+  ctx.save();ctx.globalAlpha=.2;ctx.fillStyle='#000';
+  ctx.beginPath();ctx.ellipse(0,s*.5,s*.7,s*.15,0,0,Math.PI*2);ctx.fill();ctx.restore();
+
+  // Legs
+  ctx.fillStyle=darken(z.col,30);
+  ctx.beginPath();ctx.roundRect(-s*.25,s*.15,s*.22,s*.45+walk*4,3);ctx.fill();
+  ctx.beginPath();ctx.roundRect(s*.03,s*.15,s*.22,s*.45-walk*4,3);ctx.fill();
+
+  // Body
+  const bg=ctx.createLinearGradient(0,-s*.2,0,s*.2);
+  bg.addColorStop(0,lighten(z.col,20));bg.addColorStop(1,darken(z.col,20));
+  ctx.fillStyle=bg;ctx.beginPath();ctx.roundRect(-s*.3,-s*.25,s*.6,s*.42,4);ctx.fill();
+
+  // Arms (outstretched zombie style)
+  ctx.fillStyle=darken(z.col,20);
+  ctx.beginPath();ctx.roundRect(s*.28,-s*.22,s*.45+walk*3,s*.18,3);ctx.fill();
+  ctx.beginPath();ctx.roundRect(s*.28,-s*.04,s*.45-walk*3,s*.18,3);ctx.fill();
+
+  // Head
+  const headCol=lighten(z.col,15);
+  ctx.fillStyle=headCol;ctx.beginPath();ctx.arc(0,-s*.42,s*.3,0,Math.PI*2);ctx.fill();
+
+  // Face
+  ctx.fillStyle=z.eyeCol;
+  ctx.beginPath();ctx.arc(-s*.1,-s*.44,s*.08,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(s*.1,-s*.44,s*.08,0,Math.PI*2);ctx.fill();
+  // Mouth
+  ctx.fillStyle='#200000';ctx.beginPath();ctx.arc(0,-s*.34,s*.1,0,Math.PI);ctx.fill();
+
+  // HP bar for multi-hp zombies
+  if(z.maxHp>1){
+    const pct=z.hp/z.maxHp;
+    ctx.fillStyle='#400';ctx.fillRect(-s*.35,-s*.75,s*.7,4);
+    ctx.fillStyle=pct>.5?'#0f0':'#f80';ctx.fillRect(-s*.35,-s*.75,s*.7*pct,4);
+  }
+
+  // Rocketeer bazooka on shoulder
+  if(z.name==='Rocketeer'){
+    ctx.save();
+    // Bazooka tube on shoulder
+    ctx.fillStyle='#333';
+    ctx.beginPath();ctx.roundRect(s*.1,-s*.55,s*.9,s*.18,4);ctx.fill();
+    ctx.fillStyle='#555';
+    ctx.beginPath();ctx.roundRect(s*.1,-s*.52,s*.82,s*.12,3);ctx.fill();
+    // Scope
+    ctx.fillStyle='#222';ctx.beginPath();ctx.arc(s*.55,-s*.5,s*.07,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#0f0';ctx.beginPath();ctx.arc(s*.55,-s*.5,s*.04,0,Math.PI*2);ctx.fill();
+    // Muzzle
+    ctx.fillStyle='#222';ctx.beginPath();ctx.arc(s*.98,-s*.465,s*.1,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+
+  // Berserker rage aura when close to chopper
+  if(z.name==='Berserker'){
+    const dist=Math.abs(sx-chopper.x);
+    if(dist<120){
+      ctx.save();ctx.globalAlpha=.25+Math.sin(Date.now()*.01)*.15;
+      const ag=ctx.createRadialGradient(0,-s*.3,0,0,-s*.3,s*1.2);
+      ag.addColorStop(0,'rgba(255,50,0,0.8)');ag.addColorStop(1,'rgba(255,0,0,0)');
+      ctx.fillStyle=ag;ctx.beginPath();ctx.arc(0,-s*.3,s*1.2,0,Math.PI*2);ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  ctx.restore();
+}
+
+// ── DRAW BULLETS ──
+function drawBullets(){
+  for(const b of bullets){
+    ctx.save();ctx.globalAlpha=b.life;
+    // Tracer
+    ctx.strokeStyle='#ffee44';ctx.lineWidth=2.5;ctx.lineCap='round';
+    ctx.beginPath();ctx.moveTo(b.x,b.y);ctx.lineTo(b.x-b.vx*3,b.y-b.vy*3);ctx.stroke();
+    // Core
+    ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(b.x,b.y,3,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ── DRAW ROCKS ──
+function drawRocks(){
+  for(const r of rocks){
+    ctx.save();ctx.translate(r.x,r.y);ctx.rotate(r.rot);
+    if(r.type==='bazooka'){
+      // Rocket — elongated with flame trail
+      ctx.fillStyle='#888';
+      ctx.beginPath();ctx.roundRect(-r.size*.6,-r.size*.2,r.size*1.2,r.size*.4,2);ctx.fill();
+      // Nose cone
+      ctx.fillStyle='#cc2200';
+      ctx.beginPath();ctx.moveTo(r.size*.6,-r.size*.2);ctx.lineTo(r.size*1.1,0);ctx.lineTo(r.size*.6,r.size*.2);ctx.closePath();ctx.fill();
+      // Fins
+      ctx.fillStyle='#555';
+      ctx.beginPath();ctx.moveTo(-r.size*.6,0);ctx.lineTo(-r.size*1.0,-r.size*.45);ctx.lineTo(-r.size*.5,-r.size*.15);ctx.closePath();ctx.fill();
+      ctx.beginPath();ctx.moveTo(-r.size*.6,0);ctx.lineTo(-r.size*1.0,r.size*.45);ctx.lineTo(-r.size*.5,r.size*.15);ctx.closePath();ctx.fill();
+      // Exhaust flame
+      ctx.save();ctx.globalAlpha=.85;
+      ctx.fillStyle='#ff6600';
+      ctx.beginPath();ctx.moveTo(-r.size*.6,-r.size*.15);ctx.lineTo(-r.size*1.4,0);ctx.lineTo(-r.size*.6,r.size*.15);ctx.closePath();ctx.fill();
+      ctx.fillStyle='#ffee00';
+      ctx.beginPath();ctx.moveTo(-r.size*.6,-r.size*.08);ctx.lineTo(-r.size*1.15,0);ctx.lineTo(-r.size*.6,r.size*.08);ctx.closePath();ctx.fill();
+      ctx.restore();
+      // Smoke trail
+      ctx.save();ctx.globalAlpha=.3;ctx.fillStyle='#aaa';
+      ctx.beginPath();ctx.arc(-r.size*1.4+(Math.random()-.5)*4,0,r.size*.4,0,Math.PI*2);ctx.fill();
+      ctx.restore();
+    } else if(r.type==='axe'){
+      // Axe shape
+      ctx.fillStyle='#888';
+      ctx.fillRect(-2,-r.size*.5,4,r.size);
+      ctx.fillStyle='#aaa';
+      ctx.beginPath();ctx.moveTo(-r.size*.5,-r.size*.3);ctx.lineTo(4,-r.size*.5);ctx.lineTo(4,r.size*.1);ctx.lineTo(-r.size*.5,r.size*.2);ctx.closePath();ctx.fill();
+      ctx.strokeStyle='#ddd';ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(-r.size*.5,-r.size*.3);ctx.lineTo(-r.size*.5,r.size*.2);ctx.stroke();
+    } else {
+      ctx.fillStyle='#666';ctx.beginPath();ctx.arc(0,0,r.size||4,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#888';ctx.beginPath();ctx.arc(-1,-1,r.size*.4||1.5,0,Math.PI*2);ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+// ── DRAW EXPLOSIONS ──
+function drawExplosions(){
+  for(const e of explosions){
+    e.life-=.06;
+    ctx.save();ctx.globalAlpha=e.life*.7;
+    const eg=ctx.createRadialGradient(e.x,e.y,0,e.x,e.y,e.r*(1-e.life*.5));
+    eg.addColorStop(0,'rgba(255,255,100,0.9)');
+    eg.addColorStop(.4,'rgba(255,100,0,0.7)');
+    eg.addColorStop(1,'rgba(200,0,0,0)');
+    ctx.fillStyle=eg;ctx.beginPath();ctx.arc(e.x,e.y,e.r*(2-e.life),0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ── PARTICLES ──
+function drawParticles(){
+  for(const p of particles){
+    if(p.txt){
+      ctx.save();ctx.globalAlpha=p.life;
+      ctx.font=`700 13px 'Rajdhani',sans-serif`;ctx.fillStyle=p.col;ctx.textAlign='center';
+      ctx.fillText(p.txt,p.x,p.y);ctx.restore();
+    } else {
+      ctx.save();ctx.globalAlpha=p.life;ctx.fillStyle=p.col;
+      ctx.beginPath();ctx.arc(p.x,p.y,Math.max(0,p.r*p.life),0,Math.PI*2);ctx.fill();ctx.restore();
+    }
+  }
+}
+
+
+
+// ── UPDATE ──
+function update(){
+  scrollX+=.8;
+  // Extend buildings if we're running out ahead
+  if(buildings.length>0){
+    const lastB=buildings[buildings.length-1];
+    if(lastB.x-scrollX<W*2){
+      let x=lastB.x+lastB.w+2+Math.random()*20;
+      while(x-scrollX<W*4){
+        const w=50+Math.random()*80,h=40+Math.random()*120,floors=Math.floor(h/18);
+        buildings.push({x,w,h,floors,
+          col:`hsl(${200+Math.random()*40},${10+Math.random()*15}%,${12+Math.random()*12}%)`,
+          winCol:`hsl(${40+Math.random()*30},${60+Math.random()*30}%,${50+Math.random()*20}%)`
+        });
+        x+=w+2+Math.random()*20;
+      }
+    }
+    // Prune buildings far off screen left (free memory)
+    if(buildings.length>200) buildings=buildings.filter(b=>b.x-scrollX>-W*2);
+  }
+  // Extend street props similarly
+  if(streetProps.length>0){
+    const lastP=streetProps[streetProps.length-1];
+    if(lastP.x-scrollX<W*2){
+      const CAR_COLS=['#4a2a2a','#2a3a4a','#3a4a2a','#2a2a3a','#5a3a1a','#1a1a1a'];
+      let x=lastP.x+80+Math.random()*60;
+      while(x-scrollX<W*4){
+        const r=Math.random();
+        if(r<.35){
+          const w=55+Math.random()*30,h=16+Math.random()*6;
+          streetProps.push({type:'car',x,y:STREET_Y+h,w,h,col:CAR_COLS[Math.floor(Math.random()*CAR_COLS.length)],damaged:Math.random()<.6});
+          x+=w+30+Math.random()*60;
+        } else if(r<.6){
+          const clusters=[];const n=2+Math.floor(Math.random()*3);
+          for(let i=0;i<n;i++) clusters.push({x:(Math.random()-.5)*18,y:-8-Math.random()*6,r:8+Math.random()*8});
+          streetProps.push({type:'bush',x,y:STREET_Y+2,clusters});
+          x+=40+Math.random()*50;
+        } else if(r<.72){
+          streetProps.push({type:'barrel',x,y:STREET_Y});
+          x+=30+Math.random()*40;
+        } else { x+=20+Math.random()*80; }
+      }
+    }
+    if(streetProps.length>300) streetProps=streetProps.filter(p=>p.x-scrollX>-W);
+  }
+
+  // Chopper follows player input
+  const dx2=chopper.targetX-chopper.x;
+  chopper.x+=dx2*.10; // smooth follow
+  chopper.x=Math.max(40,Math.min(W-40,chopper.x));
+  chopper.dir=dx2>1?1:dx2<-1?-1:chopper.dir; // face direction of movement
+  chopper.y=CHOPPER_Y+Math.sin(Date.now()*.001)*4;
+  chopper.smoking=hp<=1;
+
+  // Reload
+  if(reloading){
+    reloadTimer--;
+    if(reloadTimer<=0){reloading=false;ammo=MAX_AMMO;buildAmmoHUD();document.getElementById('reload-msg').classList.remove('show');}
+  }
+
+  // Spawn zombies
+  const spawnRate=Math.max(120,280-wave*15);
+  if(Math.random()<1/spawnRate) zombies.push(spawnZombie());
+
+  // Update zombies
+  for(const z of zombies){
+    if(z.dead)continue;
+    // Jump over cars
+    if(!z.jumping){
+      for(const prop of streetProps){
+        if(prop.type!=='car')continue;
+        const px=prop.x-scrollX;
+        const zsx=z.x-scrollX;
+        const ahead=z.dir>0?(px-zsx):(zsx-px);
+        if(ahead>0&&ahead<prop.w*.7+z.size){
+          z.jumping=true;z.jumpV=-5-Math.random()*2;z.jumpY=0;
+          break;
+        }
+      }
+    }
+    if(z.jumping){
+      z.jumpY+=z.jumpV;z.jumpV+=.35;
+      if(z.jumpY>=0){z.jumpY=0;z.jumping=false;z.jumpV=0;}
+    }
+    z.x+=z.spd*z.dir;
+    // Zombie reaches base?
+    const screenX=z.x-scrollX;
+    if(screenX<-z.size*2||screenX>W+z.size*2){
+      // Off screen — if they reached far left, they breach
+      if(z.dir<0&&screenX<-60){
+        z.dead=true;z.splat=false;
+        breachCount++;
+        if(breachCount>=3){breachCount=0;hp=Math.max(0,hp-1);updateHUD();}
+        if(hp<=0){setTimeout(endGame,400);return;}
+      } else if(z.dir>0&&screenX>W+60){
+        z.dead=true;
+      }
+    }
+    // Thrower logic
+    if(z.thrower&&z.throwTimer>0){
+      z.throwTimer--;
+      if(z.throwTimer===0){
+        const tx=chopper.x, ty=chopper.y;
+        const zsx=z.x-scrollX, zsy=z.y;
+        // Ballistic aim: compute vx/vy to reach target accounting for gravity
+        const grav=0.12;
+        const distX=tx-zsx, distY=ty-zsy;
+        // Time to reach: solve roughly with flight time estimate
+        const flightT=Math.max(18, Math.abs(distX)/6);
+        const vx2=distX/flightT;
+        const vy2=(distY - 0.5*grav*flightT*flightT)/flightT;
+        const isAxe=z.weapon==='axe', isBazooka=z.weapon==='bazooka';
+        const speedMult=isBazooka?1.4:isAxe?1.1:1.0;
+        rocks.push({
+          x:zsx, y:zsy,
+          vx:vx2*speedMult, vy:vy2*speedMult,
+          rot:0, vrot:isAxe?.22:isBazooka?.04:.06,
+          type:z.weapon||'rock',
+          size:isBazooka?14:isAxe?10:5,
+          dmg:isBazooka?2:1
+        });
+        z.throwTimer=Math.floor((isBazooka?300:isAxe?220:160)+Math.random()*180);
+      }
+    }
+  }
+
+  // Update bullets
+  for(let i=bullets.length-1;i>=0;i--){
+    const b=bullets[i];
+    b.x+=b.vx;b.y+=b.vy;b.life-=.012;
+    if(b.life<=0||b.y>H||b.y<0||b.x<0||b.x>W){bullets.splice(i,1);continue;}
+    // Hit zombies
+    let hit=false;
+    for(const z of zombies){
+      if(z.dead)continue;
+      const zx=z.x-scrollX;
+      const dx=b.x-zx,dy=b.y-z.y;
+      if(Math.sqrt(dx*dx+dy*dy)<z.size*.7){
+        z.hp--;z.hit=8;
+        if(z.hp<=0){
+          z.dead=true;z.splat=true;
+          score+=z.pts;kills++;
+          document.getElementById('score-hud').textContent=score;
+          boom(zx,z.y,z.size>16);
+          scoreFloat(zx,z.y-20,z.pts);
+          // Reward bullets on kill
+          const reward=z.size>30?3:2; // bigger zombie = more ammo back
+          ammo=Math.min(MAX_AMMO,ammo+reward);
+          if(reloading&&ammo>0){reloading=false;reloadTimer=0;document.getElementById('reload-msg').classList.remove('show');}
+          buildAmmoHUD();
+        }
+        hit=true;break;
+      }
+    }
+    if(hit){bullets.splice(i,1);}
+  }
+
+  // Update rocks
+  for(let i=rocks.length-1;i>=0;i--){
+    const r=rocks[i];
+    r.x+=r.vx;r.y+=r.vy;r.vy+=.12;r.rot+=r.vrot;
+    if(r.y>H||r.x<0||r.x>W){rocks.splice(i,1);continue;}
+    // Hit chopper?
+    const dx=r.x-chopper.x,dy=r.y-chopper.y;
+    if(Math.sqrt(dx*dx+dy*dy)<32){
+      const dmg=r.dmg||1;
+      rocks.splice(i,1);
+      hp=Math.max(0,hp-dmg);updateHUD();
+      boom(chopper.x,chopper.y,r.type==='bazooka');
+      if(r.type==='bazooka'){
+        // Screen shake effect via flash
+        document.getElementById('wave-banner').textContent='ROCKET HIT!';
+        document.getElementById('wave-banner').style.color='#ff4400';
+        document.getElementById('wave-banner').classList.add('show');
+        setTimeout(()=>document.getElementById('wave-banner').classList.remove('show'),600);
+      }
+      if(hp<=0){setTimeout(endGame,400);return;}
+    }
+  }
+
+  // Particles
+  for(const p of particles){
+    p.x+=p.vx;p.y+=p.vy;p.vy+=.08;p.vx*=.96;p.life-=p.decay;
+  }
+  particles=particles.filter(p=>p.life>0);
+  explosions=explosions.filter(e=>e.life>0);
+  zombies=zombies.filter(z=>!z.dead||(z.splat&&z.dead));
+
+  // Wave progression
+  const alive=zombies.filter(z=>!z.dead).length;
+  if(kills>=wave*12&&alive<3){
+    wave++;kills=0;
+    document.getElementById('wave-hud').textContent=`WAVE ${wave}`;
+    const b=document.getElementById('wave-banner');
+    b.textContent=`WAVE ${wave}`;b.classList.add('show');
+    setTimeout(()=>b.classList.remove('show'),1500);
+  }
+
+  // Crosshair scanline flicker
+  scrollX+=0;
+}
+
+// ── DRAW ──
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  drawCity();
+  drawExplosions();
+  zombies.forEach(drawZombie);
+  drawBullets();
+  drawRocks();
+  drawParticles();
+  drawChopper();
+  // Crosshair overlay (targeting reticle)
+  drawHUDOverlay();
+}
+
+function drawHUDOverlay(){
+  // Vignette
+  const vig=ctx.createRadialGradient(W/2,H/2,H*.2,W/2,H/2,H*.7);
+  vig.addColorStop(0,'rgba(0,0,0,0)');vig.addColorStop(1,'rgba(0,0,0,0.55)');
+  ctx.fillStyle=vig;ctx.fillRect(0,0,W,H);
+  // Red alert corners if low hp
+  if(hp<=1){
+    ctx.save();ctx.globalAlpha=.2+Math.sin(Date.now()*.005)*.15;
+    ctx.fillStyle='#ff0000';
+    [[0,0,40,H],[W-40,0,40,H],[0,0,W,40],[0,H-40,W,40]].forEach(([x,y,w,h2])=>{
+      ctx.fillRect(x,y,w,h2);
+    });
+    ctx.restore();
+  }
+}
+
+function loop(){raf=requestAnimationFrame(loop);if(state==='playing'){update();}draw();}
+
+// ── END ──
+function endGame(){
+  if(state!=='playing')return;
+  state='over';
+  if(kills>best){best=kills;localStorage.setItem('chopper_best',best);}
+  document.getElementById('over-score').textContent=kills;
+  document.getElementById('over-best').textContent='BEST: '+best;
+  document.getElementById('over-screen').classList.remove('hide');
+}
+
+// ── INPUT ──
+function getCanvasX(clientX){
+  const rect=canvas.getBoundingClientRect();
+  return (clientX-rect.left)*(W/rect.width);
+}
+function getCanvasY(clientY){
+  const rect=canvas.getBoundingClientRect();
+  return (clientY-rect.top)*(H/rect.height);
+}
+
+// Touch: drag to move chopper, tap to shoot
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  if(state!=='playing')return;
+  const t=e.touches[0];
+  chopper.targetX=getCanvasX(t.clientX);
+  shoot(t.clientX,t.clientY);
+},{passive:false});
+
+canvas.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  if(state!=='playing')return;
+  chopper.targetX=getCanvasX(e.touches[0].clientX);
+},{passive:false});
+
+// Mouse: move to steer, click to shoot
+canvas.addEventListener('mousemove',e=>{
+  if(state!=='playing')return;
+  chopper.targetX=getCanvasX(e.clientX);
+});
+canvas.addEventListener('mousedown',e=>{
+  if(state!=='playing')return;
+  chopper.targetX=getCanvasX(e.clientX);
+  shoot(e.clientX,e.clientY);
+});
+
+// Spacebar: shoot straight down
+document.addEventListener('keydown',e=>{
+  if(e.code==='Space'){
+    e.preventDefault();
+    if(state!=='playing')return;
+    const rect=canvas.getBoundingClientRect();
+    const cx=chopper.x*(rect.width/W)+rect.left;
+    const cy=(chopper.y+200)*(rect.height/H)+rect.top;
+    shoot(cx,cy);
+  }
+});
+
+// ── START ──
+function startGame(){
+  score=0;wave=1;hp=5;kills=0;ammo=MAX_AMMO;reloading=false;reloadTimer=0;
+  bullets=[];zombies=[];rocks=[];particles=[];explosions=[];breachCount=0;
+  chopper={x:W/2,y:CHOPPER_Y,targetX:W/2,dir:1,blade:0,smoking:false};
+  scrollX=0;
+  genBuildings();genStreetProps();initClouds();buildAmmoHUD();updateHUD();
+  document.getElementById('reload-msg').classList.remove('show');
+  document.getElementById('wave-banner').classList.remove('show');
+  state='playing';
+  if(!raf)loop();
+}
+
+document.getElementById('start-btn').addEventListener('click',()=>{
+  document.getElementById('start-screen').classList.add('hide');startGame();
+});
+document.getElementById('retry-btn').addEventListener('click',()=>{
+  document.getElementById('over-screen').classList.add('hide');startGame();
+});
+
+loop();
+</script>
+</body>
+</html>
