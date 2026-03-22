@@ -6,7 +6,7 @@
 <title>ORBIT</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100dvh;height:100vh;overflow:hidden;touch-action:none}
 canvas{display:block;touch-action:none}
 </style>
 </head>
@@ -27,8 +27,9 @@ resize();
 window.addEventListener('resize', resize);
 
 // Audio
-const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+let audioCtx;function initAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();}
 function playSound(freq, dur, type = 'sine', vol = 0.3) {
+    if(!audioCtx)return;
     const o = audioCtx.createOscillator();
     const g = audioCtx.createGain();
     o.type = type;
@@ -584,7 +585,7 @@ function drawGameOver() {
 }
 
 function handleTap(x, y) {
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+    initAudio();if (audioCtx.state === 'suspended') audioCtx.resume();
 
     if (state === 'menu') {
         state = 'play';

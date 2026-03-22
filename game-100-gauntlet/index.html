@@ -6,7 +6,7 @@
 <title>GAUNTLET</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100dvh;height:100vh;overflow:hidden;touch-action:none}
 canvas{display:block;touch-action:none}
 </style>
 </head>
@@ -22,9 +22,9 @@ function resize(){
 }
 resize();window.addEventListener('resize',resize);
 
-const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+let audioCtx;function initAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();}
 function playSound(f,d,t='sine'){
-  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  if(!audioCtx)return;const o=audioCtx.createOscillator(),g=audioCtx.createGain();
   o.type=t;o.frequency.value=f;g.gain.setValueAtTime(0.12,audioCtx.currentTime);
   g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+d);
   o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+d);
@@ -56,10 +56,10 @@ function getCanvasPos(e){
   return {x:(t.clientX-rect.left)*sx,y:(t.clientY-rect.top)*sy};
 }
 
-canvas.addEventListener('mousedown',(e)=>{e.preventDefault();audioCtx.resume();const p=getCanvasPos(e);mouseX=p.x;mouseY=p.y;mouseDown=true;tapX=p.x;tapY=p.y;tapped=true;handleTap(p);});
+canvas.addEventListener('mousedown',(e)=>{e.preventDefault();initAudio();audioCtx.resume();const p=getCanvasPos(e);mouseX=p.x;mouseY=p.y;mouseDown=true;tapX=p.x;tapY=p.y;tapped=true;handleTap(p);});
 canvas.addEventListener('mousemove',(e)=>{const p=getCanvasPos(e);mouseX=p.x;mouseY=p.y;});
 canvas.addEventListener('mouseup',()=>{mouseDown=false;});
-canvas.addEventListener('touchstart',(e)=>{e.preventDefault();audioCtx.resume();const p=getCanvasPos(e);mouseX=p.x;mouseY=p.y;mouseDown=true;tapX=p.x;tapY=p.y;tapped=true;handleTap(p);});
+canvas.addEventListener('touchstart',(e)=>{e.preventDefault();initAudio();audioCtx.resume();const p=getCanvasPos(e);mouseX=p.x;mouseY=p.y;mouseDown=true;tapX=p.x;tapY=p.y;tapped=true;handleTap(p);});
 canvas.addEventListener('touchmove',(e)=>{e.preventDefault();if(e.touches.length){const p=getCanvasPos(e);mouseX=p.x;mouseY=p.y;}});
 canvas.addEventListener('touchend',()=>{mouseDown=false;});
 
@@ -452,12 +452,12 @@ function handleTap(p){
 // Fix tap handler
 canvas.removeEventListener('mousedown',()=>{});
 canvas.addEventListener('mousedown',(e)=>{
-  e.preventDefault();audioCtx.resume();
+  e.preventDefault();initAudio();audioCtx.resume();
   const p=getCanvasPos(e);mouseX=p.x;mouseY=p.y;mouseDown=true;
   handleTap(p);
 },{capture:true});
 canvas.addEventListener('touchstart',(e)=>{
-  e.preventDefault();audioCtx.resume();
+  e.preventDefault();initAudio();audioCtx.resume();
   const p=getCanvasPos(e);mouseX=p.x;mouseY=p.y;mouseDown=true;
   handleTap(p);
 },{capture:true});

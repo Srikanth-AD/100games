@@ -6,7 +6,7 @@
 <title>ICEBREAK</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100dvh;height:100vh;overflow:hidden;touch-action:none}
 canvas{display:block;touch-action:none}
 </style>
 </head>
@@ -23,9 +23,9 @@ function resize(){
 resize();
 window.addEventListener('resize',resize);
 
-const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+let audioCtx;function initAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();}
 function playSound(freq,dur,type='sine',vol=0.1){
-  const o=audioCtx.createOscillator();const g=audioCtx.createGain();
+  if(!audioCtx)return;const o=audioCtx.createOscillator();const g=audioCtx.createGain();
   o.type=type;o.frequency.value=freq;
   g.gain.setValueAtTime(vol,audioCtx.currentTime);
   g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
@@ -194,7 +194,7 @@ function handleTap(tx,ty){
 
 canvas.addEventListener('pointerdown',e=>{
   e.preventDefault();
-  if(audioCtx.state==='suspended')audioCtx.resume();
+  initAudio();if(audioCtx.state==='suspended')audioCtx.resume();
   if(state==='menu'){initGame();return;}
   if(state==='over'){initGame();return;}
   const rect=canvas.getBoundingClientRect();

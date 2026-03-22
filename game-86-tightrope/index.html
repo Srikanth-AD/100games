@@ -6,7 +6,7 @@
 <title>TIGHTROPE</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100dvh;height:100vh;overflow:hidden;touch-action:none}
 canvas{display:block;touch-action:none}
 </style>
 </head>
@@ -18,8 +18,9 @@ let W,H;
 function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight}
 resize();window.addEventListener('resize',resize);
 
-const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+let audioCtx;function initAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();}
 function playSound(freq,dur,type='sine'){
+  if(!audioCtx)return;
   const o=audioCtx.createOscillator(),g=audioCtx.createGain();
   o.type=type;o.frequency.value=freq;
   g.gain.setValueAtTime(0.15,audioCtx.currentTime);
@@ -389,7 +390,7 @@ function drawGameOver(){
 }
 
 function handleInput(x){
-  if(audioCtx.state==='suspended')audioCtx.resume();
+  initAudio();if(audioCtx.state==='suspended')audioCtx.resume();
   if(state==='menu'){state='play';initGame();return}
   if(state==='gameover'){state='play';initGame();return}
   if(state==='play'&&!falling){

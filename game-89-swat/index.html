@@ -6,7 +6,7 @@
 <title>SWAT</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100dvh;height:100vh;overflow:hidden;touch-action:none}
 canvas{display:block;touch-action:none}
 </style>
 </head>
@@ -18,8 +18,9 @@ let W,H;
 function resize(){W=canvas.width=Math.min(window.innerWidth,480);H=canvas.height=Math.min(window.innerHeight,720);}
 resize();window.addEventListener('resize',resize);
 
-const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+let audioCtx;function initAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();}
 function playSound(freq,dur,type='sine',vol=0.12){
+  if(!audioCtx)return;
   const o=audioCtx.createOscillator(),g=audioCtx.createGain();
   o.type=type;o.frequency.value=freq;
   g.gain.setValueAtTime(vol,audioCtx.currentTime);
@@ -119,14 +120,14 @@ function doSwat(x,y){
 }
 
 canvas.addEventListener('mousedown',e=>{
-  if(audioCtx.state==='suspended')audioCtx.resume();
+  initAudio();if(audioCtx.state==='suspended')audioCtx.resume();
   if(state==='menu'){state='play';initGame();return;}
   if(state==='over'){state='menu';return;}
   const p=getPos(e);doSwat(p.x,p.y);
 });
 canvas.addEventListener('touchstart',e=>{
   e.preventDefault();
-  if(audioCtx.state==='suspended')audioCtx.resume();
+  initAudio();if(audioCtx.state==='suspended')audioCtx.resume();
   if(state==='menu'){state='play';initGame();return;}
   if(state==='over'){state='menu';return;}
   const p=getPos(e);doSwat(p.x,p.y);

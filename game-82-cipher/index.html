@@ -6,7 +6,7 @@
 <title>CIPHER</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100dvh;height:100vh;overflow:hidden;touch-action:none}
 canvas{display:block;touch-action:none}
 </style>
 </head>
@@ -17,10 +17,11 @@ const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
 let W,H,state='menu',score=0,totalCorrect=0,totalWrong=0,timeLeft=0,maxTime=90;
 let cipherMap={},reverseMap={},decoded={},message='',cipherText='',selectedCipher=null;
 let messageIndex=0,messagesDecoded=0,glowLetters={},particles=[],hintUsed=0;
-const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+let audioCtx;function initAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();}
 const ALPHA='ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
 function playSound(freq,dur,type='sine'){
+  if(!audioCtx)return;
   const o=audioCtx.createOscillator(),g=audioCtx.createGain();
   o.type=type;o.frequency.value=freq;
   g.gain.setValueAtTime(0.12,audioCtx.currentTime);
@@ -368,7 +369,7 @@ function getPos(e){
 }
 
 function handleTap(e){
-  e.preventDefault();
+  e.preventDefault();initAudio();
   const pos=getPos(e);
   if(state==='menu'){
     audioCtx.resume();state='play';score=0;timeLeft=maxTime;messageIndex=0;

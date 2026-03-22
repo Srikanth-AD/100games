@@ -4,6 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>100 GAMES</title>
+<!-- Google Analytics -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-QH4S7L59LJ"></script>
+<script>
+window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','G-QH4S7L59LJ');
+</script>
 <link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Barlow+Condensed:wght@400;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <noscript><link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Barlow+Condensed:wght@400;700&display=swap" rel="stylesheet"></noscript>
 <style>
@@ -428,6 +434,35 @@ const GAMES = [
   { num:'69', name:'TIDE',        folder:'game-69-tide',        file:'index.html', color:'#1e88e5', desc:'Open gates to fill the right chambers' },
   { num:'70', name:'COMET',       folder:'game-70-comet',       file:'index.html', color:'#e8eaf6', desc:'Tap planets to bend the comet\'s path' },
   { num:'71', name:'SLALOM',      folder:'game-71-slalom',      file:'index.html', color:'#4fc3f7', desc:'Carve through the gates on the way down' },
+  { num:'72', name:'TRAMPOLINE', folder:'game-72-trampoline', file:'index.html', color:'#ff4081', desc:'Bounce higher, collect stars, dodge spikes' },
+  { num:'73', name:'TOPPLE',     folder:'game-73-topple',     file:'index.html', color:'#ff6e40', desc:'Stack blocks & knock down the opponent' },
+  { num:'74', name:'RICOCHET',   folder:'game-74-ricochet',   file:'index.html', color:'#00e5ff', desc:'Bounce shots off walls to hit targets' },
+  { num:'75', name:'AVALANCHE',  folder:'game-75-avalanche',  file:'index.html', color:'#90a4ae', desc:'Dodge falling rocks while climbing' },
+  { num:'76', name:'PENDULUM',   folder:'game-76-pendulum',   file:'index.html', color:'#7c4dff', desc:'Swing hook to hook across the chasm' },
+  { num:'77', name:'METRONOME',  folder:'game-77-metronome',  file:'index.html', color:'#e040fb', desc:'Tap to the beat — BPM keeps rising' },
+  { num:'78', name:'FREEFALL',   folder:'game-78-freefall',   file:'index.html', color:'#4fc3f7', desc:'Skydive, collect coins, land on target' },
+  { num:'79', name:'ORBIT',      folder:'game-79-orbit',      file:'index.html', color:'#1e88e5', desc:'Launch satellites into stable orbits' },
+  { num:'80', name:'TANGRAM',    folder:'game-80-tangram',    file:'index.html', color:'#ffd740', desc:'Fit the shapes into the silhouette' },
+  { num:'81', name:'CIRCUIT',    folder:'game-81-circuit',    file:'index.html', color:'#76ff03', desc:'Wire puzzles to light up all bulbs' },
+  { num:'82', name:'CIPHER',     folder:'game-82-cipher',     file:'index.html', color:'#69f0ae', desc:'Crack the substitution cipher' },
+  { num:'83', name:'MIRROR',     folder:'game-83-mirror',     file:'index.html', color:'#ff1744', desc:'Reflect lasers to hit the sensors' },
+  { num:'84', name:'DOMINO',     folder:'game-84-domino',     file:'index.html', color:'#e8eaf6', desc:'Set up the chain reaction' },
+  { num:'85', name:'ALCHEMY',    folder:'game-85-alchemy',    file:'index.html', color:'#ff9800', desc:'Combine elements to discover new ones' },
+  { num:'86', name:'TIGHTROPE',  folder:'game-86-tightrope',  file:'index.html', color:'#ffd740', desc:'Balance the walker across the wire' },
+  { num:'87', name:'CRANE',      folder:'game-87-crane',      file:'index.html', color:'#f06292', desc:'Grab prizes with the claw machine' },
+  { num:'88', name:'DRIP',       folder:'game-88-drip',       file:'index.html', color:'#29b6f6', desc:'Catch water drops, avoid oil' },
+  { num:'89', name:'SWAT',       folder:'game-89-swat',       file:'index.html', color:'#66bb6a', desc:'Whack bugs — spare the bees' },
+  { num:'90', name:'PICKPOCKET', folder:'game-90-pickpocket', file:'index.html', color:'#ab47bc', desc:'Steal items without getting caught' },
+  { num:'91', name:'FIREFLY',    folder:'game-91-firefly',    file:'index.html', color:'#c6ff00', desc:'Catch glowing fireflies in a jar' },
+  { num:'92', name:'GEYSER',     folder:'game-92-geyser',     file:'index.html', color:'#80d8ff', desc:'Jump between erupting geysers' },
+  { num:'93', name:'ROOTS',      folder:'game-93-roots',      file:'index.html', color:'#8d6e63', desc:'Grow roots underground to reach water' },
+  { num:'94', name:'ICEBREAK',   folder:'game-94-icebreak',   file:'index.html', color:'#e0f7fa', desc:'Crack ice to free trapped fish' },
+  { num:'95', name:'BLACKOUT',   folder:'game-95-blackout',   file:'index.html', color:'#b388ff', desc:'Memory match with blackout zones' },
+  { num:'96', name:'ABACUS',     folder:'game-96-abacus',     file:'index.html', color:'#ff7043', desc:'Slide beads to match the number' },
+  { num:'97', name:'BID',        folder:'game-97-bid',        file:'index.html', color:'#ffd740', desc:'Auction bluffing against AI' },
+  { num:'98', name:'ANAGRAM',    folder:'game-98-anagram',    file:'index.html', color:'#448aff', desc:'Unscramble the letters' },
+  { num:'99', name:'SEMAPHORE',  folder:'game-99-semaphore',  file:'index.html', color:'#ef5350', desc:'Decode flag signal messages' },
+  { num:'100', name:'GAUNTLET',  folder:'game-100-gauntlet',  file:'index.html', color:'#ffd700', desc:'The grand finale — 5 micro-challenges' },
 ];
 
 const frame    = document.getElementById('game-frame');
@@ -448,6 +483,11 @@ function loadGame(src) {
   const url = new URL(location.href);
   url.searchParams.set('g', src);
   history.replaceState(null, '', url);
+  // Track game play in Google Analytics
+  const game = GAMES.find(g => srcFor(g) === src);
+  if (game) {
+    gtag('event', 'play_game', { game_number: game.num, game_name: game.name });
+  }
   updateActive(src);
   closeMenu();
   // scroll carousel to active item

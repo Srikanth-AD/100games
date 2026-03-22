@@ -6,7 +6,7 @@
 <title>ABACUS</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100dvh;height:100vh;overflow:hidden;touch-action:none}
 canvas{display:block;touch-action:none}
 </style>
 </head>
@@ -26,9 +26,9 @@ resize();
 window.addEventListener('resize',resize);
 
 // Audio
-const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+let audioCtx;function initAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();}
 function playSound(freq,dur,type='sine'){
-  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  if(!audioCtx)return;const o=audioCtx.createOscillator(),g=audioCtx.createGain();
   o.type=type;o.frequency.value=freq;
   g.gain.setValueAtTime(0.15,audioCtx.currentTime);
   g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
@@ -150,7 +150,7 @@ function getCanvasPos(e){
 
 function handleDown(e){
   e.preventDefault();
-  audioCtx.resume();
+  initAudio();audioCtx.resume();
   const p=getCanvasPos(e);
 
   if(state===STATE.MENU){state=STATE.PLAY;score=0;lives=3;level=1;maxTime=15;initBeads();generateTarget();return;}

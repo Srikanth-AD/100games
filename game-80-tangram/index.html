@@ -6,7 +6,7 @@
 <title>TANGRAM</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100dvh;height:100vh;overflow:hidden;touch-action:none}
 canvas{display:block;touch-action:none}
 </style>
 </head>
@@ -16,9 +16,10 @@ canvas{display:block;touch-action:none}
 const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
 let W,H,state='menu',score=0,timer=0,startTime=0,puzzleIndex=0,pieces=[],selectedPiece=null,dragOffset={x:0,y:0},lastTap=0,solvedCount=0,celebrating=false,celebrateTime=0,particles=[];
 const COLORS=['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22'];
-const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+let audioCtx;function initAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();}
 
 function playSound(freq,dur,type='sine'){
+  if(!audioCtx)return;
   const o=audioCtx.createOscillator(),g=audioCtx.createGain();
   o.type=type;o.frequency.value=freq;
   g.gain.setValueAtTime(0.15,audioCtx.currentTime);
@@ -348,7 +349,7 @@ function getPos(e){
 }
 
 function handleDown(e){
-  e.preventDefault();
+  e.preventDefault();initAudio();
   const pos=getPos(e);
   if(state==='menu'){
     audioCtx.resume();

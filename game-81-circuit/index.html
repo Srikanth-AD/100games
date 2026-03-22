@@ -6,7 +6,7 @@
 <title>CIRCUIT</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100dvh;height:100vh;overflow:hidden;touch-action:none}
 canvas{display:block;touch-action:none}
 </style>
 </head>
@@ -15,9 +15,10 @@ canvas{display:block;touch-action:none}
 <script>
 const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
 let W,H,state='menu',score=0,level=0,moves=0,timer=0,grid=[],gridW=5,gridH=5,cellSize,offsetX,offsetY,battery={},bulbs=[],powered=[],sparkles=[],levelComplete=false,completeTimer=0;
-const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+let audioCtx;function initAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();}
 
 function playSound(freq,dur,type='sine'){
+  if(!audioCtx)return;
   const o=audioCtx.createOscillator(),g=audioCtx.createGain();
   o.type=type;o.frequency.value=freq;
   g.gain.setValueAtTime(0.12,audioCtx.currentTime);
@@ -299,7 +300,7 @@ function getPos(e){
 }
 
 function handleTap(e){
-  e.preventDefault();
+  e.preventDefault();initAudio();
   const pos=getPos(e);
   if(state==='menu'){
     audioCtx.resume();state='play';level=0;score=0;initLevel();return;

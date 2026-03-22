@@ -4,6 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>100 GAMES</title>
+<!-- Google Analytics -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-QH4S7L59LJ"></script>
+<script>
+window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}
+gtag('js',new Date());gtag('config','G-QH4S7L59LJ');
+</script>
 <link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Barlow+Condensed:wght@400;700;900&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -337,6 +343,9 @@ GAMES.forEach((g, i) => {
   const card = document.createElement('a');
   card.className = 'card';
   card.href = `play.html?g=${g.folder}/${g.file}`;
+  card.addEventListener('click', () => {
+    gtag('event', 'select_game', { game_number: g.num, game_name: g.name });
+  });
   card.style.cssText = `
     --color: ${g.color};
     --glow: ${glow};
