@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>PIVOT</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;touch-action:none;}
+html,body{width:100%;height:100%;overflow:hidden;background:#050a14;}
+body{display:flex;align-items:center;justify-content:center;font-family:'Segoe UI',Arial,sans-serif;}
+canvas{display:block;touch-action:none;}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script>
+const cv = document.getElementById('cv');
+const cx = cv.getContext('2d');
+let W, H;
+function resize() {
+  W = cv.width = window.innerWidth;
+  H = cv.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', () => { resize(); });
+
+// Audio
+let actx;
+function getACtx() {
+  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+  return actx;
+}
+function sfx(type, freq, dur, vol = 0.4, shape = 'square') {
+  try {
+    const a = getACtx();
+    const o = a.createOscillator();
+    const g = a.createGain();
+    o.connect(g); g.connect(a.destination);
+    o.type = shape; o.frequency.setValueAtTime(freq, a.currentTime);
+    o.frequency.exponentialRampToValueAtTime(freq * 0.4, a.currentTime + dur);
+    g.gain.setValueAtTime(vol, a.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + dur);
+    o.start(); o.stop(a.currentTime + dur);
+  } catch(e) {}
+}
+function sfxPass() {
+  sfx('sine', 660, 0.1, 0.35);
+  setTimeout(() => sfx('sine', 880, 0.15, 0.3), 80);
+}
+function sfxHit() {
+  sfx('sawtooth', 180, 0.25, 0.45);
+  setTimeout(() => sfx('sawtooth', 120, 0.2, 0.3), 100);
+}
+function sfxLevelUp() {
+  [440,550,660,880].forEach((f,i) => setTimeout(() => sfx('sine', f, 0.12, 0.3), i*70));
+}
+
+// Game state
+let gs = 'start';
+let score = 0, lives = 3, level = 1, passCount = 0;
+let bestScore = parseInt(localStorage.getItem('pivot_best') || '0');
+
+// Shapes: arrays of [x,y] vertices centered at 0,0, unit scale ~1
+// Will be drawn scaled by shapeScale
+const SHAPES = [
+  // 0: wide bar
+  [[-2.2,-0.4],[2.2,-0.4],[2.2,0.4],[-2.2,0.4]],
+  // 1: tall bar
+  [[-0.4,-2.2],[0.4,-2.2],[0.4,2.2],[-0.4,2.2]],
+  // 2: L-shape
+  [[-1.2,-1.2],[0,-1.2],[0,0.2],[0.8,0.2],[0.8,1.2],[-1.2,1.2]],
+  // 3: T-shape
+  [[-1.4,-1.0],[1.4,-1.0],[1.4,-0.2],[0.4,-0.2],[0.4,1.0],[-0.4,1.0],[-0.4,-0.2],[-1.4,-0.2]],
+  // 4: Z-shape
+  [[-1.4,-1.0],[0.2,-1.0],[0.2,-0.1],[1.4,-0.1],[1.4,1.0],[-0.2,1.0],[-0.2,0.1],[-1.4,0.1]],
+];
+const SHAPE_NAMES = ['WIDE BAR','TALL BAR','L-SHAPE','T-SHAPE','Z-SHAPE'];
+
+// Wall & player
+let wall = null;
+let playerAngle = 0; // radians
+let targetAngle = 0;
+let currentShape = 0;
+let wallSpeed = 0;
+let flashTimer = 0;
+let flashColor = '';
+let particles = [];
+let waitTimer = 0; // pause between rounds
+let roundActive = false;
+
+// Drag state
+let dragStart = null;
+let dragAngleStart = 0;
+
+// Sizes
+function shapeScale() { return Math.min(W, H) * 0.065; }
+function wallThickness() { return Math.min(W, H) * 0.07; }
+function playerY() { return H * 0.78; }
+function wallStartY() { return -wallThickness() - 10; }
+function wallLandY() { return H * 0.72; }
+
+function initRound() {
+  currentShape = Math.floor(Math.random() * SHAPES.length);
+  targetAngle = [0, Math.PI/2, Math.PI, Math.PI*1.5][Math.floor(Math.random()*4)];
+  // Random starting player angle different from target
+  playerAngle = [0, Math.PI/2, Math.PI, Math.PI*1.5][Math.floor(Math.random()*4)];
+  wallSpeed = (H * 0.0015) * (1 + (level - 1) * 0.18);
+  wall = { y: wallStartY() };
+  roundActive = true;
+  flashTimer = 0;
+}
+
+function startGame() {
+  score = 0; lives = 3; level = 1; passCount = 0;
+  particles = [];
+  waitTimer = 0;
+  roundActive = false;
+  initRound();
+  gs = 'play';
+}
+
+// Draw a shape at cx,cy with rotation angle and scale, filled with color
+function drawShape(shape, px, py, angle, scale, color, glowColor) {
+  cx.save();
+  cx.translate(px, py);
+  cx.rotate(angle);
+  if (glowColor) {
+    cx.shadowColor = glowColor;
+    cx.shadowBlur = 24;
+  }
+  cx.beginPath();
+  const pts = shape;
+  cx.moveTo(pts[0][0]*scale, pts[0][1]*scale);
+  for (let i=1;i<pts.length;i++) cx.lineTo(pts[i][0]*scale, pts[i][1]*scale);
+  cx.closePath();
+  cx.fillStyle = color;
+  cx.fill();
+  cx.shadowBlur = 0;
+  cx.restore();
+}
+
+// Draw wall with cutout
+function drawWall(wallY) {
+  const sc = shapeScale();
+  const th = wallThickness();
+  const shape = SHAPES[currentShape];
+  // Compute bounding box of shape at target angle for cutout
+  const cutPad = sc * 0.18;
+
+  // Draw wall as full dark blue rect, then "cut out" by drawing shape in destination-out
+  // But we need wall to appear as two halves around the shape...
+  // Approach: clip to wall rect, draw full rect, then erase shape area
+
+  cx.save();
+  // Wall rectangle
+  cx.fillStyle = '#1a4a7a';
+  cx.shadowColor = '#00ccff';
+  cx.shadowBlur = 18;
+  cx.fillRect(0, wallY, W, th);
+  cx.shadowBlur = 0;
+
+  // Cut out the shape using destination-out
+  cx.globalCompositeOperation = 'destination-out';
+  drawShape(shape, W/2, wallY + th/2, targetAngle, sc + cutPad, 'rgba(0,0,0,1)', null);
+  cx.globalCompositeOperation = 'source-over';
+
+  // Draw shape outline in wall so it looks like a hole
+  cx.save();
+  cx.translate(W/2, wallY + th/2);
+  cx.rotate(targetAngle);
+  cx.beginPath();
+  const pts = shape;
+  const ps = sc + cutPad;
+  cx.moveTo(pts[0][0]*ps, pts[0][1]*ps);
+  for (let i=1;i<pts.length;i++) cx.lineTo(pts[i][0]*ps, pts[i][1]*ps);
+  cx.closePath();
+  cx.strokeStyle = '#00eeff';
+  cx.lineWidth = 2;
+  cx.stroke();
+  cx.restore();
+
+  cx.restore();
+}
+
+// Particles
+function spawnConfetti(x, y, count) {
+  for (let i=0;i<count;i++) {
+    const angle = Math.random()*Math.PI*2;
+    const speed = 2 + Math.random()*5;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle)*speed,
+      vy: Math.sin(angle)*speed - 3,
+      life: 1,
+      decay: 0.02 + Math.random()*0.02,
+      color: `hsl(${Math.random()*80+160},100%,60%)`,
+      size: 4 + Math.random()*6
+    });
+  }
+}
+
+function updateParticles() {
+  for (let i=particles.length-1; i>=0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy;
+    p.vy += 0.15;
+    p.life -= p.decay;
+    if (p.life <= 0) particles.splice(i,1);
+  }
+}
+
+function drawParticles() {
+  particles.forEach(p => {
+    cx.save();
+    cx.globalAlpha = p.life;
+    cx.fillStyle = p.color;
+    cx.beginPath();
+    cx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+    cx.fill();
+    cx.restore();
+  });
+}
+
+// Normalize angle difference to [-PI, PI]
+function angleDiff(a, b) {
+  let d = (a - b) % (Math.PI*2);
+  if (d > Math.PI) d -= Math.PI*2;
+  if (d < -Math.PI) d += Math.PI*2;
+  return Math.abs(d);
+}
+
+// Draw hearts
+function drawHearts(lives) {
+  const sz = Math.min(W, H) * 0.032;
+  const pad = sz * 0.5;
+  for (let i=0; i<3; i++) {
+    const x = W - pad - (3-i) * (sz*2.2 + 4);
+    const y = pad + sz;
+    cx.save();
+    cx.globalAlpha = i < lives ? 1 : 0.25;
+    cx.fillStyle = i < lives ? '#ff4466' : '#333';
+    cx.font = `${sz*2}px serif`;
+    cx.textAlign = 'center';
+    cx.textBaseline = 'middle';
+    cx.fillText('♥', x, y);
+    cx.restore();
+  }
+}
+
+// Preview shape in corner
+function drawPreview() {
+  const sc = shapeScale() * 0.55;
+  const px = W * 0.12;
+  const py = H * 0.115;
+  const boxS = sc * 3.5;
+
+  cx.save();
+  cx.fillStyle = 'rgba(0,30,60,0.7)';
+  cx.strokeStyle = '#00ccff44';
+  cx.lineWidth = 1;
+  roundRect(cx, px - boxS/2 - 8, py - boxS/2 - 8, boxS + 16, boxS + 16 + 20, 8);
+  cx.fill(); cx.stroke();
+
+  cx.fillStyle = '#00ccff88';
+  cx.font = `bold ${Math.max(9, W*0.022)}px Arial`;
+  cx.textAlign = 'center';
+  cx.textBaseline = 'top';
+  cx.fillText('MATCH →', px, py - boxS/2 - 4);
+
+  drawShape(SHAPES[currentShape], px, py + 6, targetAngle, sc, '#00ddff', null);
+  cx.restore();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y);
+  ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);
+  ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r);
+  ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+
+// HUD
+function drawHUD() {
+  const fSize = Math.max(16, W * 0.048);
+  cx.save();
+  cx.font = `bold ${fSize}px Arial`;
+  cx.fillStyle = '#00ffcc';
+  cx.textAlign = 'left';
+  cx.textBaseline = 'top';
+  cx.fillText(score, W * 0.03, W * 0.025);
+
+  cx.textAlign = 'center';
+  cx.fillStyle = '#aaddff';
+  cx.font = `bold ${fSize*0.6}px Arial`;
+  cx.fillText(`LEVEL ${level}`, W/2, W * 0.025);
+
+  cx.restore();
+  drawHearts(lives);
+}
+
+// Start screen
+function drawStart() {
+  cx.save();
+  cx.fillStyle = '#050a14';
+  cx.fillRect(0, 0, W, H);
+
+  // Draw animated sample wall
+  const sc = shapeScale();
+  const th = wallThickness();
+  const demoY = H * 0.28;
+  cx.fillStyle = '#1a4a7a';
+  cx.fillRect(0, demoY, W, th);
+  cx.globalCompositeOperation = 'destination-out';
+  drawShape(SHAPES[2], W/2, demoY+th/2, Math.PI/4, sc, 'rgba(0,0,0,1)', null);
+  cx.globalCompositeOperation = 'source-over';
+
+  const tSize = Math.min(W, H) * 0.12;
+  cx.font = `900 ${tSize}px Arial`;
+  cx.textAlign = 'center';
+  cx.textBaseline = 'middle';
+  cx.fillStyle = '#00eeff';
+  cx.shadowColor = '#00eeff';
+  cx.shadowBlur = 30;
+  cx.fillText('PIVOT', W/2, H * 0.14);
+  cx.shadowBlur = 0;
+
+  cx.font = `bold ${tSize*0.22}px Arial`;
+  cx.fillStyle = '#5599bb';
+  cx.fillText('ROTATE TO MATCH THE CUTOUT', W/2, H*0.14 + tSize*0.7);
+
+  const infoY = H * 0.58;
+  const lineH = Math.min(W, H) * 0.058;
+  const iSize = Math.min(W, H) * 0.038;
+  cx.font = `${iSize}px Arial`;
+  cx.fillStyle = '#336688';
+  cx.fillText('↔ DRAG to rotate your shape', W/2, infoY);
+  cx.fillText('Match the wall\'s cutout to pass', W/2, infoY + lineH);
+  cx.fillText('3 lives — good luck!', W/2, infoY + lineH*2);
+
+  // Draw tap button
+  const bW = W * 0.52, bH = H * 0.072;
+  const bX = W/2 - bW/2, bY = H * 0.82;
+  cx.fillStyle = '#00ccff';
+  cx.shadowColor = '#00ccff';
+  cx.shadowBlur = 20;
+  roundRect(cx, bX, bY, bW, bH, bH/2);
+  cx.fill();
+  cx.shadowBlur = 0;
+  cx.fillStyle = '#050a14';
+  cx.font = `bold ${iSize*1.1}px Arial`;
+  cx.fillText('TAP TO START', W/2, bY + bH/2);
+
+  if (bestScore > 0) {
+    cx.fillStyle = '#334455';
+    cx.font = `${iSize*0.8}px Arial`;
+    cx.fillText(`BEST: ${bestScore}`, W/2, bY + bH + lineH);
+  }
+  cx.restore();
+}
+
+function drawOver() {
+  cx.save();
+  cx.fillStyle = 'rgba(5,10,20,0.88)';
+  cx.fillRect(0, 0, W, H);
+
+  const tSize = Math.min(W, H) * 0.095;
+  cx.font = `900 ${tSize}px Arial`;
+  cx.textAlign = 'center';
+  cx.textBaseline = 'middle';
+  cx.fillStyle = '#ff4455';
+  cx.shadowColor = '#ff2244';
+  cx.shadowBlur = 24;
+  cx.fillText('GAME OVER', W/2, H*0.3);
+  cx.shadowBlur = 0;
+
+  cx.font = `900 ${tSize*1.5}px Arial`;
+  cx.fillStyle = '#ffffff';
+  cx.fillText(score, W/2, H*0.47);
+  cx.font = `bold ${tSize*0.38}px Arial`;
+  cx.fillStyle = '#445566';
+  cx.fillText('SCORE', W/2, H*0.47 + tSize*0.9);
+
+  cx.fillStyle = '#334455';
+  cx.font = `${tSize*0.32}px Arial`;
+  cx.fillText(`BEST: ${bestScore}`, W/2, H*0.6);
+
+  const bW = W * 0.52, bH = H * 0.072;
+  const bX = W/2 - bW/2, bY = H * 0.72;
+  cx.fillStyle = '#00ccff';
+  cx.shadowColor = '#00ccff';
+  cx.shadowBlur = 20;
+  roundRect(cx, bX, bY, bW, bH, bH/2);
+  cx.fill();
+  cx.shadowBlur = 0;
+  cx.fillStyle = '#050a14';
+  cx.font = `bold ${tSize*0.38}px Arial`;
+  cx.fillText('PLAY AGAIN', W/2, bY + bH/2);
+  cx.restore();
+}
+
+function drawPlay() {
+  cx.fillStyle = '#050a14';
+  cx.fillRect(0, 0, W, H);
+
+  // Flash overlay
+  if (flashTimer > 0) {
+    cx.save();
+    cx.globalAlpha = flashTimer * 0.35;
+    cx.fillStyle = flashColor;
+    cx.fillRect(0, 0, W, H);
+    cx.restore();
+    flashTimer -= 0.05;
+    if (flashTimer < 0) flashTimer = 0;
+  }
+
+  // Draw wall
+  if (wall && roundActive) {
+    drawWall(wall.y);
+  }
+
+  // Player shape — detect proximity to target
+  const diff = angleDiff(playerAngle, targetAngle);
+  const nearTarget = diff < 0.4;
+  const sc = shapeScale();
+  const py = playerY();
+  const glowCol = nearTarget ? '#00ff88' : null;
+  drawShape(SHAPES[currentShape], W/2, py, playerAngle, sc, '#3388ff', glowCol);
+
+  // Draw line showing player zone
+  cx.save();
+  cx.strokeStyle = '#1a3a5a';
+  cx.lineWidth = 1;
+  cx.setLineDash([8, 6]);
+  cx.beginPath();
+  cx.moveTo(0, wallLandY());
+  cx.lineTo(W, wallLandY());
+  cx.stroke();
+  cx.setLineDash([]);
+  cx.restore();
+
+  drawParticles();
+  drawPreview();
+  drawHUD();
+}
+
+// Game loop
+let lastT = 0;
+function loop(t) {
+  requestAnimationFrame(loop);
+  const dt = Math.min((t - lastT) / 16.67, 3);
+  lastT = t;
+
+  if (gs === 'start') {
+    drawStart();
+  } else if (gs === 'play') {
+    if (roundActive && wall) {
+      wall.y += wallSpeed * dt;
+
+      // Check if wall reached player zone
+      if (wall.y + wallThickness()/2 >= wallLandY()) {
+        roundActive = false;
+        const diff = angleDiff(playerAngle, targetAngle);
+        const THRESHOLD = 15 * Math.PI / 180;
+
+        if (diff < THRESHOLD) {
+          // PASS
+          const pts = Math.max(10, Math.floor(50 - (level-1)*3 + (1 - diff/THRESHOLD)*20));
+          score += pts * level;
+          passCount++;
+          flashColor = '#00ff88';
+          flashTimer = 1;
+          sfxPass();
+          spawnConfetti(W/2, wallLandY(), 40);
+          if (passCount % 5 === 0) {
+            level++;
+            sfxLevelUp();
+          }
+        } else {
+          // HIT
+          lives--;
+          flashColor = '#ff2244';
+          flashTimer = 1;
+          sfxHit();
+          if (lives <= 0) {
+            if (score > bestScore) {
+              bestScore = score;
+              localStorage.setItem('pivot_best', bestScore);
+            }
+            waitTimer = 90;
+            gs = 'over_wait';
+          }
+        }
+
+        if (gs === 'play') waitTimer = 50;
+      }
+    } else if (!roundActive) {
+      waitTimer -= dt;
+      if (waitTimer <= 0) {
+        initRound();
+      }
+    }
+
+    updateParticles();
+    drawPlay();
+
+  } else if (gs === 'over_wait') {
+    waitTimer -= dt;
+    updateParticles();
+    drawPlay();
+    if (waitTimer <= 0) gs = 'over';
+
+  } else if (gs === 'over') {
+    drawPlay();
+    drawOver();
+  }
+}
+requestAnimationFrame(loop);
+
+// Input
+let pointerDown = false;
+
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  getACtx();
+  pointerDown = true;
+
+  if (gs === 'start') {
+    startGame();
+    return;
+  }
+  if (gs === 'over') {
+    startGame();
+    return;
+  }
+  if (gs === 'play') {
+    dragStart = { x: e.clientX, y: e.clientY };
+    dragAngleStart = playerAngle;
+  }
+});
+
+cv.addEventListener('pointermove', e => {
+  e.preventDefault();
+  if (!pointerDown || !dragStart || gs !== 'play') return;
+  const dx = e.clientX - dragStart.x;
+  const sensitivity = Math.PI / (W * 0.35);
+  playerAngle = dragAngleStart + dx * sensitivity;
+});
+
+cv.addEventListener('pointerup', e => {
+  e.preventDefault();
+  pointerDown = false;
+  dragStart = null;
+
+  // Snap to nearest 90 deg on release
+  if (gs === 'play') {
+    const snapped = Math.round(playerAngle / (Math.PI/2)) * (Math.PI/2);
+    playerAngle = snapped;
+  }
+});
+
+cv.addEventListener('pointercancel', e => {
+  pointerDown = false;
+  dragStart = null;
+});
+</script>
+</body>
+</html>

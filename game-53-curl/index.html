@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>CURL</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a1628;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+let W,H,scl;
+
+function resize(){
+  const vw=window.innerWidth,vh=window.innerHeight;
+  scl=Math.min(vw/390,vh/700);
+  W=Math.round(390*scl);H=Math.round(700*scl);
+  cv.width=W;cv.height=H;
+}
+resize();
+window.addEventListener('resize',resize);
+
+// Audio
+const AC=new(window.AudioContext||window.webkitAudioContext)();
+function beep(type){
+  const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime;
+  o.connect(g);g.connect(AC.destination);
+  if(type==='throw'){o.type='sine';o.frequency.setValueAtTime(300,t);o.frequency.linearRampToValueAtTime(180,t+0.2);g.gain.setValueAtTime(0.15,t);g.gain.linearRampToValueAtTime(0,t+0.25);}
+  else if(type==='sweep'){o.type='noise'||'triangle';o.type='triangle';o.frequency.setValueAtTime(800,t);g.gain.setValueAtTime(0.05,t);g.gain.linearRampToValueAtTime(0,t+0.08);}
+  else if(type==='hit'){o.type='triangle';o.frequency.setValueAtTime(400,t);o.frequency.linearRampToValueAtTime(250,t+0.15);g.gain.setValueAtTime(0.2,t);g.gain.linearRampToValueAtTime(0,t+0.2);}
+  else if(type==='score'){[523,659,784,1047].forEach((f,i)=>{const o2=AC.createOscillator(),g2=AC.createGain();o2.connect(g2);g2.connect(AC.destination);o2.type='sine';o2.frequency.value=f;g2.gain.setValueAtTime(0.15,t+i*0.1);g2.gain.linearRampToValueAtTime(0,t+i*0.1+0.12);o2.start(t+i*0.1);o2.stop(t+i*0.1+0.2);});}
+  o.start(t);o.stop(t+0.3);
+}
+
+// ── Constants ─────────────────────────────────────────────────
+const SHEET_X=()=>W*0.5;
+const HOUSE_Y=()=>H*0.18;     // center of target house
+const HOG_Y=()=>H*0.82;       // hog line (must pass)
+const THROW_Y=()=>H*0.90;     // throwing position y
+const STONE_R=()=>14*scl;
+const ICE_COLOR='#c8e8f5';
+const TEAM_COL=['#e53935','#1e88e5'];  // red, blue
+const TEAM_NAME=['RED','BLUE'];
+
+// Ring radii for the house (scoring target)
+const HOUSE_R=[()=>72*scl,()=>54*scl,()=>36*scl,()=>18*scl];  // 4ft,8ft,12ft in scaled px (outer to inner)
+const RING_COL=['#fff','#d32f2f','#fff','#1565c0'];
+
+// ── Game state ────────────────────────────────────────────────
+let gs='start';
+let ends=0,MAX_ENDS=6;
+let scores=[0,0]; // [red,blue]
+let endScore=[0,0];
+let turn=0; // 0=red,1=blue
+let stonesThrown=0; // per end (each team throws 4 → 8 total)
+const STONES_PER_END=8; // 4 per team
+
+let stones=[]; // {x,y,vx,vy,curl,team,stopped,r}
+let activeStone=null; // the one sliding
+
+// Aim/power state
+let phase='aim'; // aim → power → sweep → result
+let aimAngle=0; // radians from vertical, negative=left, positive=right
+let power=0;    // 0..1
+let powerDir=1;
+let curlDir=0;  // -1 left, +1 right (player chooses)
+let sweepActive=false;
+let sweepEffect=0; // accumulated sweep bonus (reduces curl)
+
+// Drag for aim
+let drag={active:false,sx:0,sy:0};
+let aimSet=false;
+let powerSet=false;
+
+// Particles
+let particles=[];
+
+// AI
+let aiThinkTimer=0;
+
+function initEnd(){
+  stonesThrown=0;
+  endScore=[0,0];
+  // Don't clear stones between rounds? Actually in real curling, yes
+  // But let's keep it per-end for simplicity
+  stones=[];
+  activeStone=null;
+  phase='aim';
+  aimAngle=0;
+  power=0;
+  powerDir=1;
+  curlDir=0;
+  sweepActive=false;
+  sweepEffect=0;
+  drag.active=false;
+  aimSet=false;
+  powerSet=false;
+  // determine who throws first: loser of last end, or red first end
+  // Simplified: alternate — red always starts
+  turn=ends%2===0?0:1;
+}
+
+function init(){
+  ends=0;scores=[0,0];
+  initEnd();
+}
+
+// ── Physics ───────────────────────────────────────────────────
+const FRICTION=0.012;     // deceleration per frame (scaled)
+const CURL_STRENGTH=0.006; // lateral curl force
+
+function spawnStone(){
+  const sx=SHEET_X(),sy=THROW_Y();
+  const curl=curlDir*(CURL_STRENGTH-(sweepEffect*0.0015));
+  activeStone={
+    x:sx,y:sy,
+    vx:Math.sin(aimAngle)*power*18*scl,
+    vy:-Math.cos(aimAngle)*power*18*scl,
+    curl:curlDir,
+    curlAmt:CURL_STRENGTH,
+    team:turn,
+    stopped:false,
+    r:STONE_R(),
+    sweepMod:0,
+  };
+  stones.push(activeStone);
+  beep('throw');
+}
+
+function updateStone(s,dt){
+  if(s.stopped)return;
+  const spd=Math.sqrt(s.vx*s.vx+s.vy*s.vy);
+  if(spd<0.3*scl){s.stopped=true;s.vx=0;s.vy=0;activeStone=null;return;}
+  // Friction
+  const fric=(FRICTION+s.sweepMod)*scl;
+  const nx=s.vx/spd,ny=s.vy/spd;
+  s.vx-=nx*fric*dt;s.vy-=ny*fric*dt;
+  // Curl (perpendicular force based on direction of travel)
+  const curlF=(s.curlAmt-s.sweepMod*0.003)*s.curl;
+  s.vx+=(-ny)*curlF*spd*dt;
+  s.vy+=(nx)*curlF*spd*dt;
+  // Move
+  s.x+=s.vx*dt;s.y+=s.vy*dt;
+  // Stone-stone collision
+  for(const o of stones){
+    if(o===s||o.stopped)continue;
+    const dx=s.x-o.x,dy=s.y-o.y;
+    const dist=Math.sqrt(dx*dx+dy*dy);
+    const minD=s.r+o.r;
+    if(dist<minD&&dist>0.01){
+      beep('hit');
+      // elastic-ish collision
+      const nx2=dx/dist,ny2=dy/dist;
+      const rv=s.vx*nx2+s.vy*ny2-o.vx*nx2-o.vy*ny2;
+      const imp=rv*0.9;
+      s.vx-=imp*nx2;s.vy-=imp*ny2;
+      o.vx+=imp*nx2;o.vy+=imp*ny2;
+      // separate
+      const overlap=(minD-dist)*0.5;
+      s.x+=nx2*overlap;s.y+=ny2*overlap;
+      o.x-=nx2*overlap;o.y-=ny2*overlap;
+      o.stopped=false;
+    }
+  }
+  // Out of bounds (off sheet sides)
+  const sheetLeft=W*0.08,sheetRight=W*0.92;
+  if(s.x<sheetLeft||s.x>sheetRight){s.stopped=true;s.vx=0;s.vy=0;activeStone=null;}
+  // Past far end
+  if(s.y<H*0.04){s.stopped=true;s.vx=0;s.vy=0;activeStone=null;}
+  // Past close end (came back, remove)
+  if(s.y>H*0.98){s.stopped=true;s.vx=0;s.vy=0;activeStone=null;stones=stones.filter(x=>x!==s);}
+}
+
+// ── Scoring ───────────────────────────────────────────────────
+function distToHouse(s){
+  const hx=SHEET_X(),hy=HOUSE_Y();
+  return Math.sqrt((s.x-hx)**2+(s.y-hy)**2)-s.r;
+}
+
+function calcEndScore(){
+  const houseR=HOUSE_R[0]();
+  const valid=stones.filter(s=>distToHouse(s)<houseR&&s.stopped);
+  if(valid.length===0)return [0,0];
+  // Find closest of each team
+  const byTeam=[
+    valid.filter(s=>s.team===0).sort((a,b)=>distToHouse(a)-distToHouse(b)),
+    valid.filter(s=>s.team===1).sort((a,b)=>distToHouse(a)-distToHouse(b))
+  ];
+  if(byTeam[0].length===0||byTeam[1].length===0){
+    // One team has all in house
+    const t=byTeam[0].length>0?0:1;
+    return t===0?[byTeam[0].length,0]:[0,byTeam[1].length];
+  }
+  const closest0=distToHouse(byTeam[0][0]);
+  const closest1=distToHouse(byTeam[1][0]);
+  // Scoring team gets points for each stone closer than opponent's closest
+  if(closest0<closest1){
+    const pts=byTeam[0].filter(s=>distToHouse(s)<closest1).length;
+    return [pts,0];
+  } else {
+    const pts=byTeam[1].filter(s=>distToHouse(s)<closest0).length;
+    return [0,pts];
+  }
+}
+
+// ── AI ────────────────────────────────────────────────────────
+function aiThrow(){
+  // Blue team AI: aim roughly at center with some random variation
+  const hx=SHEET_X(),hy=HOUSE_Y(),tx=hx,ty=hy;
+  const sx=SHEET_X(),sy=THROW_Y();
+  const dx=tx-sx+( (Math.random()-0.5)*40*scl );
+  const dy=ty-sy;
+  aimAngle=Math.atan2(dx,-dy)*(0.6+Math.random()*0.5);
+  power=0.55+Math.random()*0.35;
+  curlDir=Math.random()<0.5?-1:1;
+  sweepEffect=0;
+  spawnStone();
+  phase='sliding';
+}
+
+// ── Update ────────────────────────────────────────────────────
+let last=0;
+function update(ts){
+  requestAnimationFrame(update);
+  const dt=Math.min((ts-last)/16,4);last=ts;
+
+  if(gs==='play'){
+    // Update all moving stones
+    let anyMoving=false;
+    for(const s of stones){
+      if(!s.stopped){updateStone(s,dt);anyMoving=true;}
+    }
+
+    // Sweep effect
+    if(sweepActive&&activeStone&&!activeStone.stopped){
+      activeStone.sweepMod=Math.min(activeStone.sweepMod+0.0015*dt,0.008);
+      sweepEffect=Math.min(sweepEffect+dt,60);
+      // Sweep particles
+      if(Math.random()<0.4){
+        particles.push({x:activeStone.x+(Math.random()-0.5)*activeStone.r*2,y:activeStone.y+(Math.random()-0.5)*activeStone.r,vx:(Math.random()-0.5)*0.5,vy:-Math.random()*0.5,life:0.6,col:'rgba(255,255,255,0.7)',size:2*scl});
+      }
+    }
+
+    // Particles
+    particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.life-=0.02*dt;});
+    particles=particles.filter(p=>p.life>0);
+
+    // Phase transitions
+    if(phase==='sliding'&&!anyMoving){
+      // All stones stopped
+      if(stonesThrown>=STONES_PER_END){
+        // End is over
+        const sc=calcEndScore();
+        scores[0]+=sc[0];scores[1]+=sc[1];
+        endScore=sc;
+        ends++;
+        phase='endresult';
+        beep('score');
+      } else {
+        // Next throw
+        turn=stonesThrown%2===0?(ends%2):(1-(ends%2));
+        if(turn===1){
+          // AI turn
+          phase='aiturn';
+          aiThinkTimer=60;
+        } else {
+          phase='aim';
+          aimAngle=0;power=0;powerDir=1;curlDir=0;sweepEffect=0;sweepActive=false;
+          aimSet=false;powerSet=false;
+        }
+      }
+    }
+
+    if(phase==='aiturn'){
+      aiThinkTimer-=dt;
+      if(aiThinkTimer<=0){
+        aiThrow();
+        phase='sliding';
+        stonesThrown++;
+      }
+    }
+
+    if(phase==='aim'&&!aimSet){
+      // power oscillates automatically after aim confirmed
+    }
+    if(phase==='power'){
+      power+=powerDir*0.012*dt;
+      if(power>=1){power=1;powerDir=-1;}
+      if(power<=0){power=0;powerDir=1;}
+    }
+  }
+
+  draw();
+}
+
+// ── Draw ──────────────────────────────────────────────────────
+function draw(){
+  ctx.clearRect(0,0,W,H);
+
+  // Ice sheet background
+  ctx.fillStyle='#d4eef8';
+  ctx.fillRect(0,0,W,H);
+
+  // Sheet lanes (subtle)
+  ctx.strokeStyle='rgba(150,200,230,0.5)';ctx.lineWidth=1;
+  for(let i=1;i<8;i++){
+    ctx.beginPath();ctx.moveTo(W*0.08+i*(W*0.84/8),H*0.04);ctx.lineTo(W*0.08+i*(W*0.84/8),H*0.96);ctx.stroke();
+  }
+
+  // Ice sheen
+  const sheen=ctx.createLinearGradient(0,0,W,H);
+  sheen.addColorStop(0,'rgba(255,255,255,0.18)');
+  sheen.addColorStop(0.5,'rgba(255,255,255,0)');
+  sheen.addColorStop(1,'rgba(180,220,245,0.12)');
+  ctx.fillStyle=sheen;ctx.fillRect(0,0,W,H);
+
+  // Sheet border
+  ctx.strokeStyle='#5ba3c9';ctx.lineWidth=2*scl;
+  ctx.strokeRect(W*0.08,H*0.04,W*0.84,H*0.92);
+
+  // Center line
+  ctx.strokeStyle='rgba(100,160,210,0.6)';ctx.lineWidth=1;ctx.setLineDash([6*scl,4*scl]);
+  ctx.beginPath();ctx.moveTo(SHEET_X(),H*0.04);ctx.lineTo(SHEET_X(),H*0.96);ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Hog line
+  ctx.strokeStyle='rgba(220,50,50,0.6)';ctx.lineWidth=2*scl;
+  ctx.beginPath();ctx.moveTo(W*0.08,HOG_Y());ctx.lineTo(W*0.92,HOG_Y());ctx.stroke();
+  ctx.font=`${7*scl}px sans-serif`;ctx.fillStyle='rgba(220,50,50,0.7)';ctx.textAlign='left';
+  ctx.fillText('HOG LINE',W*0.09,HOG_Y()-3*scl);
+
+  // Back line
+  ctx.strokeStyle='rgba(100,160,210,0.5)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(W*0.08,H*0.06);ctx.lineTo(W*0.92,H*0.06);ctx.stroke();
+
+  // Tee line (through house center)
+  ctx.strokeStyle='rgba(100,160,210,0.6)';ctx.lineWidth=1;ctx.setLineDash([4*scl,3*scl]);
+  ctx.beginPath();ctx.moveTo(W*0.08,HOUSE_Y());ctx.lineTo(W*0.92,HOUSE_Y());ctx.stroke();
+  ctx.setLineDash([]);
+
+  // House rings (scoring target)
+  const hx=SHEET_X(),hy=HOUSE_Y();
+  for(let i=0;i<HOUSE_R.length;i++){
+    ctx.fillStyle=RING_COL[i];
+    ctx.beginPath();ctx.arc(hx,hy,HOUSE_R[i](),0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='rgba(100,150,200,0.3)';ctx.lineWidth=1;ctx.stroke();
+  }
+  // Button (center dot)
+  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(hx,hy,4*scl,0,Math.PI*2);ctx.fill();
+
+  // Throw position marker
+  if(gs==='play'&&(phase==='aim'||phase==='power')){
+    ctx.strokeStyle='rgba(150,200,150,0.5)';ctx.lineWidth=1;ctx.setLineDash([3*scl,3*scl]);
+    ctx.beginPath();ctx.arc(SHEET_X(),THROW_Y(),STONE_R()+4*scl,0,Math.PI*2);ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Aim guide arrow
+  if(gs==='play'&&(phase==='aim'||phase==='power')){
+    const ax=SHEET_X(),ay=THROW_Y();
+    const len=power>0?60*scl*(0.4+power*0.6):50*scl;
+    const ex=ax+Math.sin(aimAngle)*len,ey=ay-Math.cos(aimAngle)*len;
+    ctx.strokeStyle=`rgba(255,230,100,${phase==='power'?0.9:0.6})`;ctx.lineWidth=2*scl;ctx.setLineDash([5*scl,3*scl]);
+    ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(ex,ey);ctx.stroke();ctx.setLineDash([]);
+    // Arrowhead
+    const ang=Math.atan2(ey-ay,ex-ax);
+    ctx.fillStyle=`rgba(255,230,100,${phase==='power'?0.9:0.6})`;
+    ctx.beginPath();ctx.moveTo(ex,ey);
+    ctx.lineTo(ex-10*scl*Math.cos(ang-0.4),ey-10*scl*Math.sin(ang-0.4));
+    ctx.lineTo(ex-10*scl*Math.cos(ang+0.4),ey-10*scl*Math.sin(ang+0.4));
+    ctx.closePath();ctx.fill();
+
+    // Curl direction indicator
+    if(curlDir!==0){
+      const cx2=ax+curlDir*30*scl,cy2=ay-20*scl;
+      ctx.strokeStyle=`rgba(200,180,255,0.8)`;ctx.lineWidth=1.5;
+      ctx.beginPath();ctx.arc(cx2,cy2,8*scl,0,Math.PI*(curlDir>0?1:-1),curlDir<0);ctx.stroke();
+      ctx.fillStyle='rgba(200,180,255,0.8)';
+      ctx.beginPath();
+      const arrowEnd=curlDir>0?{x:cx2-8*scl,y:cy2}:{x:cx2+8*scl,y:cy2};
+      ctx.arc(arrowEnd.x,arrowEnd.y,2*scl,0,Math.PI*2);ctx.fill();
+    }
+  }
+
+  // Trajectory ghost (aim phase)
+  if(gs==='play'&&phase==='aim'&&aimSet){
+    // simple parabolic preview dots
+    let px=SHEET_X(),py=THROW_Y();
+    let pvx=Math.sin(aimAngle)*0.6*18*scl,pvy=-Math.cos(aimAngle)*0.6*18*scl;
+    const curlF=CURL_STRENGTH*curlDir;
+    for(let i=0;i<30;i++){
+      const spd=Math.sqrt(pvx*pvx+pvy*pvy);if(spd<0.5)break;
+      const pnx=pvx/spd,pny=pvy/spd;
+      pvx-=pnx*FRICTION*scl+(-pny)*curlF*spd;
+      pvy-=pny*FRICTION*scl+(pnx)*curlF*spd;
+      px+=pvx;py+=pvy;
+      if(i%2===0){ctx.fillStyle=`rgba(255,255,200,${0.3-i*0.009})`;ctx.beginPath();ctx.arc(px,py,2*scl,0,Math.PI*2);ctx.fill();}
+      if(py<H*0.05)break;
+    }
+  }
+
+  // Stones
+  for(const s of stones){
+    drawStone(s);
+  }
+
+  // Sweep particles
+  for(const p of particles){
+    ctx.globalAlpha=p.life;ctx.fillStyle=p.col;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.size,0,Math.PI*2);ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  // Sweep button area (when sliding)
+  if(gs==='play'&&phase==='sliding'&&activeStone&&!activeStone.stopped){
+    const sx2=W*0.5,sy2=H*0.72;
+    ctx.fillStyle='rgba(0,0,0,0.3)';ctx.beginPath();ctx.arc(sx2,sy2,28*scl,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle=sweepActive?'#69f0ae':'rgba(255,255,255,0.6)';ctx.lineWidth=2*scl;
+    ctx.beginPath();ctx.arc(sx2,sy2,28*scl,0,Math.PI*2);ctx.stroke();
+    ctx.textAlign='center';ctx.fillStyle=sweepActive?'#69f0ae':'rgba(255,255,255,0.8)';
+    ctx.font=`bold ${9*scl}px sans-serif`;
+    ctx.fillText('SWEEP',sx2,sy2+3*scl);
+    ctx.font=`${7*scl}px sans-serif`;ctx.fillStyle='rgba(255,255,255,0.5)';
+    ctx.fillText('hold',sx2,sy2-10*scl);
+  }
+
+  // HUD
+  drawHUD();
+
+  // Phase UI
+  if(gs==='play'){
+    if(phase==='aim'){
+      drawPhaseHint(!aimSet?'DRAG to aim':'Tap CURL then TAP to set power');
+      if(aimSet){
+        // curl selector
+        drawCurlSelector();
+      }
+    } else if(phase==='power'){
+      drawPhaseHint('TAP to release at right power!');
+      drawPowerBar();
+    } else if(phase==='aiturn'||phase==='sliding'){
+      if(activeStone&&!activeStone.stopped&&turn===0){
+        drawPhaseHint('Hold SWEEP to guide the stone!');
+      }
+    }
+  }
+
+  // Start screen
+  if(gs==='start'){
+    ctx.fillStyle='rgba(10,22,40,0.82)';ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.font=`bold ${48*scl}px "Arial Black",sans-serif`;
+    ctx.fillStyle='#e3f4ff';ctx.shadowColor='#7ecfff';ctx.shadowBlur=24;
+    ctx.fillText('CURL',W/2,H*0.3);ctx.shadowBlur=0;
+    ctx.font=`${13*scl}px sans-serif`;ctx.fillStyle='rgba(200,235,255,0.85)';
+    ctx.fillText('Olympic Ice Curling',W/2,H*0.38);
+    ctx.font=`${11*scl}px sans-serif`;ctx.fillStyle='rgba(180,220,255,0.7)';
+    ctx.fillText('Drag to aim  •  Tap to set power',W/2,H*0.50);
+    ctx.fillText('Choose curl direction  •  Hold to sweep',W/2,H*0.56);
+    ctx.fillText('6 ends  •  Red vs Blue',W/2,H*0.62);
+    ctx.font=`bold ${15*scl}px sans-serif`;ctx.fillStyle='#69f0ae';ctx.shadowColor='#69f0ae';ctx.shadowBlur=12;
+    ctx.fillText('TAP TO PLAY',W/2,H*0.74);ctx.shadowBlur=0;
+  }
+
+  // End result overlay
+  if(gs==='play'&&phase==='endresult'){
+    ctx.fillStyle='rgba(10,22,40,0.78)';ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.font=`bold ${22*scl}px "Arial Black",sans-serif`;
+    ctx.fillStyle='#fff';ctx.fillText(`END ${ends} COMPLETE`,W/2,H*0.35);
+    ctx.font=`${14*scl}px sans-serif`;
+    const sc=endScore;
+    if(sc[0]>0){ctx.fillStyle=TEAM_COL[0];ctx.fillText(`RED scores ${sc[0]}`,W/2,H*0.44);}
+    else if(sc[1]>0){ctx.fillStyle=TEAM_COL[1];ctx.fillText(`BLUE scores ${sc[1]}`,W/2,H*0.44);}
+    else{ctx.fillStyle='#aaa';ctx.fillText('Blank end – no score',W/2,H*0.44);}
+    ctx.font=`bold ${18*scl}px sans-serif`;
+    ctx.fillStyle=TEAM_COL[0];ctx.fillText(`RED ${scores[0]}`,W/2-50*scl,H*0.54);
+    ctx.fillStyle='#fff';ctx.fillText('–',W/2,H*0.54);
+    ctx.fillStyle=TEAM_COL[1];ctx.fillText(`${scores[1]} BLUE`,W/2+50*scl,H*0.54);
+    ctx.font=`${12*scl}px sans-serif`;ctx.fillStyle='rgba(255,255,255,0.7)';
+    ctx.fillText(ends>=MAX_ENDS?'TAP for Final Score':'TAP for Next End',W/2,H*0.66);
+  }
+
+  // Game over
+  if(gs==='over'){
+    ctx.fillStyle='rgba(10,22,40,0.88)';ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.font=`bold ${28*scl}px "Arial Black",sans-serif`;
+    ctx.fillStyle='#fff';ctx.shadowColor='#7ecfff';ctx.shadowBlur=16;
+    ctx.fillText('GAME OVER',W/2,H*0.28);ctx.shadowBlur=0;
+    const winner=scores[0]>scores[1]?0:scores[1]>scores[0]?1:-1;
+    ctx.font=`bold ${20*scl}px sans-serif`;
+    if(winner>=0){
+      ctx.fillStyle=TEAM_COL[winner];ctx.shadowColor=TEAM_COL[winner];ctx.shadowBlur=14;
+      ctx.fillText(TEAM_NAME[winner]+' WINS!',W/2,H*0.40);ctx.shadowBlur=0;
+    } else {
+      ctx.fillStyle='#ffd740';ctx.fillText('TIE GAME!',W/2,H*0.40);
+    }
+    ctx.font=`bold ${22*scl}px sans-serif`;
+    ctx.fillStyle=TEAM_COL[0];ctx.fillText(`RED  ${scores[0]}`,W/2-55*scl,H*0.52);
+    ctx.fillStyle='#fff';ctx.fillText('–',W/2,H*0.52);
+    ctx.fillStyle=TEAM_COL[1];ctx.fillText(`${scores[1]}  BLUE`,W/2+55*scl,H*0.52);
+    ctx.font=`bold ${14*scl}px sans-serif`;ctx.fillStyle='#69f0ae';ctx.shadowColor='#69f0ae';ctx.shadowBlur=10;
+    ctx.fillText('TAP TO PLAY AGAIN',W/2,H*0.66);ctx.shadowBlur=0;
+  }
+}
+
+function drawStone(s){
+  ctx.save();
+  const r=s.r;
+  // Shadow
+  ctx.fillStyle='rgba(0,0,0,0.18)';ctx.beginPath();ctx.ellipse(s.x+2*scl,s.y+3*scl,r,r*0.5,0,0,Math.PI*2);ctx.fill();
+  // Stone body (granite look)
+  const g=ctx.createRadialGradient(s.x-r*0.3,s.y-r*0.3,r*0.1,s.x,s.y,r);
+  const c=TEAM_COL[s.team];
+  g.addColorStop(0,lighten(c,40));g.addColorStop(0.6,c);g.addColorStop(1,darken(c,40));
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(s.x,s.y,r,0,Math.PI*2);ctx.fill();
+  // Handle (top)
+  ctx.fillStyle=s.team===0?'#ffcdd2':'#bbdefb';
+  ctx.beginPath();ctx.ellipse(s.x,s.y,r*0.55,r*0.25,0,0,Math.PI*2);ctx.fill();
+  // Handle knob
+  ctx.fillStyle=s.team===0?'#ef9a9a':'#90caf9';
+  ctx.beginPath();ctx.arc(s.x,s.y,r*0.2,0,Math.PI*2);ctx.fill();
+  // Shine
+  ctx.fillStyle='rgba(255,255,255,0.3)';ctx.beginPath();ctx.ellipse(s.x-r*0.25,s.y-r*0.3,r*0.22,r*0.14,Math.PI*0.3,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+
+function lighten(hex,amt){
+  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  return `rgb(${Math.min(255,r+amt)},${Math.min(255,g+amt)},${Math.min(255,b+amt)})`;
+}
+function darken(hex,amt){
+  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  return `rgb(${Math.max(0,r-amt)},${Math.max(0,g-amt)},${Math.max(0,b-amt)})`;
+}
+
+function drawHUD(){
+  // Score bar
+  ctx.fillStyle='rgba(10,22,40,0.75)';
+  ctx.beginPath();if(ctx.roundRect)ctx.roundRect(W*0.08,4*scl,W*0.84,28*scl,4*scl);else ctx.rect(W*0.08,4*scl,W*0.84,28*scl);ctx.fill();
+
+  ctx.textAlign='left';ctx.font=`bold ${11*scl}px sans-serif`;
+  ctx.fillStyle=TEAM_COL[0];ctx.fillText('RED',W*0.1,18*scl);
+  ctx.font=`bold ${16*scl}px "Arial Black",sans-serif`;ctx.fillText(scores[0],W*0.1+28*scl,20*scl);
+
+  ctx.textAlign='center';ctx.font=`${9*scl}px sans-serif`;ctx.fillStyle='rgba(200,230,255,0.7)';
+  ctx.fillText(`END ${Math.min(ends+1,MAX_ENDS)}/${MAX_ENDS}`,W/2,13*scl);
+  // Stone count
+  const thrown=stonesThrown;
+  ctx.font=`${8*scl}px sans-serif`;
+  ctx.fillText(`${Math.max(0,STONES_PER_END-thrown)} stones left`,W/2,24*scl);
+
+  ctx.textAlign='right';ctx.font=`bold ${11*scl}px sans-serif`;
+  ctx.fillStyle=TEAM_COL[1];ctx.fillText('BLUE',W*0.92,18*scl);
+  ctx.font=`bold ${16*scl}px "Arial Black",sans-serif`;ctx.fillText(scores[1],W*0.92-28*scl,20*scl);
+
+  // Turn indicator
+  if(gs==='play'&&(phase==='aim'||phase==='power')){
+    ctx.textAlign='center';ctx.font=`bold ${9*scl}px sans-serif`;
+    ctx.fillStyle=TEAM_COL[turn];ctx.shadowColor=TEAM_COL[turn];ctx.shadowBlur=6;
+    ctx.fillText(TEAM_NAME[turn]+' THROWS',W/2,38*scl);ctx.shadowBlur=0;
+  }
+}
+
+function drawPhaseHint(txt){
+  ctx.fillStyle='rgba(10,22,40,0.65)';
+  ctx.beginPath();if(ctx.roundRect)ctx.roundRect(W*0.1,H-36*scl,W*0.8,22*scl,6*scl);else ctx.rect(W*0.1,H-36*scl,W*0.8,22*scl);ctx.fill();
+  ctx.textAlign='center';ctx.font=`${9*scl}px sans-serif`;ctx.fillStyle='rgba(200,235,255,0.9)';
+  ctx.fillText(txt,W/2,H-22*scl);
+}
+
+function drawCurlSelector(){
+  // Two curl direction buttons near throwing position
+  const by=THROW_Y()-40*scl;
+  const bw=40*scl,bh=22*scl;
+  // Left curl
+  const lx=SHEET_X()-55*scl,rx=SHEET_X()+15*scl;
+  ctx.fillStyle=curlDir===-1?'rgba(200,180,255,0.8)':'rgba(60,80,120,0.7)';
+  ctx.beginPath();if(ctx.roundRect)ctx.roundRect(lx,by,bw,bh,5*scl);else ctx.rect(lx,by,bw,bh);ctx.fill();
+  ctx.textAlign='center';ctx.font=`bold ${8*scl}px sans-serif`;ctx.fillStyle='#fff';
+  ctx.fillText('← CURL',lx+bw/2,by+bh*0.65);
+
+  ctx.fillStyle=curlDir===1?'rgba(200,180,255,0.8)':'rgba(60,80,120,0.7)';
+  ctx.beginPath();if(ctx.roundRect)ctx.roundRect(rx,by,bw,bh,5*scl);else ctx.rect(rx,by,bw,bh);ctx.fill();
+  ctx.fillStyle='#fff';ctx.fillText('CURL →',rx+bw/2,by+bh*0.65);
+}
+
+function drawPowerBar(){
+  const bx=W*0.2,by=THROW_Y()-30*scl,bw=W*0.6,bh=14*scl;
+  ctx.fillStyle='rgba(10,22,40,0.7)';ctx.beginPath();if(ctx.roundRect)ctx.roundRect(bx,by,bw,bh,4*scl);else ctx.rect(bx,by,bw,bh);ctx.fill();
+  // Power fill
+  const pw=bw*power;
+  const pg=ctx.createLinearGradient(bx,0,bx+bw,0);
+  pg.addColorStop(0,'#69f0ae');pg.addColorStop(0.6,'#ffd740');pg.addColorStop(1,'#e53935');
+  ctx.fillStyle=pg;ctx.beginPath();if(ctx.roundRect)ctx.roundRect(bx,by,pw,bh,4*scl);else ctx.rect(bx,by,pw,bh);ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.4)';ctx.lineWidth=1;ctx.beginPath();if(ctx.roundRect)ctx.roundRect(bx,by,bw,bh,4*scl);else ctx.rect(bx,by,bw,bh);ctx.stroke();
+  ctx.textAlign='center';ctx.font=`bold ${8*scl}px sans-serif`;ctx.fillStyle='rgba(255,255,255,0.9)';
+  ctx.fillText('POWER',W/2,by-3*scl);
+}
+
+// ── Input ─────────────────────────────────────────────────────
+function getXY(e){
+  const r=cv.getBoundingClientRect();
+  return{x:(e.clientX-r.left)*(W/r.width),y:(e.clientY-r.top)*(H/r.height)};
+}
+
+function inSweepZone(x,y){
+  const sx2=W*0.5,sy2=H*0.72;
+  return Math.sqrt((x-sx2)**2+(y-sy2)**2)<32*scl;
+}
+
+function inCurlLeft(x,y){
+  const by=THROW_Y()-40*scl,lx=SHEET_X()-55*scl;
+  return x>=lx&&x<=lx+40*scl&&y>=by&&y<=by+22*scl;
+}
+function inCurlRight(x,y){
+  const by=THROW_Y()-40*scl,rx=SHEET_X()+15*scl;
+  return x>=rx&&x<=rx+40*scl&&y>=by&&y<=by+22*scl;
+}
+
+cv.addEventListener('pointerdown',e=>{
+  e.preventDefault();AC.resume();
+  const {x,y}=getXY(e);
+  if(gs==='start'){gs='play';init();initEnd();return;}
+  if(gs==='over'){gs='start';return;}
+  if(gs==='play'&&phase==='endresult'){
+    if(ends>=MAX_ENDS){gs='over';}
+    else{initEnd();}
+    return;
+  }
+  if(gs==='play'){
+    if(phase==='aim'&&turn===0){
+      if(aimSet){
+        // Check curl buttons
+        if(inCurlLeft(x,y)){curlDir=-1;return;}
+        if(inCurlRight(x,y)){curlDir=1;return;}
+        // Tap elsewhere → go to power
+        phase='power';powerDir=1;power=0;
+        return;
+      }
+      drag.active=true;drag.sx=x;drag.sy=y;
+    } else if(phase==='power'&&turn===0){
+      // Commit throw
+      spawnStone();
+      stonesThrown++;
+      phase='sliding';
+    } else if(phase==='sliding'&&turn===0){
+      // Sweep
+      if(inSweepZone(x,y)&&activeStone&&!activeStone.stopped){
+        sweepActive=true;
+        beep('sweep');
+      }
+    }
+  }
+});
+
+cv.addEventListener('pointermove',e=>{
+  e.preventDefault();
+  const {x,y}=getXY(e);
+  if(gs==='play'&&phase==='aim'&&drag.active&&turn===0){
+    // Aim direction: drag from throw pos upward
+    const ax=SHEET_X(),ay=THROW_Y();
+    const dx=x-ax,dy=y-ay;
+    aimAngle=Math.atan2(dx,-dy);
+    aimAngle=Math.max(-Math.PI/3,Math.min(Math.PI/3,aimAngle)); // limit to ±60°
+    aimSet=true;
+  }
+  if(gs==='play'&&phase==='sliding'&&inSweepZone(x,y)&&activeStone&&!activeStone.stopped){
+    if(sweepActive)beep('sweep');
+  }
+});
+
+cv.addEventListener('pointerup',e=>{
+  e.preventDefault();
+  drag.active=false;
+  sweepActive=false;
+});
+
+// Also support sweep via mouse hold on sweep area
+cv.addEventListener('pointermove',e=>{
+  // Already handled above - sweepActive set on pointerdown, cleared on pointerup
+});
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

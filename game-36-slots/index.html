@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>SLOTS</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#1a0a00;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H;
+function resize() { W = cv.width = window.innerWidth; H = cv.height = window.innerHeight; }
+resize();
+window.addEventListener('resize', resize);
+
+// ── Audio ─────────────────────────────────────────────────
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function sfx(type) {
+  const t = AC.currentTime;
+  function tone(f, dur, wave, gain, delay=0) {
+    const o=AC.createOscillator(),g=AC.createGain();
+    o.connect(g);g.connect(AC.destination);
+    o.type=wave;o.frequency.value=f;
+    g.gain.setValueAtTime(gain,t+delay);
+    g.gain.linearRampToValueAtTime(0,t+delay+dur);
+    o.start(t+delay);o.stop(t+delay+dur+0.02);
+  }
+  if (type==='pull')    { tone(180,0.15,'sine',0.3); tone(120,0.2,'sine',0.2,0.1); }
+  if (type==='tick')    tone(800,0.04,'square',0.1);
+  if (type==='stop')    { tone(300,0.1,'sine',0.25); tone(200,0.08,'sine',0.18,0.08); }
+  if (type==='win')     [523,659,784].forEach((f,i)=>tone(f,0.12,'sine',0.22,i*0.1));
+  if (type==='bigwin')  [523,659,784,1047,1318].forEach((f,i)=>tone(f,0.14,'triangle',0.25,i*0.09));
+  if (type==='jackpot') {
+    for(let i=0;i<8;i++) tone(523*(1+i*0.15),0.1,'sine',0.2,i*0.12);
+  }
+  if (type==='lose')    tone(200,0.25,'sawtooth',0.18);
+  if (type==='coin')    { tone(1200,0.06,'sine',0.2); tone(1000,0.08,'sine',0.15,0.05); }
+  if (type==='gameover'){ [330,262,196].forEach((f,i)=>tone(f,0.18,'square',0.18,i*0.2)); }
+}
+
+// ── Symbols ───────────────────────────────────────────────
+const SYMS    = ['🍒','🍋','🍊','🍇','🍉','🔔','⭐'];
+const WEIGHTS = [24, 20, 17, 13, 10, 8, 5]; // out of 97
+const PAYS3   = [3, 5, 8, 10, 15, 25, 80];  // 3-of-a-kind payouts
+
+const STRIP_LEN = 24;
+const SPIN_SPEED = 14; // symbols per second
+
+function makeStrip() {
+  const wt = WEIGHTS.reduce((a,b)=>a+b,0);
+  return Array.from({length:STRIP_LEN}, () => {
+    let r = Math.random()*wt;
+    for(let j=0;j<SYMS.length;j++){ r-=WEIGHTS[j]; if(r<=0) return j; }
+    return SYMS.length-1;
+  });
+}
+
+function getWin(r) {
+  if (r[0]===r[1]&&r[1]===r[2]) return {pts:PAYS3[r[0]], label:SYMS[r[0]]+SYMS[r[0]]+SYMS[r[0]]};
+  const stars=r.filter(x=>x===6).length, bells=r.filter(x=>x===5).length;
+  if (stars===2) return {pts:8,  label:'2× ⭐'};
+  if (bells===2) return {pts:4,  label:'2× 🔔'};
+  if (r.includes(0)) return {pts:1, label:'🍒'};
+  return {pts:0, label:''};
+}
+
+// ── State ─────────────────────────────────────────────────
+let gs = 'start'; // start | idle | pulling | spinning | result | over
+let credits = 20, best = +localStorage.getItem('slots_best')||0;
+let lastWin = 0, winLabel = '';
+let flashT = 0; // win flash timer
+
+let reels = [null,null,null];
+function initReels() {
+  reels = Array.from({length:3}, () => ({
+    strip: makeStrip(),
+    pos:   Math.random() * STRIP_LEN,
+    stopped: true,
+    result: 0
+  }));
+}
+
+let spinStart = 0;
+const STOP_TIMES = [1300, 2000, 2700];
+
+// Lever animation: 0=up, 1=down
+let leverT = 0, leverDir = 0; // leverDir: 0=idle, 1=going down, -1=going up
+
+let lastTs = 0;
+let tickTimer = 0;
+
+function startSpin() {
+  if (gs!=='idle') return;
+  credits--;
+  reels.forEach(r => { r.stopped=false; r.startPos=r.pos; });
+  spinStart = performance.now();
+  leverDir = 1;
+  gs = 'pulling';
+  sfx('pull');
+}
+
+// ── Helpers ───────────────────────────────────────────────
+function rr(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.arcTo(x+w,y,x+w,y+r,r);
+  ctx.lineTo(x+w,y+h-r);ctx.arcTo(x+w,y+h,x+w-r,y+h,r);
+  ctx.lineTo(x+r,y+h);ctx.arcTo(x,y+h,x,y+h-r,r);
+  ctx.lineTo(x,y+r);ctx.arcTo(x,y,x+r,y,r);ctx.closePath();
+}
+
+function grad(x,y,w,h,c1,c2) {
+  const g=ctx.createLinearGradient(x,y,x,y+h);
+  g.addColorStop(0,c1); g.addColorStop(1,c2); return g;
+}
+
+// ── Machine layout (computed each frame) ─────────────────
+function layout() {
+  const mw = Math.min(W*0.94, 370);
+  const mh = Math.min(H*0.92, 600);
+  const mx = (W-mw)/2, my = (H-mh)/2;
+  const reelAreaW = mw*0.72;
+  const reelW = (reelAreaW - mw*0.06) / 3;
+  const reelH = Math.min(reelW*2.6, mh*0.32);
+  const reelGap = mw*0.03;
+  const reelX0 = mx + mw*0.04;
+  const reelCY = my + mh*0.42;
+  const leverX = mx + mw*0.835;
+  const leverTrackTop = my + mh*0.32;
+  const leverTrackBot = my + mh*0.60;
+  return {mw,mh,mx,my,reelW,reelH,reelGap,reelX0,reelCY,leverX,leverTrackTop,leverTrackBot};
+}
+
+// ── Reel drawing ──────────────────────────────────────────
+function drawReel(cx, cy, rw, rh, reel, highlight) {
+  const symH = rh/3;
+  const x=cx-rw/2, y=cy-rh/2;
+  const rad=rw*0.08;
+
+  // Background
+  ctx.save();
+  rr(x,y,rw,rh,rad);
+  ctx.fillStyle='#0d0d0d'; ctx.fill();
+  ctx.strokeStyle = highlight ? '#ffd740' : 'rgba(255,255,255,0.15)';
+  ctx.lineWidth = highlight ? 3 : 1.5; ctx.stroke();
+  ctx.clip();
+
+  // Symbols
+  const pos = reel.pos;
+  const intPos = Math.floor(pos);
+  const frac = pos - intPos;
+  const fs = Math.min(symH*0.72, 42);
+  ctx.font = `${fs}px serif`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+
+  for(let i=-1;i<=3;i++){
+    const idx=((intPos+i)%STRIP_LEN+STRIP_LEN)%STRIP_LEN;
+    const sy = cy + (i - frac - 1)*symH + symH/2;
+    ctx.fillText(SYMS[reel.strip[idx]], cx, sy);
+  }
+  ctx.restore();
+
+  // Payline shine
+  ctx.fillStyle='rgba(255,220,0,0.06)';
+  ctx.fillRect(x,cy-symH/2,rw,symH);
+
+  // Glass sheen
+  const sheen=ctx.createLinearGradient(x,y,x+rw,y+rh);
+  sheen.addColorStop(0,'rgba(255,255,255,0.06)');
+  sheen.addColorStop(0.4,'rgba(255,255,255,0.02)');
+  sheen.addColorStop(1,'rgba(0,0,0,0.15)');
+  rr(x,y,rw,rh,rad); ctx.fillStyle=sheen; ctx.fill();
+}
+
+// ── Main render ───────────────────────────────────────────
+function drawMachine(now, dt) {
+  const {mw,mh,mx,my,reelW,reelH,reelGap,reelX0,reelCY,leverX,leverTrackTop,leverTrackBot} = layout();
+
+  // Machine body
+  rr(mx,my,mw,mh,mw*0.05);
+  ctx.fillStyle=grad(mx,my,mw,mh,'#2a1a00','#1a0e00'); ctx.fill();
+  rr(mx,my,mw,mh,mw*0.05);
+  ctx.strokeStyle='#8B6914'; ctx.lineWidth=3; ctx.stroke();
+
+  // Decorative top band
+  const topH=mh*0.13;
+  rr(mx,my,mw,topH+mw*0.05,mw*0.05);
+  ctx.fillStyle=grad(mx,my,mw,topH,'#b8860b','#7a5400'); ctx.fill();
+
+  // Title
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(mw*0.14,44)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#fff';
+  ctx.shadowColor='#ffd740'; ctx.shadowBlur=12;
+  ctx.fillText('SLOTS', mx+mw/2, my+topH*0.52);
+  ctx.shadowBlur=0;
+
+  // Decorative lights on top band
+  const lightCount=9;
+  for(let i=0;i<lightCount;i++){
+    const lx=mx+mw*0.06+i*(mw*0.88/(lightCount-1));
+    const lit=(Math.floor(now/200)+i)%3===0;
+    ctx.beginPath(); ctx.arc(lx, my+topH*0.88, mw*0.018, 0, Math.PI*2);
+    ctx.fillStyle = lit ? '#ffe066' : '#3a2800';
+    ctx.fill();
+    if(lit){ctx.shadowColor='#ffd740';ctx.shadowBlur=8;ctx.fill();ctx.shadowBlur=0;}
+  }
+
+  // Inner panel (dark)
+  const px=mx+mw*0.03, py=my+topH, pw=mw*0.74, ph=mh*0.56;
+  rr(px,py,pw,ph,mw*0.03);
+  ctx.fillStyle='#0a0800'; ctx.fill();
+  ctx.strokeStyle='#5a3e00'; ctx.lineWidth=2; ctx.stroke();
+
+  // Payline marker left & right
+  const plY=reelCY, plH=reelH/3;
+  ctx.fillStyle='rgba(255,220,0,0.35)';
+  ctx.fillRect(mx+mw*0.02, plY-plH/2, mw*0.03, plH);
+  ctx.fillRect(mx+pw+mw*0.04, plY-plH/2, mw*0.03, plH);
+  ctx.fillStyle='#ffd740'; ctx.font=`bold ${Math.min(mw*0.03,10)}px Arial`;
+  ctx.textAlign='center'; ctx.fillText('PAY', mx+mw*0.035, plY-plH/2-6);
+
+  // Reels
+  const winResult = gs==='result'&&lastWin>0;
+  for(let i=0;i<3;i++){
+    const cx=reelX0+i*(reelW+reelGap)+reelW/2;
+    const hl=winResult&&flashT>0&&Math.floor(flashT/120)%2===0;
+    drawReel(cx, reelCY, reelW, reelH, reels[i], hl);
+  }
+
+  // ── Lever ─────────────────────────────────────────────
+  const lcy = leverTrackTop + (leverTrackBot-leverTrackTop)*leverT;
+
+  // Track
+  ctx.strokeStyle='#5a3e00'; ctx.lineWidth=mw*0.03;
+  ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(leverX,leverTrackTop); ctx.lineTo(leverX,leverTrackBot); ctx.stroke();
+  ctx.strokeStyle='#8B6914'; ctx.lineWidth=mw*0.015;
+  ctx.beginPath(); ctx.moveTo(leverX,leverTrackTop); ctx.lineTo(leverX,leverTrackBot); ctx.stroke();
+
+  // Base plate
+  rr(leverX-mw*0.06,leverTrackBot,mw*0.12,mh*0.04,mw*0.02);
+  ctx.fillStyle='#7a5400'; ctx.fill();
+
+  // Arm
+  ctx.strokeStyle='#c8922a'; ctx.lineWidth=mw*0.025; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(leverX,leverTrackTop+mh*0.02); ctx.lineTo(leverX,lcy); ctx.stroke();
+
+  // Knob
+  const knobR=mw*0.065;
+  ctx.beginPath(); ctx.arc(leverX,lcy,knobR,0,Math.PI*2);
+  const kg=ctx.createRadialGradient(leverX-knobR*0.3,lcy-knobR*0.3,0,leverX,lcy,knobR);
+  kg.addColorStop(0,'#ff4444'); kg.addColorStop(1,'#8b0000');
+  ctx.fillStyle=kg; ctx.fill();
+  ctx.strokeStyle='#ff6666'; ctx.lineWidth=2; ctx.stroke();
+  // knob shine
+  ctx.beginPath(); ctx.arc(leverX-knobR*0.3,lcy-knobR*0.3,knobR*0.28,0,Math.PI*2);
+  ctx.fillStyle='rgba(255,255,255,0.35)'; ctx.fill();
+
+  // ── Credits panel ────────────────────────────────────────
+  const cpY=my+mh*0.67, cpH=mh*0.08;
+  rr(mx+mw*0.05,cpY,mw*0.5,cpH,cpH*0.25);
+  ctx.fillStyle='#050500'; ctx.fill();
+  ctx.strokeStyle='#3a2800'; ctx.lineWidth=1.5; ctx.stroke();
+  ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.font=`${Math.min(mw*0.038,13)}px 'Courier New',monospace`;
+  ctx.fillStyle='#22cc22'; ctx.fillText('CREDITS', mx+mw*0.09, cpY+cpH*0.35);
+  ctx.font=`bold ${Math.min(mw*0.095,32)}px 'Courier New',monospace`;
+  ctx.fillText(String(credits).padStart(3,'0'), mx+mw*0.09, cpY+cpH*0.75);
+
+  // Win display
+  const wpY=my+mh*0.67, wpH=mh*0.08;
+  rr(mx+mw*0.58,wpY,mw*0.36,wpH,cpH*0.25);
+  ctx.fillStyle='#050500'; ctx.fill();
+  ctx.strokeStyle='#3a2800'; ctx.lineWidth=1.5; ctx.stroke();
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`${Math.min(mw*0.038,13)}px 'Courier New',monospace`;
+  ctx.fillStyle='#22cc22';
+  ctx.fillText('WIN', mx+mw*0.76, wpY+cpH*0.35);
+  ctx.font=`bold ${Math.min(mw*0.09,30)}px 'Courier New',monospace`;
+  ctx.fillStyle = lastWin>0 ? '#ffdd00' : '#22cc22';
+  ctx.fillText(String(lastWin>0?lastWin:0).padStart(3,'0'), mx+mw*0.76, wpY+cpH*0.75);
+
+  // ── Result text ───────────────────────────────────────────
+  if (gs==='result'&&lastWin>0&&flashT>0) {
+    const alpha=Math.min(1,flashT/200)*0.9;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    const label = lastWin>=PAYS3[6]?'JACKPOT!':lastWin>=PAYS3[4]?'BIG WIN!':winLabel;
+    ctx.font=`bold ${Math.min(mw*0.12,40)}px 'Arial Black',Arial`;
+    ctx.fillStyle=`rgba(255,215,0,${alpha})`;
+    ctx.shadowColor='#ff8800'; ctx.shadowBlur=20;
+    ctx.fillText(label, mx+mw*0.4, my+mh*0.8);
+    ctx.shadowBlur=0;
+  }
+
+  // ── Pay table ─────────────────────────────────────────────
+  const ptX=mx+mw*0.04, ptY=my+mh*0.78;
+  ctx.textAlign='left'; ctx.textBaseline='top';
+  ctx.font=`${Math.min(mw*0.031,10.5)}px 'Courier New',monospace`;
+  const ptRows=[
+    ['⭐⭐⭐','80'],['🔔🔔🔔','25'],['🍉🍉🍉','15'],['🍇🍇🍇','10'],
+    ['🍊🍊🍊','8'],['🍋🍋🍋','5'],['🍒🍒🍒','3'],['⭐⭐','8'],['🔔🔔','4'],['🍒','1'],
+  ];
+  const cols=2, colW=mw*0.46;
+  ptRows.forEach(([sym,pts],i)=>{
+    const col=Math.floor(i/5), row=i%5;
+    const px2=ptX+col*colW, py2=ptY+row*(mh*0.034);
+    ctx.fillStyle='rgba(255,255,255,0.35)';
+    ctx.fillText(sym, px2, py2);
+    ctx.textAlign='right';
+    ctx.fillText(pts, px2+colW*0.88, py2);
+    ctx.textAlign='left';
+  });
+
+  // PULL prompt
+  if(gs==='idle'){
+    const pa=0.6+0.4*Math.sin(now*0.004);
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font=`bold ${Math.min(mw*0.048,16)}px Arial`;
+    ctx.fillStyle=`rgba(255,220,80,${pa})`;
+    ctx.fillText('PULL LEVER →', mx+mw*0.38, my+mh*0.6);
+  }
+
+  // best
+  ctx.textAlign='right'; ctx.textBaseline='middle';
+  ctx.font=`${Math.min(mw*0.032,11)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.25)';
+  ctx.fillText(`BEST: ${best}`, mx+mw-mw*0.04, my+mh-mh*0.02);
+}
+
+// ── Game loop ─────────────────────────────────────────────
+function draw(ts=0) {
+  requestAnimationFrame(draw);
+  const now=ts, dt=Math.min(ts-lastTs,50); lastTs=ts;
+
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#1a0a00'; ctx.fillRect(0,0,W,H);
+
+  if(gs==='start') {
+    drawStartScreen(now);
+    return;
+  }
+  if(gs==='over') {
+    drawOverScreen(now);
+    return;
+  }
+
+  // Update lever
+  if(leverDir===1) {
+    leverT=Math.min(1,leverT+dt/220);
+    if(leverT>=1){ leverDir=-1; gs='spinning'; spinStart=now; }
+  } else if(leverDir===-1) {
+    leverT=Math.max(0,leverT-dt/280);
+    if(leverT<=0) leverDir=0;
+  }
+
+  // Update reels
+  if(gs==='spinning'||gs==='pulling') {
+    const elapsed=now-spinStart;
+    let allStopped=true;
+    reels.forEach((reel,i)=>{
+      if(!reel.stopped){
+        allStopped=false;
+        if(elapsed>STOP_TIMES[i]){
+          reel.pos=Math.round(reel.pos)%STRIP_LEN;
+          reel.stopped=true;
+          reel.result=reel.strip[reel.pos%STRIP_LEN];
+          sfx('stop');
+        } else {
+          reel.pos=(reel.pos+SPIN_SPEED*dt/1000)%STRIP_LEN;
+          // tick sound every ~1 symbol
+          tickTimer-=dt;
+          if(tickTimer<=0){ sfx('tick'); tickTimer=60; }
+        }
+      }
+    });
+    if(allStopped&&gs==='spinning'){
+      const res=reels.map(r=>r.result);
+      const w=getWin(res);
+      lastWin=w.pts; winLabel=w.label;
+      credits+=lastWin;
+      best=Math.max(credits,best);
+      localStorage.setItem('slots_best',best);
+      flashT=lastWin>0?2400:0;
+      gs='result';
+      if(lastWin>=PAYS3[6]) sfx('jackpot');
+      else if(lastWin>=PAYS3[4]) sfx('bigwin');
+      else if(lastWin>0) { sfx('win'); sfx('coin'); }
+      else sfx('lose');
+    }
+  }
+
+  if(gs==='result'&&flashT>0) flashT-=dt;
+
+  drawMachine(now, dt);
+}
+
+function drawStartScreen(now) {
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(W*0.2,80)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#ffd740';
+  ctx.shadowColor='#ff8800'; ctx.shadowBlur=20;
+  ctx.fillText('SLOTS',W/2,H*0.26);
+  ctx.shadowBlur=0;
+
+  // preview symbols
+  const syms=['🍒','⭐','🔔','🍇','🍉'];
+  const sz=Math.min(W*0.1,40);
+  ctx.font=`${sz}px serif`;
+  syms.forEach((s,i)=>{
+    const angle=(i/syms.length)*Math.PI*2+now*0.001;
+    const rx=W/2+Math.cos(angle)*W*0.28, ry=H*0.5+Math.sin(angle)*H*0.08;
+    ctx.fillText(s,rx,ry);
+  });
+
+  const p=0.65+0.35*Math.sin(now*0.003);
+  ctx.fillStyle=`rgba(255,255,255,${p})`;
+  ctx.font=`bold ${Math.min(W*0.055,22)}px Arial`;
+  ctx.fillText('TAP TO PLAY',W/2,H*0.85);
+}
+
+function drawOverScreen(now) {
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(W*0.12,52)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#f44336'; ctx.fillText('OUT OF',W/2,H*0.3);
+  ctx.fillText('CREDITS',W/2,H*0.38);
+  if(best>0){
+    ctx.font=`bold ${Math.min(W*0.055,22)}px Arial`;
+    ctx.fillStyle='#ffd740'; ctx.fillText(`BEST: ${best}`,W/2,H*0.52);
+  }
+  const p=0.65+0.35*Math.sin(now*0.003);
+  ctx.fillStyle=`rgba(255,255,255,${p})`;
+  ctx.font=`bold ${Math.min(W*0.055,22)}px Arial`;
+  ctx.fillText('TAP TO PLAY AGAIN',W/2,H*0.8);
+}
+
+// ── Input ─────────────────────────────────────────────────
+function tap(x,y) {
+  if(AC.state==='suspended') AC.resume();
+  if(gs==='start') {
+    initReels(); credits=20; lastWin=0; leverT=0; leverDir=0; gs='idle';
+    return;
+  }
+  if(gs==='over') {
+    initReels(); credits=20; lastWin=0; leverT=0; leverDir=0; gs='idle';
+    return;
+  }
+  if(gs==='result') {
+    if(credits<=0){ gs='over'; return; }
+    lastWin=0;
+    initReels();
+    leverT=0; leverDir=0;
+    gs='idle';
+    return;
+  }
+  if(gs==='idle') {
+    if(credits<=0){ gs='over'; return; }
+    startSpin();
+  }
+}
+
+cv.addEventListener('click',      e=>tap(e.clientX,e.clientY));
+cv.addEventListener('touchstart', e=>{e.preventDefault();tap(e.touches[0].clientX,e.touches[0].clientY);},{passive:false});
+
+draw();
+</script>
+</body>
+</html>

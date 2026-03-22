@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>ANTONYM</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#0a0010;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H;
+function resize() { W = cv.width = window.innerWidth; H = cv.height = window.innerHeight; }
+resize();
+window.addEventListener('resize', () => { resize(); });
+
+// ── Audio ──────────────────────────────────────────────────────────────────
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function sfx(type) {
+  const t = AC.currentTime;
+  function tone(freq, start, dur, wave, gain) {
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    o.type = wave; o.frequency.value = freq;
+    g.gain.setValueAtTime(gain, t + start);
+    g.gain.linearRampToValueAtTime(0, t + start + dur);
+    o.start(t + start); o.stop(t + start + dur + 0.01);
+  }
+  if (type === 'correct') {
+    tone(440, 0,    0.07, 'sine', 0.22);
+    tone(660, 0.06, 0.1,  'sine', 0.22);
+    tone(880, 0.13, 0.13, 'sine', 0.2);
+  } else if (type === 'streak5') {
+    [440,550,660,880,1100].forEach((f,i) => tone(f, i*0.07, 0.1, 'sine', 0.2));
+  } else if (type === 'wrong') {
+    tone(300, 0,    0.05, 'sawtooth', 0.25);
+    tone(220, 0.06, 0.14, 'sawtooth', 0.2);
+  } else if (type === 'gameover') {
+    [330, 262, 196, 147].forEach((f,i) => tone(f, i*0.14, 0.12, 'square', 0.18));
+  } else if (type === 'tick') {
+    tone(600, 0, 0.04, 'sine', 0.1);
+  }
+}
+
+// ── Antonym Pairs ──────────────────────────────────────────────────────────
+const PAIRS = [
+  ['HOT','COLD'],['FAST','SLOW'],['BIG','SMALL'],['HAPPY','SAD'],
+  ['LIGHT','DARK'],['LOUD','QUIET'],['YOUNG','OLD'],['SHARP','BLUNT'],
+  ['RICH','POOR'],['HARD','SOFT'],['ROUGH','SMOOTH'],['TALL','SHORT'],
+  ['WIDE','NARROW'],['DEEP','SHALLOW'],['BRAVE','COWARD'],['CLEAN','DIRTY'],
+  ['FULL','EMPTY'],['OPEN','CLOSED'],['PUSH','PULL'],['LOVE','HATE'],
+  ['WIN','LOSE'],['COME','GO'],['START','STOP'],['BUILD','DESTROY'],
+  ['LAUGH','CRY'],['RISE','FALL'],['ATTACK','DEFEND'],['FORGET','REMEMBER'],
+  ['AWAKE','ASLEEP'],['ALIVE','DEAD'],['ABSENT','PRESENT'],['ANCIENT','MODERN'],
+  ['BITTER','SWEET'],['BOLD','TIMID'],['CALM','STORMY'],
+  ['CHAOS','ORDER'],['CHEAP','EXPENSIVE'],['CLEVER','STUPID'],['CRUEL','KIND'],
+  ['DAWN','DUSK'],['DRY','WET'],['EARLY','LATE'],['EASY','HARD'],
+  ['ENEMY','FRIEND'],['FAIL','SUCCEED'],['FAKE','REAL'],
+  ['FREE','CAPTIVE'],['FRESH','STALE'],['GIANT','TINY'],
+  ['GIVE','TAKE'],['GOOD','EVIL'],['GUILTY','INNOCENT'],['HERO','VILLAIN'],
+  ['HONEST','DISHONEST'],['HUMBLE','PROUD'],['HUNGRY','FULL'],['INSIDE','OUTSIDE'],
+  ['JOIN','SEPARATE'],['KNOWN','UNKNOWN'],['LEAD','FOLLOW'],
+  ['LOVE','HATE'],['MAJOR','MINOR'],['MASTER','SERVANT'],['MAXIMUM','MINIMUM'],
+  ['LOUD','SILENT'],['NIGHT','DAY'],['NORTH','SOUTH'],['EAST','WEST'],
+  ['PASS','FAIL'],['PEACE','WAR'],['PLAIN','FANCY'],['PLUS','MINUS'],
+  ['POSITIVE','NEGATIVE'],['PUBLIC','PRIVATE'],['QUESTION','ANSWER'],
+  ['RANDOM','ORDERED'],['REAL','FAKE'],['RIGHT','WRONG'],['RISE','FALL'],
+  ['SAFE','DANGEROUS'],['SAME','DIFFERENT'],['SHARP','DULL'],['SICK','HEALTHY'],
+  ['SIMPLE','COMPLEX'],['SINK','FLOAT'],['SLOW','QUICK'],['SMART','DUMB'],
+  ['SMILE','FROWN'],['SOUR','SWEET'],['STRONG','WEAK'],['THICK','THIN'],
+  ['TRUE','FALSE'],['UGLY','BEAUTIFUL'],['UP','DOWN'],['URBAN','RURAL'],
+  ['VICTORY','DEFEAT'],['VISIBLE','HIDDEN'],['WILD','TAME'],['WORK','PLAY'],
+  ['ADD','SUBTRACT'],['ACCEPT','REJECT'],['ARRIVE','DEPART'],['ATTACK','RETREAT'],
+  ['BEGIN','END'],['BORROW','LEND'],['BUY','SELL'],['CAPTURE','RELEASE'],
+  ['CAUSE','EFFECT'],['CREATE','DESTROY'],['DAY','NIGHT'],['ENTER','EXIT'],
+  ['EXPAND','CONTRACT'],['FIND','LOSE'],['FREEZE','MELT'],['GAIN','LOSE'],
+];
+
+// Shuffle array in place
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// ── State ──────────────────────────────────────────────────────────────────
+let gs = 'start'; // start | play | feedback | over
+let score, streak, timer, roundTimer, roundMax;
+let currentPair, correctAnswer, choices;
+let feedbackType, feedbackTimer;
+let bestScore = +localStorage.getItem('antonym_best') || 0;
+let streakBrokenFlash = 0;
+let pairQueue = [];
+let particles = [];
+let bgHue = 270; // purple hue for bg
+let wordScale = 1;
+let wordScaleAnim = 0;
+
+const BASE_ROUND_TIME = 2500; // ms
+const MIN_ROUND_TIME = 800;
+const ROUND_DEC_PER_STREAK = 50;
+
+function getRoundTime() {
+  return Math.max(MIN_ROUND_TIME, BASE_ROUND_TIME - streak * ROUND_DEC_PER_STREAK);
+}
+
+function getStreakColor() {
+  if (streak === 0) return '#ffffff';
+  if (streak < 3) return '#ffffaa';
+  if (streak < 5) return '#ffdd44';
+  if (streak < 8) return '#ff9900';
+  if (streak < 12) return '#ff5500';
+  return '#ff0044';
+}
+
+function getStreakGlow() {
+  if (streak === 0) return 'rgba(255,255,255,0.1)';
+  if (streak < 3) return 'rgba(255,255,150,0.3)';
+  if (streak < 5) return 'rgba(255,220,50,0.4)';
+  if (streak < 8) return 'rgba(255,150,0,0.5)';
+  if (streak < 12) return 'rgba(255,80,0,0.6)';
+  return 'rgba(255,0,50,0.7)';
+}
+
+function refillQueue() {
+  pairQueue = shuffle(PAIRS);
+}
+
+function nextQuestion() {
+  if (pairQueue.length === 0) refillQueue();
+  currentPair = pairQueue.pop();
+  // randomly decide which word is shown (show either word, answer is the other)
+  const showFirst = Math.random() < 0.5;
+  const shown = showFirst ? currentPair[0] : currentPair[1];
+  const answer = showFirst ? currentPair[1] : currentPair[0];
+  correctAnswer = answer;
+
+  // Generate 2 wrong options from other pairs
+  const pool = pairQueue.filter(p => !p.includes(shown) && !p.includes(answer));
+  const shuffledPool = shuffle(pool);
+  const wrongs = [];
+  for (let p of shuffledPool) {
+    const candidate = Math.random() < 0.5 ? p[0] : p[1];
+    if (!wrongs.includes(candidate) && candidate !== answer && candidate !== shown) {
+      wrongs.push(candidate);
+      if (wrongs.length === 2) break;
+    }
+  }
+  while (wrongs.length < 2) {
+    wrongs.push(['MAYBE','PERHAPS','SOMEWHAT','NEITHER'][wrongs.length]);
+  }
+
+  const all = shuffle([answer, ...wrongs]);
+  choices = all.map(w => ({ word: w, correct: w === answer }));
+  currentWord = shown;
+  roundMax = getRoundTime();
+  roundTimer = roundMax;
+  wordScaleAnim = 0;
+}
+
+let currentWord = '';
+
+function init() {
+  score = 0;
+  streak = 0;
+  timer = 60;
+  feedbackTimer = 0;
+  particles = [];
+  streakBrokenFlash = 0;
+  refillQueue();
+  nextQuestion();
+  gs = 'play';
+}
+
+function spawnParticles(cx, cy, color, count) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1.5 + Math.random() * 5;
+    particles.push({
+      x: cx, y: cy,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      color,
+      r: 2 + Math.random() * 4
+    });
+  }
+}
+
+// ── Drawing Helpers ────────────────────────────────────────────────────────
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y);
+  ctx.arcTo(x+w, y, x+w, y+r, r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.arcTo(x+w, y+h, x+w-r, y+h, r);
+  ctx.lineTo(x+r, y+h);
+  ctx.arcTo(x, y+h, x, y+h-r, r);
+  ctx.lineTo(x, y+r);
+  ctx.arcTo(x, y, x+r, y, r);
+  ctx.closePath();
+}
+
+function drawBg() {
+  // Animated dark purple gradient
+  const bg = ctx.createRadialGradient(W/2, H*0.4, 0, W/2, H*0.5, Math.max(W,H));
+  bg.addColorStop(0, `hsla(${bgHue},50%,8%,1)`);
+  bg.addColorStop(1, `hsla(${bgHue+30},60%,3%,1)`);
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle scanlines
+  ctx.fillStyle = 'rgba(0,0,0,0.04)';
+  for (let y = 0; y < H; y += 4) {
+    ctx.fillRect(0, y, W, 2);
+  }
+}
+
+function getButtonLayout() {
+  const btnW = Math.min(W * 0.85, 380);
+  const btnH = Math.min(H * 0.1, 72);
+  const gap = btnH * 0.3;
+  const totalH = 3 * btnH + 2 * gap;
+  const startY = H * 0.63;
+  const bx = (W - btnW) / 2;
+  return choices.map((_, i) => ({
+    x: bx,
+    y: startY + i * (btnH + gap),
+    w: btnW,
+    h: btnH
+  }));
+}
+
+// ── Screens ────────────────────────────────────────────────────────────────
+function drawStart() {
+  drawBg();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // Title glow
+  ctx.save();
+  ctx.shadowColor = '#cc44ff';
+  ctx.shadowBlur = 50;
+  ctx.font = `bold ${Math.min(W * 0.2, 88)}px 'Arial Black', Arial`;
+  ctx.fillStyle = '#cc44ff';
+  ctx.fillText('ANTONYM', W / 2, H * 0.18);
+  ctx.restore();
+
+  ctx.font = `${Math.min(W * 0.045, 18)}px Arial`;
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.fillText('TAP THE OPPOSITE', W / 2, H * 0.27);
+
+  // Example pairs
+  const ex = [['HOT','COLD'],['FAST','SLOW'],['BIG','SMALL']];
+  ex.forEach(([a, b], i) => {
+    const y = H * 0.38 + i * H * 0.075;
+    ctx.font = `bold ${Math.min(W * 0.065, 26)}px Arial`;
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${a}  ↔  ${b}`, W / 2, y);
+  });
+
+  // Instructions
+  ctx.font = `${Math.min(W * 0.038, 15)}px Arial`;
+  ctx.fillStyle = 'rgba(255,255,255,0.3)';
+  ctx.fillText('Build streaks to score more points', W / 2, H * 0.63);
+  ctx.fillText('Wrong answers break your streak', W / 2, H * 0.68);
+  ctx.fillText('60 seconds on the clock', W / 2, H * 0.73);
+
+  if (bestScore > 0) {
+    ctx.font = `bold ${Math.min(W * 0.048, 19)}px Arial`;
+    ctx.fillStyle = '#ffd700';
+    ctx.fillText(`BEST: ${bestScore}`, W / 2, H * 0.8);
+  }
+
+  const p = 0.6 + 0.4 * Math.sin(Date.now() * 0.003);
+  ctx.fillStyle = `rgba(255,255,255,${p})`;
+  ctx.font = `bold ${Math.min(W * 0.058, 23)}px Arial`;
+  ctx.fillText('TAP TO PLAY', W / 2, H * 0.9);
+}
+
+function drawPlay(dt) {
+  bgHue = 270 + streak * 5; // shift hue with streak
+  drawBg();
+
+  // Main timer
+  timer -= dt / 1000;
+  if (timer <= 0) {
+    timer = 0;
+    if (score > bestScore) { bestScore = score; localStorage.setItem('antonym_best', bestScore); }
+    gs = 'over';
+    sfx('gameover');
+    return;
+  }
+
+  // Round timer
+  if (feedbackTimer <= 0) {
+    roundTimer -= dt;
+    if (roundTimer <= 0) {
+      // Time ran out on this question - no penalty on streak but move on
+      roundTimer = 0;
+      feedbackType = 'timeout';
+      feedbackTimer = 500;
+      sfx('wrong');
+      streak = 0;
+      streakBrokenFlash = 1200;
+    }
+  } else {
+    feedbackTimer -= dt;
+    if (feedbackTimer <= 0) {
+      nextQuestion();
+    }
+  }
+
+  if (streakBrokenFlash > 0) streakBrokenFlash -= dt;
+  if (wordScaleAnim < 1) wordScaleAnim = Math.min(1, wordScaleAnim + dt / 200);
+
+  // Update particles
+  particles = particles.filter(p => p.life > 0);
+  particles.forEach(p => {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.12;
+    p.life -= 0.025;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2);
+    const alpha = Math.floor(p.life * 255).toString(16).padStart(2,'0');
+    ctx.fillStyle = p.color + alpha;
+    ctx.fill();
+  });
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // Score
+  ctx.font = `bold ${Math.min(W * 0.12, 50)}px 'Arial Black', Arial`;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(score, W / 2, H * 0.075);
+  ctx.font = `${Math.min(W * 0.032, 13)}px Arial`;
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fillText('SCORE', W / 2, H * 0.115);
+
+  // Streak display
+  const streakColor = getStreakColor();
+  if (streak > 0) {
+    ctx.save();
+    ctx.shadowColor = streakColor;
+    ctx.shadowBlur = 20;
+    ctx.font = `bold ${Math.min(W * 0.065, 26)}px Arial`;
+    ctx.fillStyle = streakColor;
+    const lightning = streak >= 5 ? ' !!!' : streak >= 3 ? ' !!' : '';
+    ctx.fillText(`STREAK: ${streak}${lightning}`, W / 2, H * 0.155);
+    ctx.restore();
+  } else {
+    ctx.font = `${Math.min(W * 0.045, 18)}px Arial`;
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.fillText('STREAK: 0', W / 2, H * 0.155);
+  }
+
+  // "STREAK BROKEN!" flash
+  if (streakBrokenFlash > 0 && feedbackType !== 'correct') {
+    const alpha = Math.min(1, streakBrokenFlash / 400);
+    ctx.save();
+    ctx.shadowColor = '#ff4444';
+    ctx.shadowBlur = 20;
+    ctx.font = `bold ${Math.min(W * 0.065, 26)}px Arial`;
+    ctx.fillStyle = `rgba(255,68,68,${alpha})`;
+    ctx.fillText('STREAK BROKEN!', W / 2, H * 0.2);
+    ctx.restore();
+  }
+
+  // The word (big, glowing, scaled in)
+  const ease = 1 - Math.pow(1 - wordScaleAnim, 3);
+  const wordSize = Math.min(W * 0.19, 82) * (0.6 + 0.4 * ease);
+
+  ctx.save();
+  ctx.shadowColor = streakColor;
+  ctx.shadowBlur = 15 + streak * 3;
+  ctx.font = `bold ${wordSize}px 'Arial Black', Arial`;
+  ctx.fillStyle = feedbackTimer > 0
+    ? (feedbackType === 'correct' ? '#44ff88' : feedbackType === 'timeout' ? '#ff9900' : '#ff4444')
+    : streakColor;
+  ctx.fillText(currentWord, W / 2, H * 0.43);
+  ctx.restore();
+
+  // "= OPPOSITE OF..." hint
+  ctx.font = `${Math.min(W * 0.035, 14)}px Arial`;
+  ctx.fillStyle = 'rgba(255,255,255,0.3)';
+  ctx.fillText('— find the opposite —', W / 2, H * 0.525);
+
+  // Round timer bar (thin bar above buttons)
+  if (feedbackTimer <= 0) {
+    const frac = Math.max(0, roundTimer / roundMax);
+    const bw = Math.min(W * 0.85, 380);
+    const bx = (W - bw) / 2;
+    const by = H * 0.59;
+    const bh = 5;
+
+    rr(bx, by, bw, bh, bh / 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fill();
+
+    if (frac > 0) {
+      rr(bx, by, bw * frac, bh, bh / 2);
+      const col = frac > 0.5 ? '#aa44ff' : frac > 0.25 ? '#ff9900' : '#ff4444';
+      ctx.fillStyle = col;
+      ctx.fill();
+    }
+  }
+
+  // Choice buttons
+  const layout = getButtonLayout();
+  choices.forEach((choice, i) => {
+    if (i >= layout.length) return;
+    const b = layout[i];
+    const cx = b.x + b.w / 2;
+    const cy = b.y + b.h / 2;
+
+    let bg = 'rgba(40,0,60,0.7)';
+    let border = 'rgba(180,80,255,0.5)';
+    let textColor = '#cc88ff';
+
+    if (feedbackTimer > 0) {
+      if (choice.correct && (feedbackType === 'correct' || feedbackType === 'timeout')) {
+        const t = feedbackTimer / 500;
+        bg = `rgba(0,80,40,${0.7 + 0.3*t})`;
+        border = '#44ff88';
+        textColor = '#44ff88';
+      } else if (!choice.correct && feedbackType === 'wrong' && choice.word === wrongWord) {
+        bg = 'rgba(80,0,0,0.9)';
+        border = '#ff4444';
+        textColor = '#ff4444';
+      }
+    }
+
+    rr(b.x, b.y, b.w, b.h, 14);
+    ctx.fillStyle = bg;
+    ctx.fill();
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `bold ${Math.min(b.w * 0.12, Math.min(W * 0.075, 30))}px 'Arial Black', Arial`;
+    ctx.fillStyle = textColor;
+    ctx.fillText(choice.word, cx, cy);
+  });
+
+  // Global timer bar (bottom)
+  const gfrac = timer / 60;
+  const gbarH = Math.min(H * 0.016, 9);
+  const gbarY = H - gbarH - 3;
+  const gbarW = W * 0.92;
+  const gbarX = W * 0.04;
+  const gcol = gfrac > 0.5 ? '#aa44ff' : gfrac > 0.25 ? '#ffaa00' : '#ff4444';
+
+  rr(gbarX, gbarY, gbarW, gbarH, gbarH / 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.07)';
+  ctx.fill();
+
+  if (gfrac > 0) {
+    rr(gbarX, gbarY, gbarW * gfrac, gbarH, gbarH / 2);
+    ctx.fillStyle = gcol;
+    ctx.fill();
+  }
+
+  ctx.textAlign = 'center';
+  ctx.font = `bold ${Math.min(W * 0.038, 15)}px Arial`;
+  ctx.fillStyle = gcol;
+  ctx.fillText(Math.ceil(timer) + 's', W / 2, gbarY - 7);
+}
+
+let wrongWord = '';
+
+function drawOver() {
+  drawBg();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.save();
+  ctx.shadowColor = '#aa44ff';
+  ctx.shadowBlur = 30;
+  ctx.font = `bold ${Math.min(W * 0.12, 52)}px 'Arial Black', Arial`;
+  ctx.fillStyle = '#aa44ff';
+  ctx.fillText('TIME UP', W / 2, H * 0.2);
+  ctx.restore();
+
+  ctx.save();
+  ctx.shadowColor = '#ffffff';
+  ctx.shadowBlur = 10;
+  ctx.font = `bold ${Math.min(W * 0.24, 100)}px 'Arial Black', Arial`;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(score, W / 2, H * 0.4);
+  ctx.restore();
+
+  ctx.font = `${Math.min(W * 0.04, 16)}px Arial`;
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.fillText('SCORE', W / 2, H * 0.5);
+
+  if (bestScore > 0) {
+    ctx.font = `bold ${Math.min(W * 0.05, 20)}px Arial`;
+    ctx.fillStyle = '#ffd700';
+    ctx.fillText(`BEST: ${bestScore}`, W / 2, H * 0.58);
+  }
+
+  // Update particles
+  particles = particles.filter(p => p.life > 0);
+  particles.forEach(p => {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.1;
+    p.life -= 0.018;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2);
+    const alpha = Math.floor(p.life * 255).toString(16).padStart(2,'0');
+    ctx.fillStyle = p.color + alpha;
+    ctx.fill();
+  });
+
+  const p = 0.6 + 0.4 * Math.sin(Date.now() * 0.003);
+  ctx.fillStyle = `rgba(255,255,255,${p})`;
+  ctx.font = `bold ${Math.min(W * 0.058, 23)}px Arial`;
+  ctx.fillText('TAP TO PLAY AGAIN', W / 2, H * 0.82);
+}
+
+// ── Game Loop ──────────────────────────────────────────────────────────────
+let lastTs = 0;
+function draw(ts = 0) {
+  requestAnimationFrame(draw);
+  const dt = Math.min(ts - lastTs, 50);
+  lastTs = ts;
+
+  ctx.clearRect(0, 0, W, H);
+
+  if (gs === 'start') drawStart();
+  else if (gs === 'play') drawPlay(dt);
+  else if (gs === 'over') drawOver();
+}
+
+// ── Input ──────────────────────────────────────────────────────────────────
+function tap(x, y) {
+  if (AC.state === 'suspended') AC.resume();
+  if (gs === 'start' || gs === 'over') { init(); return; }
+  if (gs !== 'play') return;
+  if (feedbackTimer > 0) return;
+
+  const layout = getButtonLayout();
+  choices.forEach((choice, i) => {
+    if (i >= layout.length) return;
+    const b = layout[i];
+    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
+      handleAnswer(choice.word, choice.correct);
+    }
+  });
+}
+
+function handleAnswer(word, correct) {
+  if (correct) {
+    streak++;
+    const pts = streak * 10;
+    score += pts;
+    feedbackType = 'correct';
+    feedbackTimer = 500;
+    spawnParticles(W / 2, H * 0.43, '#44ff88', 14);
+    if (streak % 5 === 0 && streak >= 5) {
+      sfx('streak5');
+    } else {
+      sfx('correct');
+    }
+  } else {
+    wrongWord = word;
+    streak = 0;
+    feedbackType = 'wrong';
+    feedbackTimer = 600;
+    streakBrokenFlash = 1200;
+    sfx('wrong');
+  }
+}
+
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  tap(e.clientX, e.clientY);
+}, { passive: false });
+
+draw();
+</script>
+</body>
+</html>

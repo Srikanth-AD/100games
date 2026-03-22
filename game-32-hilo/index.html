@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>HILO</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#0d1b2a;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H;
+function resize() { W = cv.width = window.innerWidth; H = cv.height = window.innerHeight; }
+resize();
+window.addEventListener('resize', resize);
+
+// ── Audio ─────────────────────────────────────────────────
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function sfx(type) {
+  const t = AC.currentTime;
+  function tone(freq, dur, waveType, gain) {
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    o.type = waveType; o.frequency.value = freq;
+    g.gain.setValueAtTime(gain, t); g.gain.linearRampToValueAtTime(0, t + dur);
+    o.start(t); o.stop(t + dur);
+  }
+  if (type === 'correct') { tone(523, 0.08, 'sine', 0.25); tone(659, 0.12, 'sine', 0.2); }
+  else if (type === 'wrong') { tone(220, 0.18, 'sawtooth', 0.2); }
+  else if (type === 'fanfare') {
+    [523,659,784,1047].forEach((f,i)=>{
+      const o=AC.createOscillator(),g=AC.createGain();
+      o.connect(g);g.connect(AC.destination);
+      o.type='sine';o.frequency.value=f;
+      g.gain.setValueAtTime(0.18,t+i*0.09);g.gain.linearRampToValueAtTime(0,t+i*0.09+0.1);
+      o.start(t+i*0.09);o.stop(t+i*0.09+0.15);
+    });
+  } else if (type === 'gameover') {
+    [330,262,196].forEach((f,i)=>{
+      const o=AC.createOscillator(),g=AC.createGain();
+      o.connect(g);g.connect(AC.destination);
+      o.type='square';o.frequency.value=f;
+      g.gain.setValueAtTime(0.15,t+i*0.15);g.gain.linearRampToValueAtTime(0,t+i*0.15+0.12);
+      o.start(t+i*0.15);o.stop(t+i*0.15+0.18);
+    });
+  }
+}
+
+// ── Deck ──────────────────────────────────────────────────
+const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+const SUITS = ['♠','♥','♦','♣'];
+const VALS  = {};
+RANKS.forEach((r,i) => VALS[r] = i + 2); // 2..14
+
+function makeDeck() {
+  const d = [];
+  for (const s of SUITS) for (const r of RANKS) d.push({r,s,v:VALS[r]});
+  for (let i=d.length-1;i>0;i--) { const j=Math.floor(Math.random()*(i+1)); [d[i],d[j]]=[d[j],d[i]]; }
+  return d;
+}
+
+// ── State ─────────────────────────────────────────────────
+let gs = 'start'; // start | play | feedback | over
+let deck, current, streak, lives, score;
+let best = +localStorage.getItem('hilo_best') || 0;
+let feedbackType, feedbackTimer = 0;
+let cardY0 = 0, cardAnimT = 1; // card slide-in animation
+
+function init() {
+  deck    = makeDeck();
+  current = deck.pop();
+  streak  = 0;
+  lives   = 3;
+  score   = 0;
+  cardAnimT = 0;
+  gs = 'play';
+}
+
+// ── Drawing helpers ───────────────────────────────────────
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y);
+  ctx.arcTo(x+w,y,x+w,y+r,r); ctx.lineTo(x+w,y+h-r);
+  ctx.arcTo(x+w,y+h,x+w-r,y+h,r); ctx.lineTo(x+r,y+h);
+  ctx.arcTo(x,y+h,x,y+h-r,r); ctx.lineTo(x,y+r);
+  ctx.arcTo(x,y,x+r,y,r); ctx.closePath();
+}
+
+function drawCard(cx, cy, cw, ch, card) {
+  const x = cx - cw/2, y = cy - ch/2, rad = cw*0.07;
+  // shadow
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 22; ctx.shadowOffsetY = 10;
+  rr(x,y,cw,ch,rad); ctx.fillStyle='#fff'; ctx.fill();
+  ctx.restore();
+  // border
+  rr(x,y,cw,ch,rad); ctx.strokeStyle='rgba(0,0,0,0.12)'; ctx.lineWidth=1.5; ctx.stroke();
+
+  const isRed = card.s==='♥' || card.s==='♦';
+  const col = isRed ? '#c0392b' : '#1a1a2e';
+  const fs = cw * 0.175;
+
+  // top-left
+  ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.fillStyle=col;
+  ctx.font=`bold ${fs}px Arial`; ctx.fillText(card.r, x+cw*0.1, y+ch*0.13);
+  ctx.font=`${fs*0.85}px Arial`; ctx.fillText(card.s, x+cw*0.1, y+ch*0.24);
+
+  // center big suit
+  ctx.textAlign='center';
+  ctx.font=`${cw*0.4}px Arial`; ctx.fillStyle=col;
+  ctx.fillText(card.s, cx, cy + ch*0.06);
+
+  // bottom-right flipped
+  ctx.save();
+  ctx.translate(cx+cw*0.4, cy+ch*0.38); ctx.rotate(Math.PI);
+  ctx.textAlign='left'; ctx.fillStyle=col;
+  ctx.font=`bold ${fs}px Arial`; ctx.fillText(card.r, 0, -ch*0.11);
+  ctx.font=`${fs*0.85}px Arial`; ctx.fillText(card.s, 0, 0);
+  ctx.restore();
+}
+
+function drawCardBack(cx, cy, cw, ch) {
+  const x=cx-cw/2, y=cy-ch/2, rad=cw*0.07;
+  ctx.save();
+  ctx.shadowColor='rgba(0,0,0,0.4)'; ctx.shadowBlur=16; ctx.shadowOffsetY=8;
+  rr(x,y,cw,ch,rad); ctx.fillStyle='#1a4a8a'; ctx.fill();
+  ctx.restore();
+  rr(x+cw*0.08,y+ch*0.06,cw*0.84,ch*0.88,rad*0.5); ctx.fillStyle='#1565c0'; ctx.fill();
+  ctx.save(); ctx.clip();
+  ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.lineWidth=1.5;
+  for(let i=-ch;i<cw*2;i+=11){
+    ctx.beginPath();ctx.moveTo(x+i,y);ctx.lineTo(x+i+ch,y+ch);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(x+i+ch,y);ctx.lineTo(x+i,y+ch);ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function heart(x, y, sz, filled) {
+  ctx.save(); ctx.translate(x,y);
+  ctx.font=`${sz}px Arial`; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillStyle = filled ? '#e53935' : 'rgba(255,255,255,0.18)';
+  ctx.fillText('♥',0,0); ctx.restore();
+}
+
+function btn(x, y, bw, bh, label, icon, col) {
+  rr(x,y,bw,bh,16);
+  ctx.fillStyle=`${col}22`; ctx.fill();
+  ctx.strokeStyle=col; ctx.lineWidth=2.5; ctx.stroke();
+  ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle=col;
+  ctx.font=`bold ${Math.min(bw*0.2,34)}px Arial`;
+  ctx.fillText(icon, x+bw/2, y+bh*0.4);
+  ctx.font=`bold ${Math.min(bw*0.12,20)}px Arial`;
+  ctx.fillText(label, x+bw/2, y+bh*0.74);
+}
+
+// ── Main draw ─────────────────────────────────────────────
+let lastTs = 0;
+function draw(ts=0) {
+  requestAnimationFrame(draw);
+  const dt = Math.min(ts-lastTs, 50); lastTs=ts;
+
+  ctx.clearRect(0,0,W,H);
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#0d1b2a'); bg.addColorStop(1,'#0a2318');
+  ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+
+  if (gs==='start')                drawStart();
+  else if (gs==='play')            drawPlay(dt);
+  else if (gs==='feedback')        drawFeedback(dt);
+  else if (gs==='over')            drawOver();
+}
+
+function drawStart() {
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(W*0.22,90)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#fff'; ctx.fillText('HILO',W/2,H*0.22);
+
+  ctx.font=`${Math.min(W*0.055,22)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.5)';
+  ctx.fillText('HIGHER  OR  LOWER',W/2,H*0.31);
+
+  // demo hand of 3 cards (spread)
+  const cw=Math.min(W*0.32,120), ch=cw*1.4;
+  const cx=W/2, cy=H*0.52;
+  ctx.save(); ctx.translate(cx-cw*0.55,cy); ctx.rotate(-0.18); drawCardBack(0,0,cw,ch); ctx.restore();
+  ctx.save(); ctx.translate(cx+cw*0.55,cy); ctx.rotate(0.18);  drawCardBack(0,0,cw,ch); ctx.restore();
+  drawCard(cx, cy, cw*1.1, ch*1.1, {r:'7',s:'♦',v:7});
+
+  const p=0.65+0.35*Math.sin(Date.now()*0.0032);
+  ctx.fillStyle=`rgba(255,255,255,${p})`;
+  ctx.font=`bold ${Math.min(W*0.056,22)}px Arial`;
+  ctx.fillText('TAP TO PLAY',W/2,H*0.86);
+}
+
+function drawPlay(dt) {
+  cardAnimT = Math.min(1, cardAnimT + dt/220);
+  const ease = 1 - Math.pow(1-cardAnimT,3);
+  drawGameUI(ease, 0);
+}
+
+function drawFeedback(dt) {
+  feedbackTimer -= dt;
+  drawGameUI(1, feedbackTimer);
+  // flash overlay
+  const alpha = Math.max(0, feedbackTimer/350) * 0.38;
+  ctx.fillStyle = feedbackType==='correct' ? `rgba(76,175,80,${alpha})` : `rgba(244,67,54,${alpha})`;
+  ctx.fillRect(0,0,W,H);
+  // result icon
+  const sz = Math.min(W*0.18, 72);
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${sz}px Arial`;
+  ctx.fillStyle = feedbackType==='correct' ? '#4caf50' : '#f44336';
+  ctx.fillText(feedbackType==='correct'?'✓':'✗', W/2, H*0.66);
+
+  if (feedbackTimer<=0) {
+    if (lives<=0) {
+      if (score>best) { best=score; localStorage.setItem('hilo_best',best); }
+      gs='over'; sfx('gameover');
+    } else { gs='play'; }
+  }
+}
+
+function drawGameUI(ease, fbTimer) {
+  const cw = Math.min(W*0.52, 200);
+  const ch = cw*1.4;
+  const cy = H*0.4;
+
+  // card slides down from top
+  const slideY = cy - 60*(1-ease);
+  const cardAlpha = ease;
+
+  // score
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(W*0.14,58)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#fff';
+  ctx.fillText(score, W/2, H*0.1);
+  ctx.font=`${Math.min(W*0.038,15)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.45)';
+  ctx.fillText('SCORE',W/2,H*0.155);
+
+  // streak badge
+  if (streak>1) {
+    ctx.font=`bold ${Math.min(W*0.048,19)}px Arial`;
+    ctx.fillStyle='#ffd740';
+    ctx.fillText(`× ${streak} STREAK`,W/2,H*0.195);
+  }
+
+  // lives
+  const hs=Math.min(W*0.068,27), hsp=hs*1.35, hx=W/2-hsp;
+  for(let i=0;i<3;i++) heart(hx+i*hsp, H*0.075, hs, i<lives);
+
+  // card
+  ctx.globalAlpha=cardAlpha;
+  drawCard(W/2, slideY, cw, ch, current);
+  ctx.globalAlpha=1;
+
+  // buttons (hidden during feedback flash)
+  if (fbTimer===0 || gs==='play') {
+    const bh=Math.min(H*0.19,115), bw=W*0.43, by=H*0.7;
+    btn(W*0.04, by, bw, bh, 'LOWER', '▼', '#f44336');
+    btn(W*0.53, by, bw, bh, 'HIGHER','▲', '#4caf50');
+  }
+
+  // remaining cards & best
+  ctx.font=`${Math.min(W*0.033,13)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.28)';
+  ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText(`${deck.length} cards left`, W*0.04, H*0.955);
+  ctx.textAlign='right';
+  ctx.fillText(`BEST: ${best}`, W*0.96, H*0.955);
+}
+
+function drawOver() {
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(W*0.13,54)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#f44336';
+  ctx.fillText('GAME OVER',W/2,H*0.28);
+
+  ctx.font=`bold ${Math.min(W*0.22,90)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#fff';
+  ctx.fillText(score,W/2,H*0.46);
+  ctx.font=`${Math.min(W*0.045,18)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.5)';
+  ctx.fillText('SCORE',W/2,H*0.555);
+
+  if (best>0) {
+    ctx.font=`bold ${Math.min(W*0.048,19)}px Arial`;
+    ctx.fillStyle='#ffd740';
+    ctx.fillText(`BEST: ${best}`,W/2,H*0.63);
+  }
+
+  const p=0.65+0.35*Math.sin(Date.now()*0.003);
+  ctx.fillStyle=`rgba(255,255,255,${p})`;
+  ctx.font=`bold ${Math.min(W*0.056,22)}px Arial`;
+  ctx.fillText('TAP TO PLAY AGAIN',W/2,H*0.82);
+}
+
+// ── Input ─────────────────────────────────────────────────
+function guess(higher) {
+  if (gs!=='play') return;
+  if (deck.length===0) deck=makeDeck(); // reshuffle if exhausted
+  const next = deck.pop();
+  let correct;
+  if (next.v===current.v)       correct=false;   // tie = lose
+  else correct = higher ? next.v>current.v : next.v<current.v;
+  current=next; cardAnimT=0;
+  if (correct) { streak++; score++; sfx(streak%5===0&&streak>=5?'fanfare':'correct'); }
+  else         { streak=0; lives--; sfx('wrong'); }
+  feedbackType = correct?'correct':'wrong';
+  feedbackTimer=360; gs='feedback';
+}
+
+function tap(x,y) {
+  if (AC.state==='suspended') AC.resume();
+  if (gs==='start' || gs==='over') { init(); return; }
+  if (gs==='play') guess(x>W/2);
+}
+
+cv.addEventListener('click',      e => tap(e.clientX, e.clientY));
+cv.addEventListener('touchstart', e => { e.preventDefault(); tap(e.touches[0].clientX,e.touches[0].clientY); }, {passive:false});
+
+draw();
+</script>
+</body>
+</html>

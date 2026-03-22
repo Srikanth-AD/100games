@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>MINE</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+if(!CanvasRenderingContext2D.prototype.roundRect){
+  CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h,r){
+    r=Math.min(typeof r==='number'?r:r[0], Math.abs(w)/2, Math.abs(h)/2);
+    this.moveTo(x+r,y);
+    this.lineTo(x+w-r,y);   this.arcTo(x+w,y,   x+w,y+r,   r);
+    this.lineTo(x+w,y+h-r); this.arcTo(x+w,y+h, x+w-r,y+h, r);
+    this.lineTo(x+r,y+h);   this.arcTo(x,y+h,   x,y+h-r,   r);
+    this.lineTo(x,y+r);     this.arcTo(x,y,      x+r,y,     r);
+    this.closePath();
+  };
+}
+
+let W,H,scl;
+function resize(){const vw=window.innerWidth,vh=window.innerHeight;scl=Math.min(vw/375,vh/600);W=Math.round(375*scl);H=Math.round(600*scl);cv.width=W;cv.height=H;}
+resize();window.addEventListener('resize',resize);
+
+const AC=new (window.AudioContext||window.webkitAudioContext)();
+function beep(type){
+  const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime;
+  o.connect(g);g.connect(AC.destination);
+  if(type==='mine'){o.type='triangle';o.frequency.setValueAtTime(600,t);o.frequency.linearRampToValueAtTime(900,t+0.04);g.gain.setValueAtTime(0.2,t);g.gain.linearRampToValueAtTime(0,t+0.1);}
+  else if(type==='safe'){o.type='sine';o.frequency.setValueAtTime(440,t);o.frequency.linearRampToValueAtTime(330,t+0.08);g.gain.setValueAtTime(0.2,t);g.gain.linearRampToValueAtTime(0,t+0.15);}
+  else if(type==='bat'){o.type='square';o.frequency.setValueAtTime(800,t);o.frequency.linearRampToValueAtTime(400,t+0.12);g.gain.setValueAtTime(0.25,t);g.gain.linearRampToValueAtTime(0,t+0.18);}
+  else if(type==='hit'){o.type='sawtooth';o.frequency.setValueAtTime(300,t);o.frequency.linearRampToValueAtTime(100,t+0.2);g.gain.setValueAtTime(0.3,t);g.gain.linearRampToValueAtTime(0,t+0.25);}
+  else if(type==='level'){[523,659,784].forEach((f,i)=>{const o2=AC.createOscillator(),g2=AC.createGain();o2.connect(g2);g2.connect(AC.destination);o2.frequency.value=f;g2.gain.setValueAtTime(0.2,t+i*0.1);g2.gain.linearRampToValueAtTime(0,t+i*0.1+0.15);o2.start(t+i*0.1);o2.stop(t+i*0.1+0.2);});}
+  o.start(t);o.stop(t+0.3);
+}
+
+// Grid dimensions
+const GRID_COLS=6,GRID_ROWS=8;
+let CW,CH,GX,GY;
+
+function computeGrid(){
+  CW=W*0.82/GRID_COLS;CH=(H*0.7)/GRID_ROWS;
+  GX=(W-GRID_COLS*CW)/2;GY=H*0.18;
+}
+
+// State
+let gs='start',score=0,lives=3,level=1;
+let hiScore=+(localStorage.getItem('mine_hi')||0);
+let grid=[];  // cell: {type, state, x, y, shake, glow, pts}
+let bats=[];
+let popups=[];
+let safeZones=[];  // cells that are lit/safe
+let playerCell={col:0,row:GRID_ROWS-1};  // player position
+let playerInvuln=0;
+let totalMined=0,toLevel=12;
+
+const MINERALS=[
+  {id:'coal',  col:'#455a64',pts:5, prob:0.35},
+  {id:'iron',  col:'#b0bec5',pts:10,prob:0.25},
+  {id:'gold',  col:'#ffd740',pts:25,prob:0.18},
+  {id:'ruby',  col:'#f44336',pts:40,prob:0.12},
+  {id:'diamond',col:'#80d8ff',pts:80,prob:0.06},
+  {id:'empty', col:'#2d2d2d',pts:0, prob:0.04},
+];
+
+function pickMineral(){
+  let r=Math.random(),acc=0;
+  for(const m of MINERALS){acc+=m.prob;if(r<acc)return m;}
+  return MINERALS[0];
+}
+
+function buildGrid(){
+  computeGrid();
+  grid=[];
+  for(let row=0;row<GRID_ROWS;row++){
+    for(let col=0;col<GRID_COLS;col++){
+      const m=pickMineral();
+      grid.push({col,row,type:m.id,col2:m.col,pts:m.pts,
+        x:GX+col*CW,y:GY+row*CH,
+        state:'intact', // intact|cracked|mined
+        shake:0,
+      });
+    }
+  }
+  safeZones=[];
+  // 2 safe zones (glowing lantern cells)
+  [Math.floor(GRID_COLS/4),Math.floor(GRID_COLS*3/4)].forEach(c=>{
+    safeZones.push({col:c,row:Math.floor(GRID_ROWS/2)});
+    safeZones.push({col:c,row:GRID_ROWS-1});
+  });
+  playerCell={col:0,row:GRID_ROWS-1};
+}
+
+function cellAt(col,row){return grid.find(g=>g.col===col&&g.row===row);}
+function isSafe(col,row){return safeZones.some(s=>s.col===col&&s.row===row);}
+
+function tapCell(col,row){
+  const c=cellAt(col,row);
+  if(!c||c.state==='mined')return;
+  // Only tap adjacent to player
+  const dc=Math.abs(col-playerCell.col),dr=Math.abs(row-playerCell.row);
+  if(dc+dr>1)return;
+  if(c.state==='intact'){c.state='cracked';c.shake=8;beep('mine');}
+  else if(c.state==='cracked'){
+    c.state='mined';
+    if(c.pts>0){score+=c.pts;if(score>hiScore)hiScore=score;totalMined++;beep('mine');
+      popups.push({x:c.x+CW/2,y:c.y,text:'+'+c.pts,life:1.2,col:c.col2});}
+    if(totalMined>=toLevel){totalMined=0;level++;toLevel=Math.min(toLevel+4,20);beep('level');buildGrid();}
+  }
+  // Move player towards tapped cell
+  const dx=Math.sign(col-playerCell.col),dy=Math.sign(row-playerCell.row);
+  if(dc+dr===1){playerCell.col+=dx;playerCell.row+=dy;}
+}
+
+function moveTo(col,row){
+  col=Math.max(0,Math.min(GRID_COLS-1,col));
+  row=Math.max(0,Math.min(GRID_ROWS-1,row));
+  playerCell.col=col;playerCell.row=row;
+  if(isSafe(col,row)){beep('safe');}
+}
+
+function init(){
+  score=0;lives=3;level=1;totalMined=0;toLevel=12;
+  bats=[];popups=[];playerInvuln=0;
+  buildGrid();
+  spawnBats();
+}
+
+function spawnBats(){
+  bats=[];
+  const n=1+level;
+  for(let i=0;i<n;i++){
+    bats.push({
+      col:Math.floor(Math.random()*GRID_COLS),
+      row:Math.floor(Math.random()*GRID_ROWS),
+      t:i*40,
+      spd:Math.max(20,60-level*5),
+      wt:i*1.2,
+      phase:'patrol',
+    });
+  }
+}
+
+function batHit(bat){
+  if(playerInvuln>0)return;
+  if(isSafe(playerCell.col,playerCell.row))return;
+  beep('hit');lives--;playerInvuln=120;
+  if(lives<=0)setTimeout(()=>gs='over',600);
+}
+
+let last=0;
+function update(ts){
+  requestAnimationFrame(update);
+  const dt=Math.min(ts-last,50);last=ts;
+  if(gs!=='play'){draw();return;}
+
+  playerInvuln=Math.max(0,playerInvuln-dt/16);
+
+  // Bats
+  bats.forEach(b=>{
+    b.wt+=dt/16*0.15;b.t+=dt/16;
+    if(b.t>=b.spd){
+      b.t=0;
+      // Move towards player
+      const dc=playerCell.col-b.col,dr=playerCell.row-b.row;
+      const adx=Math.abs(dc),adr=Math.abs(dr);
+      if(adx>adr)b.col+=Math.sign(dc);else b.row+=Math.sign(dr);
+      b.col=Math.max(0,Math.min(GRID_COLS-1,b.col));
+      b.row=Math.max(0,Math.min(GRID_ROWS-1,b.row));
+      // Check hit
+      if(b.col===playerCell.col&&b.row===playerCell.row)batHit(b);
+    }
+  });
+
+  // Grid shake
+  grid.forEach(c=>{c.shake=Math.max(0,c.shake-0.4*dt/16);});
+  popups.forEach(p=>{p.y-=0.5*scl*dt/16;p.life-=0.03*dt/16;});
+  popups=popups.filter(p=>p.life>0);
+  draw();
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#0a0505';ctx.fillRect(0,0,W,H);
+
+  if(gs==='play'||gs==='over'){
+    computeGrid();
+    // Cave atmosphere - dim glow
+    ctx.fillStyle='rgba(255,120,20,0.03)';ctx.fillRect(0,0,W,H);
+
+    // Grid cells
+    grid.forEach(c=>{
+      const ox=(Math.random()-0.5)*c.shake*scl;
+      const x=c.x+ox,y=c.y;
+      if(c.state==='mined'){
+        ctx.fillStyle='#1a1010';ctx.beginPath();ctx.roundRect(x+1,y+1,CW-2,CH-2,2*scl);ctx.fill();
+        return;
+      }
+      // Cave wall
+      const wallG=ctx.createLinearGradient(x,y,x,y+CH);
+      wallG.addColorStop(0,'#3d2a1a');wallG.addColorStop(1,'#2a1a0a');
+      ctx.fillStyle=wallG;ctx.beginPath();ctx.roundRect(x+1,y+1,CW-2,CH-2,2*scl);ctx.fill();
+      // Mineral vein
+      if(c.pts>0){
+        ctx.fillStyle=c.col2;ctx.shadowColor=c.col2;ctx.shadowBlur=c.state==='cracked'?10:4;
+        ctx.globalAlpha=c.state==='cracked'?0.9:0.5;
+        ctx.beginPath();ctx.ellipse(x+CW*0.5,y+CH*0.5,CW*0.22,CH*0.18,0.3,0,Math.PI*2);ctx.fill();
+        ctx.globalAlpha=1;ctx.shadowBlur=0;
+      }
+      // Crack lines
+      if(c.state==='cracked'){
+        ctx.strokeStyle='rgba(0,0,0,0.6)';ctx.lineWidth=1.5;
+        ctx.beginPath();ctx.moveTo(x+CW*0.4,y+CH*0.2);ctx.lineTo(x+CW*0.6,y+CH*0.5);ctx.lineTo(x+CW*0.3,y+CH*0.8);
+        ctx.moveTo(x+CW*0.5,y+CH*0.3);ctx.lineTo(x+CW*0.2,y+CH*0.6);ctx.stroke();
+      }
+    });
+
+    // Safe zones (lantern glow)
+    safeZones.forEach(s=>{
+      const c=cellAt(s.col,s.row);if(!c)return;
+      ctx.fillStyle='rgba(255,180,30,0.12)';
+      ctx.beginPath();ctx.arc(c.x+CW/2,c.y+CH/2,CW*1.2,0,Math.PI*2);ctx.fill();
+      // Lantern
+      ctx.fillStyle='#ffd740';ctx.shadowColor='#ffd740';ctx.shadowBlur=12;
+      ctx.beginPath();ctx.arc(c.x+CW/2,c.y+CH*0.25,4*scl,0,Math.PI*2);ctx.fill();
+      ctx.shadowBlur=0;
+      ctx.strokeStyle='rgba(255,215,64,0.4)';ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(c.x+CW/2,c.y);ctx.lineTo(c.x+CW/2,c.y+CH*0.2);ctx.stroke();
+    });
+
+    // Player
+    const pc=cellAt(playerCell.col,playerCell.row);
+    if(pc){
+      const px2=pc.x+CW/2,py2=pc.y+CH/2;
+      // Invuln flash
+      if(playerInvuln>0&&Math.floor(playerInvuln/6)%2===0){}else{
+        ctx.fillStyle='#ffd740';ctx.shadowColor='#ffd740';ctx.shadowBlur=12;
+        ctx.beginPath();ctx.arc(px2,py2,CW*0.3,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
+        // Helmet
+        ctx.fillStyle='#c8956a';ctx.beginPath();ctx.arc(px2,py2-2*scl,CW*0.22,0,Math.PI*2);ctx.fill();
+        ctx.fillStyle='#ffd740';ctx.beginPath();ctx.arc(px2,py2-CW*0.28,CW*0.25,Math.PI,0);ctx.fill();
+        // Pickaxe
+        ctx.strokeStyle='#8b4513';ctx.lineWidth=2*scl;
+        ctx.beginPath();ctx.moveTo(px2+CW*0.15,py2-CW*0.1);ctx.lineTo(px2+CW*0.4,py2-CW*0.3);ctx.stroke();
+        ctx.fillStyle='#aaa';ctx.beginPath();ctx.moveTo(px2+CW*0.4,py2-CW*0.3);ctx.lineTo(px2+CW*0.55,py2-CW*0.15);ctx.lineTo(px2+CW*0.35,py2-CW*0.08);ctx.closePath();ctx.fill();
+      }
+    }
+
+    // Bats
+    bats.forEach(b=>{
+      const bc=cellAt(b.col,b.row);if(!bc)return;
+      const bx=bc.x+CW/2,by=bc.y+CH/2;
+      const wf=Math.sin(b.wt)*4*scl;
+      ctx.save();ctx.translate(bx,by);ctx.fillStyle='#330033';
+      ctx.beginPath();ctx.ellipse(0,0,CW*0.28,CH*0.18,0,0,Math.PI*2);ctx.fill();
+      ctx.strokeStyle='#660066';ctx.lineWidth=2*scl;
+      ctx.beginPath();ctx.moveTo(-CW*0.1,-CH*0.1);ctx.quadraticCurveTo(-CW*0.4,-CH*0.4+wf,-CW*0.55,-CH*0.1);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(CW*0.1,-CH*0.1);ctx.quadraticCurveTo(CW*0.4,-CH*0.4+wf,CW*0.55,-CH*0.1);ctx.stroke();
+      ctx.fillStyle='#ff0033';ctx.beginPath();ctx.arc(CW*0.1,-CH*0.05,2*scl,0,Math.PI*2);ctx.fill();ctx.beginPath();ctx.arc(-CW*0.1,-CH*0.05,2*scl,0,Math.PI*2);ctx.fill();
+      ctx.restore();
+      // Warning if adjacent to player
+      if(Math.abs(b.col-playerCell.col)+Math.abs(b.row-playerCell.row)<=1){
+        ctx.fillStyle='rgba(255,0,50,0.3)';ctx.beginPath();ctx.arc(bx,by,CW*0.5,0,Math.PI*2);ctx.fill();
+      }
+    });
+
+    // Popups
+    popups.forEach(p=>{
+      ctx.save();ctx.globalAlpha=p.life;ctx.textAlign='center';
+      ctx.font=`bold ${11*scl}px "Arial Black",sans-serif`;
+      ctx.fillStyle=p.col;ctx.shadowColor=p.col;ctx.shadowBlur=6;ctx.fillText(p.text,p.x,p.y);ctx.shadowBlur=0;ctx.restore();
+    });
+
+    drawHUD();
+  }
+
+  if(gs==='start'){
+    ctx.fillStyle='rgba(0,0,0,0.65)';ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.font=`bold ${46*scl}px "Arial Black",sans-serif`;
+    ctx.fillStyle='#fff';ctx.shadowColor='#ffd740';ctx.shadowBlur=20;
+    ctx.fillText('MINE',W/2,H*0.3);ctx.shadowBlur=0;
+    ctx.font=`${12*scl}px sans-serif`;ctx.fillStyle='rgba(255,215,64,0.9)';
+    ctx.fillText('Tap adjacent cells to mine minerals',W/2,H*0.4);
+    ctx.fillText('Tap twice to break through',W/2,H*0.46);
+    ctx.fillText('Reach lantern ⚡ zones to hide from bats!',W/2,H*0.52);
+    ctx.font=`bold ${14*scl}px sans-serif`;ctx.fillStyle='#ffd740';
+    ctx.fillText('TAP TO START',W/2,H*0.65);
+  }
+
+  if(gs==='over'){
+    ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.font=`bold ${32*scl}px "Arial Black",sans-serif`;
+    ctx.fillStyle='#ff5252';ctx.shadowColor='#ff0000';ctx.shadowBlur=16;
+    ctx.fillText('CAVE IN!',W/2,H*0.38);ctx.shadowBlur=0;
+    ctx.font=`bold ${22*scl}px sans-serif`;ctx.fillStyle='#ffd740';
+    ctx.fillText('Mined: '+score,W/2,H*0.48);
+    ctx.font=`${13*scl}px sans-serif`;ctx.fillStyle='rgba(255,255,255,0.6)';
+    ctx.fillText('TAP to dig again',W/2,H*0.6);
+  }
+}
+
+function drawHUD(){
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(0,0,W,34*scl);
+  ctx.textAlign='left';ctx.font=`bold ${16*scl}px "Arial Black",sans-serif`;
+  ctx.fillStyle='#ffd740';ctx.fillText(score,W*0.05,24*scl);
+  ctx.font=`${8*scl}px sans-serif`;ctx.fillStyle='rgba(255,215,64,0.5)';ctx.fillText('SCORE',W*0.05,13*scl);
+  ctx.textAlign='center';ctx.font=`bold ${13*scl}px "Arial Black",sans-serif`;
+  ctx.fillStyle='#b0bec5';ctx.fillText('LV '+level+' — '+totalMined+'/'+toLevel,W/2,22*scl);
+  ctx.textAlign='right';ctx.font=`${14*scl}px sans-serif`;
+  for(let i=0;i<3;i++){ctx.globalAlpha=i<lives?1:0.2;ctx.fillText('❤️',W*0.96-(i*18*scl),24*scl);}ctx.globalAlpha=1;
+  // Safe zone hint
+  if(isSafe(playerCell.col,playerCell.row)){
+    ctx.textAlign='center';ctx.font=`${9*scl}px sans-serif`;ctx.fillStyle='rgba(255,215,64,0.8)';
+    ctx.fillText('⚡ SAFE ZONE',W/2,H*0.93);
+  }
+  ctx.restore();
+}
+
+cv.addEventListener('pointerdown',e=>{
+  e.preventDefault();AC.resume();
+  if(gs==='start'){gs='play';init();return;}
+  if(gs==='over'){gs='start';return;}
+  const r=cv.getBoundingClientRect();
+  const px=(e.clientX-r.left)*(W/r.width),py=(e.clientY-r.top)*(H/r.height);
+  computeGrid();
+  const col=Math.floor((px-GX)/CW),row=Math.floor((py-GY)/CH);
+  if(col<0||col>=GRID_COLS||row<0||row>=GRID_ROWS)return;
+  tapCell(col,row);
+});
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

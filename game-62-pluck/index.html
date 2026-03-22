@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>PLUCK</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#0a0f08;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script>
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let W, H;
+function resize() {
+  W = cv.width = window.innerWidth;
+  H = cv.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', () => { resize(); if (gs !== 'play') drawStatic(); });
+
+// Audio
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function sfx(type) {
+  try {
+    const o = AC.createOscillator();
+    const g = AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    if (type === 'pluck') {
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(880, AC.currentTime);
+      o.frequency.exponentialRampToValueAtTime(440, AC.currentTime + 0.15);
+      g.gain.setValueAtTime(0.25, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.2);
+      o.start(); o.stop(AC.currentTime + 0.2);
+    } else if (type === 'ouch') {
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(200, AC.currentTime);
+      o.frequency.exponentialRampToValueAtTime(80, AC.currentTime + 0.3);
+      g.gain.setValueAtTime(0.3, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.3);
+      o.start(); o.stop(AC.currentTime + 0.3);
+    } else if (type === 'grow') {
+      o.type = 'sine';
+      o.frequency.setValueAtTime(300, AC.currentTime);
+      o.frequency.exponentialRampToValueAtTime(500, AC.currentTime + 0.1);
+      g.gain.setValueAtTime(0.1, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.12);
+      o.start(); o.stop(AC.currentTime + 0.12);
+    } else if (type === 'over') {
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(440, AC.currentTime);
+      o.frequency.exponentialRampToValueAtTime(110, AC.currentTime + 0.6);
+      g.gain.setValueAtTime(0.25, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.6);
+      o.start(); o.stop(AC.currentTime + 0.6);
+    } else if (type === 'start') {
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(523, AC.currentTime);
+      o.frequency.setValueAtTime(659, AC.currentTime + 0.1);
+      o.frequency.setValueAtTime(784, AC.currentTime + 0.2);
+      g.gain.setValueAtTime(0.2, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.35);
+      o.start(); o.stop(AC.currentTime + 0.35);
+    }
+  } catch(e) {}
+}
+
+// Game state
+let gs = 'start'; // 'start', 'play', 'over'
+const COLS = 5, ROWS = 6;
+const CELL_TYPES = { EMPTY: 0, FLOWER: 1, WEED: 2 };
+let grid = [];
+let lives = 3;
+let score = 0;
+let best = 0;
+let timeLeft = 45;
+let lastTick = 0;
+let lastGrow = 0;
+let growInterval = 3000;
+let particles = [];
+let popups = [];
+let flashRed = 0;
+let touchStart = null;
+let touchCell = null;
+
+// Grid layout
+let cellSize, gridX, gridY, gridW, gridH;
+
+function calcGrid() {
+  const maxCellW = Math.floor((W * 0.92) / COLS);
+  const maxCellH = Math.floor((H * 0.7) / ROWS);
+  cellSize = Math.min(maxCellW, maxCellH, 80);
+  gridW = cellSize * COLS;
+  gridH = cellSize * ROWS;
+  gridX = (W - gridW) / 2;
+  gridY = H * 0.15;
+}
+
+function initGrid() {
+  grid = [];
+  for (let r = 0; r < ROWS; r++) {
+    grid[r] = [];
+    for (let c = 0; c < COLS; c++) {
+      grid[r][c] = CELL_TYPES.EMPTY;
+    }
+  }
+  // Place flowers (30%)
+  const total = ROWS * COLS;
+  const flowerCount = Math.round(total * 0.30);
+  const weedCount = Math.round(total * 0.40);
+  let placed = 0;
+  while (placed < flowerCount) {
+    const r = Math.floor(Math.random() * ROWS);
+    const c = Math.floor(Math.random() * COLS);
+    if (grid[r][c] === CELL_TYPES.EMPTY) {
+      grid[r][c] = CELL_TYPES.FLOWER;
+      placed++;
+    }
+  }
+  placed = 0;
+  while (placed < weedCount) {
+    const r = Math.floor(Math.random() * ROWS);
+    const c = Math.floor(Math.random() * COLS);
+    if (grid[r][c] === CELL_TYPES.EMPTY) {
+      grid[r][c] = CELL_TYPES.WEED;
+      placed++;
+    }
+  }
+}
+
+function startGame() {
+  sfx('start');
+  lives = 3;
+  score = 0;
+  timeLeft = 45;
+  lastTick = performance.now();
+  lastGrow = performance.now();
+  particles = [];
+  popups = [];
+  flashRed = 0;
+  touchStart = null;
+  touchCell = null;
+  calcGrid();
+  initGrid();
+  gs = 'play';
+  requestAnimationFrame(loop);
+}
+
+function endGame() {
+  gs = 'over';
+  if (score > best) best = score;
+  sfx('over');
+}
+
+// Cell coordinate helpers
+function getCellAt(px, py) {
+  const col = Math.floor((px - gridX) / cellSize);
+  const row = Math.floor((py - gridY) / cellSize);
+  if (col >= 0 && col < COLS && row >= 0 && row < ROWS) {
+    return { r: row, c: col };
+  }
+  return null;
+}
+
+function cellCenter(r, c) {
+  return {
+    x: gridX + c * cellSize + cellSize / 2,
+    y: gridY + r * cellSize + cellSize / 2
+  };
+}
+
+// Particles
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1.5 + Math.random() * 3;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      r: 3 + Math.random() * 3,
+      color,
+      life: 1,
+      decay: 0.03 + Math.random() * 0.04
+    });
+  }
+}
+
+function spawnPopup(x, y, text) {
+  popups.push({ x, y, text, life: 1, vy: -1.5 });
+}
+
+// Drawing helpers
+function drawFlower(x, y, size) {
+  const r = size * 0.28;
+  const petalR = size * 0.18;
+  const petals = 5;
+  // Petals
+  ctx.save();
+  for (let i = 0; i < petals; i++) {
+    const angle = (i / petals) * Math.PI * 2 - Math.PI / 2;
+    const px = x + Math.cos(angle) * r;
+    const py = y + Math.sin(angle) * r;
+    ctx.beginPath();
+    ctx.arc(px, py, petalR, 0, Math.PI * 2);
+    ctx.fillStyle = '#ff6688';
+    ctx.fill();
+  }
+  // Center
+  ctx.beginPath();
+  ctx.arc(x, y, size * 0.14, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffdd44';
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawWeed(x, y, size) {
+  const spikes = 12;
+  const innerR = size * 0.14;
+  const outerR = size * 0.32;
+  // Spikes
+  ctx.save();
+  ctx.strokeStyle = '#d4c020';
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < spikes; i++) {
+    const angle = (i / spikes) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(x + Math.cos(angle) * innerR, y + Math.sin(angle) * innerR);
+    ctx.lineTo(x + Math.cos(angle) * outerR, y + Math.sin(angle) * outerR);
+    ctx.stroke();
+  }
+  // Center circle
+  ctx.beginPath();
+  ctx.arc(x, y, innerR, 0, Math.PI * 2);
+  ctx.fillStyle = '#f0d030';
+  ctx.fill();
+  ctx.strokeStyle = '#a09010';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawCell(r, c) {
+  const x = gridX + c * cellSize;
+  const y = gridY + r * cellSize;
+  const pad = 3;
+  const s = cellSize - pad * 2;
+  const cx = x + cellSize / 2;
+  const cy = y + cellSize / 2;
+  const radius = 6;
+
+  // Cell background
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(x + pad, y + pad, s, s, radius);
+  const type = grid[r][c];
+  if (type === CELL_TYPES.FLOWER) {
+    ctx.fillStyle = '#1a3a1a';
+  } else if (type === CELL_TYPES.WEED) {
+    ctx.fillStyle = '#2a2a10';
+  } else {
+    ctx.fillStyle = '#141a10';
+  }
+  ctx.fill();
+  ctx.restore();
+
+  // Cell content
+  if (type === CELL_TYPES.FLOWER) {
+    drawFlower(cx, cy, cellSize);
+    // stem
+    ctx.save();
+    ctx.strokeStyle = '#2a8a2a';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy + cellSize * 0.14);
+    ctx.lineTo(cx, cy + cellSize * 0.38);
+    ctx.stroke();
+    ctx.restore();
+  } else if (type === CELL_TYPES.WEED) {
+    drawWeed(cx, cy, cellSize);
+    // stem
+    ctx.save();
+    ctx.strokeStyle = '#6a7a10';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy + cellSize * 0.14);
+    ctx.lineTo(cx, cy + cellSize * 0.38);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawGrid() {
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      drawCell(r, c);
+    }
+  }
+}
+
+function drawHUD() {
+  // Timer bar background
+  ctx.save();
+  const timerBarW = gridW;
+  const timerBarH = 8;
+  const timerBarX = gridX;
+  const timerBarY = gridY - 24;
+  ctx.fillStyle = '#1a2a14';
+  ctx.beginPath();
+  ctx.roundRect(timerBarX, timerBarY, timerBarW, timerBarH, 4);
+  ctx.fill();
+  // Timer bar fill
+  const pct = timeLeft / 45;
+  const barColor = pct > 0.5 ? '#44cc44' : pct > 0.25 ? '#ccaa22' : '#cc2222';
+  ctx.fillStyle = barColor;
+  ctx.beginPath();
+  ctx.roundRect(timerBarX, timerBarY, timerBarW * pct, timerBarH, 4);
+  ctx.fill();
+  ctx.restore();
+
+  // Time text
+  ctx.save();
+  ctx.font = `bold ${Math.round(cellSize * 0.35)}px monospace`;
+  ctx.fillStyle = '#88cc88';
+  ctx.textAlign = 'center';
+  ctx.fillText(Math.ceil(timeLeft) + 's', W / 2, gridY - 30);
+  ctx.restore();
+
+  // Score
+  ctx.save();
+  ctx.font = `bold ${Math.round(cellSize * 0.45)}px monospace`;
+  ctx.fillStyle = '#ccee88';
+  ctx.textAlign = 'left';
+  ctx.fillText('SCORE: ' + score, gridX, gridY - 38);
+  ctx.restore();
+
+  // Lives
+  const heartSize = Math.round(cellSize * 0.35);
+  ctx.save();
+  ctx.textAlign = 'right';
+  ctx.font = heartSize + 'px sans-serif';
+  let heartsStr = '';
+  for (let i = 0; i < 3; i++) {
+    heartsStr += i < lives ? '♥' : '♡';
+  }
+  ctx.fillStyle = lives > 1 ? '#ff6688' : '#ff2244';
+  ctx.fillText(heartsStr, gridX + gridW, gridY - 30);
+  ctx.restore();
+}
+
+function drawParticles() {
+  particles.forEach(p => {
+    ctx.save();
+    ctx.globalAlpha = p.life;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2);
+    ctx.fillStyle = p.color;
+    ctx.fill();
+    ctx.restore();
+  });
+}
+
+function drawPopups() {
+  popups.forEach(p => {
+    ctx.save();
+    ctx.globalAlpha = p.life;
+    ctx.font = `bold ${Math.round(cellSize * 0.35)}px monospace`;
+    ctx.fillStyle = '#aaff44';
+    ctx.textAlign = 'center';
+    ctx.fillText(p.text, p.x, p.y);
+    ctx.restore();
+  });
+}
+
+function drawStartScreen() {
+  ctx.clearRect(0, 0, W, H);
+  // Background
+  ctx.fillStyle = '#0a0f08';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid preview (faded)
+  calcGrid();
+  ctx.save();
+  ctx.globalAlpha = 0.25;
+  drawGrid();
+  ctx.restore();
+
+  // Title
+  ctx.save();
+  ctx.textAlign = 'center';
+  const titleSize = Math.min(W * 0.18, H * 0.12, 90);
+  ctx.font = `bold ${titleSize}px monospace`;
+  ctx.fillStyle = '#88ee44';
+  ctx.shadowColor = '#44aa00';
+  ctx.shadowBlur = 20;
+  ctx.fillText('PLUCK', W / 2, H * 0.28);
+  ctx.shadowBlur = 0;
+
+  // Subtitle
+  ctx.font = `bold ${Math.round(titleSize * 0.22)}px monospace`;
+  ctx.fillStyle = '#556644';
+  ctx.letterSpacing = '4px';
+  ctx.fillText('GARDEN WEED REMOVER', W / 2, H * 0.28 + titleSize * 0.55);
+
+  // Instructions
+  const instrSize = Math.min(W * 0.038, 16);
+  ctx.font = `${instrSize}px monospace`;
+  ctx.fillStyle = '#88aa66';
+  ctx.fillText('Swipe UP on weeds to pluck them', W / 2, H * 0.45);
+  ctx.fillStyle = '#aa6688';
+  ctx.fillText('Avoid the flowers or lose a life', W / 2, H * 0.45 + instrSize * 1.8);
+  ctx.fillStyle = '#aacc44';
+  ctx.fillText('↑ SWIPE UP to pluck', W / 2, H * 0.45 + instrSize * 3.8);
+
+  // Legend
+  const lx = W / 2 - cellSize;
+  const ly = H * 0.57;
+  // Weed example
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#2a2a10';
+  ctx.beginPath();
+  ctx.roundRect(lx - cellSize / 2, ly - cellSize / 2, cellSize, cellSize, 6);
+  ctx.fill();
+  drawWeed(lx, ly, cellSize);
+  ctx.fillStyle = '#cccc44';
+  ctx.font = `${instrSize}px monospace`;
+  ctx.fillText('WEED', lx, ly + cellSize * 0.65);
+
+  // Flower example
+  const fx = W / 2 + cellSize;
+  ctx.fillStyle = '#1a3a1a';
+  ctx.beginPath();
+  ctx.roundRect(fx - cellSize / 2, ly - cellSize / 2, cellSize, cellSize, 6);
+  ctx.fill();
+  drawFlower(fx, ly, cellSize);
+  ctx.fillStyle = '#ff6688';
+  ctx.font = `${instrSize}px monospace`;
+  ctx.fillText('FLOWER', fx, ly + cellSize * 0.65);
+
+  // Start button
+  const btnW = Math.min(W * 0.5, 220);
+  const btnH = 52;
+  const btnX = W / 2 - btnW / 2;
+  const btnY = H * 0.78;
+  ctx.fillStyle = '#44aa22';
+  ctx.shadowColor = '#22cc00';
+  ctx.shadowBlur = 16;
+  ctx.beginPath();
+  ctx.roundRect(btnX, btnY, btnW, btnH, btnH / 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `bold ${Math.round(btnH * 0.45)}px monospace`;
+  ctx.fillText('TAP TO START', W / 2, btnY + btnH * 0.65);
+  ctx.restore();
+}
+
+function drawOverScreen() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.82)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  const titleSize = Math.min(W * 0.14, 72);
+  ctx.font = `bold ${titleSize}px monospace`;
+  ctx.fillStyle = '#ff6644';
+  ctx.shadowColor = '#ff2200';
+  ctx.shadowBlur = 20;
+  ctx.fillText('TIME\'S UP!', W / 2, H * 0.3);
+  ctx.shadowBlur = 0;
+
+  ctx.font = `bold ${Math.round(titleSize * 0.55)}px monospace`;
+  ctx.fillStyle = '#ccee88';
+  ctx.fillText('WEEDS PLUCKED', W / 2, H * 0.42);
+
+  ctx.font = `bold ${titleSize * 1.1}px monospace`;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(score, W / 2, H * 0.54);
+
+  ctx.font = `bold ${Math.round(titleSize * 0.3)}px monospace`;
+  ctx.fillStyle = '#88aa66';
+  ctx.fillText('BEST: ' + best, W / 2, H * 0.62);
+
+  // Replay button
+  const btnW = Math.min(W * 0.5, 220);
+  const btnH = 52;
+  const btnX = W / 2 - btnW / 2;
+  const btnY = H * 0.7;
+  ctx.fillStyle = '#44aa22';
+  ctx.shadowColor = '#22cc00';
+  ctx.shadowBlur = 16;
+  ctx.beginPath();
+  ctx.roundRect(btnX, btnY, btnW, btnH, btnH / 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#fff';
+  ctx.font = `bold ${Math.round(btnH * 0.45)}px monospace`;
+  ctx.fillText('PLAY AGAIN', W / 2, btnY + btnH * 0.65);
+  ctx.restore();
+}
+
+function drawStatic() {
+  if (gs === 'start') drawStartScreen();
+  else if (gs === 'over') { calcGrid(); drawOverScreen(); }
+}
+
+// Game loop
+function loop(ts) {
+  if (gs !== 'play') return;
+  requestAnimationFrame(loop);
+
+  const dt = Math.min(ts - (lastTick || ts), 100);
+
+  // Timer tick
+  if (ts - lastTick >= 1000) {
+    timeLeft = Math.max(0, timeLeft - 1);
+    lastTick = ts;
+    if (timeLeft <= 0) { endGame(); return; }
+  }
+
+  // Grow new weed
+  if (ts - lastGrow >= growInterval) {
+    lastGrow = ts;
+    // Find empty cells
+    const empty = [];
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (grid[r][c] === CELL_TYPES.EMPTY) empty.push({r, c});
+      }
+    }
+    if (empty.length > 0) {
+      const pick = empty[Math.floor(Math.random() * empty.length)];
+      grid[pick.r][pick.c] = CELL_TYPES.WEED;
+      sfx('grow');
+    }
+  }
+
+  // Update particles
+  particles = particles.filter(p => p.life > 0);
+  particles.forEach(p => {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.08;
+    p.life -= p.decay;
+  });
+
+  // Update popups
+  popups = popups.filter(p => p.life > 0);
+  popups.forEach(p => {
+    p.y += p.vy;
+    p.life -= 0.022;
+  });
+
+  // Decay red flash
+  if (flashRed > 0) flashRed = Math.max(0, flashRed - 0.04);
+
+  // Draw
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#0a0f08';
+  ctx.fillRect(0, 0, W, H);
+
+  // Soil background for grid
+  ctx.save();
+  ctx.fillStyle = '#181f10';
+  ctx.beginPath();
+  ctx.roundRect(gridX - 6, gridY - 6, gridW + 12, gridH + 12, 10);
+  ctx.fill();
+  ctx.restore();
+
+  drawGrid();
+  drawHUD();
+  drawParticles();
+  drawPopups();
+
+  // Red flash overlay
+  if (flashRed > 0) {
+    ctx.save();
+    ctx.globalAlpha = flashRed * 0.35;
+    ctx.fillStyle = '#ff0000';
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+}
+
+// Input
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (AC.state === 'suspended') AC.resume();
+
+  if (gs === 'start') {
+    startGame();
+    return;
+  }
+  if (gs === 'over') {
+    startGame();
+    return;
+  }
+  if (gs !== 'play') return;
+
+  const rect = cv.getBoundingClientRect();
+  const sx = (e.clientX - rect.left) * (W / rect.width);
+  const sy = (e.clientY - rect.top) * (H / rect.height);
+  touchStart = { x: sx, y: sy };
+  touchCell = getCellAt(sx, sy);
+
+  // Check immediate flower touch
+  if (touchCell && grid[touchCell.r][touchCell.c] === CELL_TYPES.FLOWER) {
+    // Will handle on pointerup/move
+  }
+});
+
+cv.addEventListener('pointermove', e => {
+  e.preventDefault();
+});
+
+cv.addEventListener('pointerup', e => {
+  e.preventDefault();
+  if (gs !== 'play' || !touchStart || !touchCell) {
+    touchStart = null;
+    touchCell = null;
+    return;
+  }
+
+  const rect = cv.getBoundingClientRect();
+  const ex = (e.clientX - rect.left) * (W / rect.width);
+  const ey = (e.clientY - rect.top) * (H / rect.height);
+
+  const dx = ex - touchStart.x;
+  const dy = ey - touchStart.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+
+  const cell = touchCell;
+  const type = grid[cell.r][cell.c];
+
+  if (type === CELL_TYPES.FLOWER) {
+    // Touched a flower = lose life
+    lives--;
+    flashRed = 1;
+    sfx('ouch');
+    const cc = cellCenter(cell.r, cell.c);
+    spawnParticles(cc.x, cc.y, '#ff2244', 8);
+    spawnPopup(cc.x, cc.y - cellSize * 0.3, '-LIFE');
+    if (lives <= 0) { endGame(); }
+  } else if (type === CELL_TYPES.WEED) {
+    // Must swipe upward (dy < -30)
+    if (dy < -30 && Math.abs(dx) < Math.abs(dy) * 1.5) {
+      // Valid upward swipe
+      grid[cell.r][cell.c] = CELL_TYPES.EMPTY;
+      score += 10;
+      sfx('pluck');
+      const cc = cellCenter(cell.r, cell.c);
+      spawnParticles(cc.x, cc.y, '#88ee44', 14);
+      spawnParticles(cc.x, cc.y, '#ccff44', 8);
+      spawnPopup(cc.x, cc.y - cellSize * 0.3, '+10');
+    }
+    // Wrong direction: nothing
+  }
+
+  touchStart = null;
+  touchCell = null;
+});
+
+// Initial draw
+calcGrid();
+initGrid();
+drawStartScreen();
+</script>
+</body>
+</html>

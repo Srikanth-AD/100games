@@ -1,0 +1,1009 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game 30 - Spelunk</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #1a1a2e, #16213e);
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 24px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            max-width: 420px;
+            width: 100%;
+        }
+
+        .title {
+            text-align: center;
+            color: #333;
+            margin-bottom: 18px;
+            font-size: 2.2em;
+            letter-spacing: 1px;
+        }
+
+        .stats {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 16px;
+            justify-content: space-around;
+        }
+
+        .stat {
+            background: #f0f0f0;
+            padding: 8px 12px;
+            border-radius: 8px;
+            text-align: center;
+            flex: 1;
+        }
+
+        .stat-label {
+            font-size: 0.78em;
+            color: #666;
+            margin-bottom: 3px;
+        }
+
+        .stat-value {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .stat.depth .stat-value { color: #8e44ad; }
+        .stat.gems .stat-value  { color: #27ae60; }
+        .stat.lives .stat-value { color: #e74c3c; }
+
+        .canvas-wrapper {
+            position: relative;
+            width: 360px;
+            height: 480px;
+            margin: 0 auto 16px;
+            border-radius: 10px;
+            overflow: hidden;
+            border: 3px solid #222;
+            box-shadow: inset 0 0 30px rgba(0,0,0,0.9), 0 0 20px rgba(0,0,0,0.4);
+        }
+
+        #gameCanvas {
+            display: block;
+        }
+
+        #lightCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+        }
+
+        /* Mobile controls */
+        .mobile-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            gap: 10px;
+        }
+
+        .ctrl-group {
+            display: flex;
+            gap: 8px;
+        }
+
+        .ctrl-btn {
+            width: 60px;
+            height: 52px;
+            border: none;
+            border-radius: 10px;
+            background: linear-gradient(135deg, #2c3e50, #34495e);
+            color: white;
+            font-size: 1.3em;
+            cursor: pointer;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: manipulation;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.08s, box-shadow 0.08s;
+        }
+
+        .ctrl-btn:active {
+            transform: translateY(2px);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .ctrl-btn.jump-btn {
+            width: 80px;
+            background: linear-gradient(135deg, #6c3483, #8e44ad);
+        }
+
+        .hint {
+            text-align: center;
+            font-size: 0.78em;
+            color: #999;
+            margin-bottom: 4px;
+        }
+
+        /* Game over overlay */
+        .game-over-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.82);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .game-over-overlay.show {
+            display: flex;
+        }
+
+        .game-over-content {
+            background: white;
+            padding: 36px 30px;
+            border-radius: 20px;
+            text-align: center;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+            max-width: 340px;
+            width: 90%;
+        }
+
+        .game-over-title {
+            font-size: 2.2em;
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .game-over-sub {
+            font-size: 1em;
+            color: #666;
+            margin-bottom: 18px;
+        }
+
+        .go-stats {
+            background: #f5f5f5;
+            border-radius: 10px;
+            padding: 14px 16px;
+            margin-bottom: 20px;
+            text-align: left;
+        }
+
+        .go-stat-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid #e8e8e8;
+            font-size: 0.95em;
+        }
+
+        .go-stat-row:last-child { border-bottom: none; }
+        .go-stat-row span:last-child { font-weight: bold; color: #333; }
+
+        .btn-play-again {
+            background: linear-gradient(135deg, #8e44ad, #6c3483);
+            color: white;
+            padding: 13px 28px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1em;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 4px 12px rgba(142,68,173,0.4);
+        }
+
+        .btn-play-again:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(142,68,173,0.5);
+        }
+
+        /* Start overlay */
+        .start-overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(0,0,0,0.75);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            z-index: 50;
+            border-radius: 7px;
+        }
+
+        .start-overlay h2 {
+            font-size: 1.6em;
+            margin-bottom: 10px;
+        }
+
+        .start-overlay p {
+            font-size: 0.88em;
+            color: #ccc;
+            text-align: center;
+            max-width: 260px;
+            line-height: 1.5;
+            margin-bottom: 18px;
+        }
+
+        .btn-start {
+            background: linear-gradient(135deg, #8e44ad, #6c3483);
+            color: white;
+            padding: 12px 28px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1em;
+            font-weight: bold;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1 class="title">⛏️ Spelunk</h1>
+
+    <div class="stats">
+        <div class="stat depth">
+            <div class="stat-label">Depth</div>
+            <div class="stat-value" id="statDepth">0m</div>
+        </div>
+        <div class="stat gems">
+            <div class="stat-label">Gems</div>
+            <div class="stat-value" id="statGems">0</div>
+        </div>
+        <div class="stat lives">
+            <div class="stat-label">Lives</div>
+            <div class="stat-value" id="statLives">❤️❤️❤️</div>
+        </div>
+    </div>
+
+    <div class="canvas-wrapper" id="canvasWrapper">
+        <canvas id="gameCanvas" width="360" height="480"></canvas>
+        <canvas id="lightCanvas" width="360" height="480"></canvas>
+        <div class="start-overlay" id="startOverlay">
+            <h2>⛏️ Spelunk</h2>
+            <p>Descend into the cave, collect gems, and dodge bats and stalactites. How deep can you go?</p>
+            <button class="btn-start" id="btnStart">Start Spelunking</button>
+        </div>
+    </div>
+
+    <div class="mobile-controls">
+        <div class="ctrl-group">
+            <button class="ctrl-btn" id="btnLeft" aria-label="Move Left">&#8592;</button>
+            <button class="ctrl-btn" id="btnRight" aria-label="Move Right">&#8594;</button>
+        </div>
+        <button class="ctrl-btn jump-btn" id="btnJump" aria-label="Jump">&#8593; Jump</button>
+    </div>
+
+    <div class="hint">Arrow keys / WASD on desktop &nbsp;|&nbsp; Tap buttons on mobile</div>
+</div>
+
+<div class="game-over-overlay" id="gameOverOverlay">
+    <div class="game-over-content">
+        <div class="game-over-title">💀 Cave-In!</div>
+        <div class="game-over-sub">The cave has claimed another explorer.</div>
+        <div class="go-stats">
+            <div class="go-stat-row"><span>Depth Reached</span><span id="goDepth">0m</span></div>
+            <div class="go-stat-row"><span>Gems Collected</span><span id="goGems">0</span></div>
+            <div class="go-stat-row"><span>Score</span><span id="goScore">0</span></div>
+        </div>
+        <button class="btn-play-again" onclick="restartGame()">Try Again</button>
+    </div>
+</div>
+
+<script>
+// ─── Constants ────────────────────────────────────────────────────────────────
+const TILE      = 24;
+const COLS      = 15;      // 15*24 = 360
+const ROWS_VIS  = 20;      // 20*24 = 480
+const W         = COLS * TILE;   // 360
+const H         = ROWS_VIS * TILE; // 480
+
+const GRAVITY   = 0.45;
+const JUMP_VEL  = -9.5;
+const MOVE_SPD  = 3.2;
+const SCROLL_SPD = 1.0;  // base pixels/frame the world scrolls up
+
+const GEM_TYPES = [
+    { emoji: '💎', value: 10, color: '#00cfff' },
+    { emoji: '⭐', value: 5,  color: '#ffe066' },
+    { emoji: '🔮', value: 20, color: '#c084fc' },
+];
+
+// ─── State ────────────────────────────────────────────────────────────────────
+const canvas    = document.getElementById('gameCanvas');
+const ctx       = canvas.getContext('2d');
+if(!CanvasRenderingContext2D.prototype.roundRect){
+  CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h,r){
+    r=Math.min(typeof r==='number'?r:r[0], Math.abs(w)/2, Math.abs(h)/2);
+    this.moveTo(x+r,y);
+    this.lineTo(x+w-r,y);   this.arcTo(x+w,y,   x+w,y+r,   r);
+    this.lineTo(x+w,y+h-r); this.arcTo(x+w,y+h, x+w-r,y+h, r);
+    this.lineTo(x+r,y+h);   this.arcTo(x,y+h,   x,y+h-r,   r);
+    this.lineTo(x,y+r);     this.arcTo(x,y,      x+r,y,     r);
+    this.closePath();
+  };
+}
+
+const lcanvas   = document.getElementById('lightCanvas');
+const lctx      = lcanvas.getContext('2d');
+
+let running     = false;
+let rafId       = null;
+
+// Camera: worldOffsetY is how many pixels the world has scrolled (increases over time)
+let worldOffsetY = 0;
+let autoScrollY  = 0;   // accumulated auto-scroll per frame (pixels)
+
+// Tile map: rows generated on demand, keyed by row index
+// row 0 is the very top of the cave
+// tileMap[r][c] = 1 (wall) or 0 (open)
+const tileMap   = [];
+let generatedRows = 0;  // how many rows generated so far
+
+// Corridor state for procedural generation
+let corridorCenter = 7;   // tile column of corridor centre
+let corridorWidth  = 7;   // tiles wide
+
+// Entities
+let gems        = [];   // {row, col, type, collected, pulse}
+let bats        = [];   // {x, y, vx, row, alive}
+let stalactites = []; // {col, row, tipRow, alive}  — hang from ceiling of open area
+
+// Player
+const PLAYER_W  = 20;
+const PLAYER_H  = 26;
+let player;
+
+// Stats
+let score       = 0;
+let gemsCount   = 0;
+let lives       = 3;
+let depthPx     = 0;   // total pixels scrolled (used for depth in metres)
+let invincible  = 0;   // frames of invincibility remaining
+
+// Input
+const keys = {};
+
+// ─── Tile map generation ──────────────────────────────────────────────────────
+function generateRow(r) {
+    if (tileMap[r]) return;
+
+    // First few rows: fully open to give player breathing room
+    if (r < 3) {
+        tileMap[r] = new Uint8Array(COLS);
+        return;
+    }
+
+    // Shift corridor slightly
+    corridorCenter += (Math.random() < 0.5 ? 1 : -1) * (Math.random() < 0.4 ? 1 : 0);
+    corridorWidth   = Math.max(5, Math.min(8, corridorWidth + (Math.random() < 0.3 ? (Math.random()<0.5?1:-1) : 0)));
+
+    // Clamp so corridor never touches edges
+    const half = Math.floor(corridorWidth / 2);
+    corridorCenter = Math.max(half + 1, Math.min(COLS - half - 2, corridorCenter));
+
+    const row = new Uint8Array(COLS);
+    for (let c = 0; c < COLS; c++) {
+        const distFromCenter = Math.abs(c - corridorCenter);
+        row[c] = distFromCenter <= half ? 0 : 1;
+    }
+    tileMap[r] = row;
+
+    // Spawn gems (1 in 4 rows, in open tiles)
+    if (r > 5 && Math.random() < 0.28) {
+        const openCols = [];
+        for (let c = 0; c < COLS; c++) if (!row[c]) openCols.push(c);
+        if (openCols.length > 0) {
+            const c = openCols[Math.floor(Math.random() * openCols.length)];
+            // Deeper = more likely high-value gem
+            const depthFactor = Math.min(1, r / 300);
+            let typeIdx;
+            const roll = Math.random();
+            if (depthFactor > 0.6 && roll < 0.25) typeIdx = 2;       // 🔮
+            else if (roll < 0.5) typeIdx = 0;                          // 💎
+            else typeIdx = 1;                                           // ⭐
+            gems.push({ row: r, col: c, type: typeIdx, collected: false, pulse: Math.random() * Math.PI * 2 });
+        }
+    }
+
+    // Spawn bats (1 in 8 rows, deeper cave)
+    if (r > 20 && Math.random() < 0.14) {
+        const openCols = [];
+        for (let c = 1; c < COLS-1; c++) if (!row[c]) openCols.push(c);
+        if (openCols.length >= 2) {
+            const startCol = openCols[Math.floor(Math.random() * openCols.length)];
+            // Find corridor bounds for this row
+            const left  = openCols[0] * TILE;
+            const right = openCols[openCols.length-1] * TILE + TILE;
+            bats.push({
+                x: startCol * TILE + TILE/2,
+                y: r * TILE + TILE/2,
+                vx: (Math.random() < 0.5 ? 1 : -1) * (1.5 + Math.random()),
+                left, right,
+                row: r,
+                alive: true,
+                wing: 0
+            });
+        }
+    }
+
+    // Spawn stalactites: hang from top of open tiles in the corridor
+    if (r > 10 && Math.random() < 0.12) {
+        // Find a random open column; place stalactite hanging from that tile's top edge
+        const openCols = [];
+        for (let c = 0; c < COLS; c++) if (!row[c] && (r === 0 || tileMap[r-1]?.[c] === 1)) openCols.push(c);
+        if (openCols.length > 0) {
+            const c = openCols[Math.floor(Math.random() * openCols.length)];
+            const len = 2 + Math.floor(Math.random() * 3); // 2–4 tiles long
+            stalactites.push({ col: c, row: r, len, alive: true });
+        }
+    }
+}
+
+function ensureRows(upToRow) {
+    for (let r = generatedRows; r <= upToRow + 2; r++) {
+        generateRow(r);
+        generatedRows = Math.max(generatedRows, r + 1);
+    }
+}
+
+// ─── Player init ──────────────────────────────────────────────────────────────
+function initPlayer() {
+    player = {
+        x: W / 2 - PLAYER_W / 2,
+        y: TILE * 1,
+        vx: 0,
+        vy: 0,
+        onGround: false,
+        facingRight: true,
+        frame: 0
+    };
+}
+
+// ─── Collision helpers ────────────────────────────────────────────────────────
+// Returns tile at world pixel (wx, wy)
+function tileAt(wx, wy) {
+    const c = Math.floor(wx / TILE);
+    const r = Math.floor(wy / TILE);
+    if (c < 0 || c >= COLS || r < 0) return 1;  // treat out of bounds as wall
+    ensureRows(r);
+    return tileMap[r]?.[c] ?? 1;
+}
+
+function isSolid(wx, wy) {
+    return tileAt(wx, wy) === 1;
+}
+
+// Resolve player against tiles, returns {x, y, vx, vy, onGround}
+function resolveCollisions(px, py, pvx, pvy) {
+    let onGround = false;
+
+    // ── Vertical ──────────────────────────────────────────────
+    py += pvy;
+
+    // Bottom edge of player
+    const bLeft  = px + 2;
+    const bRight = px + PLAYER_W - 2;
+    const bottom = py + PLAYER_H;
+
+    if (pvy >= 0) {
+        // Falling: check feet
+        if (isSolid(bLeft, bottom) || isSolid(bRight, bottom)) {
+            py = Math.floor(bottom / TILE) * TILE - PLAYER_H;
+            pvy = 0;
+            onGround = true;
+        }
+    } else {
+        // Jumping: check head
+        const top = py;
+        if (isSolid(bLeft, top) || isSolid(bRight, top)) {
+            py = Math.floor(top / TILE) * TILE + TILE;
+            pvy = 0;
+        }
+    }
+
+    // ── Horizontal ────────────────────────────────────────────
+    px += pvx;
+
+    const midY    = py + PLAYER_H / 2;
+    const topY    = py + 4;
+    const bottomY = py + PLAYER_H - 4;
+
+    if (pvx > 0) {
+        const right = px + PLAYER_W;
+        if (isSolid(right, topY) || isSolid(right, midY) || isSolid(right, bottomY)) {
+            px = Math.floor(right / TILE) * TILE - PLAYER_W;
+            pvx = 0;
+        }
+    } else if (pvx < 0) {
+        if (isSolid(px, topY) || isSolid(px, midY) || isSolid(px, bottomY)) {
+            px = Math.floor(px / TILE) * TILE + TILE;
+            pvx = 0;
+        }
+    }
+
+    // Hard clamp to canvas width
+    px = Math.max(0, Math.min(W - PLAYER_W, px));
+
+    return { x: px, y: py, vx: pvx, vy: pvy, onGround };
+}
+
+// ─── Take damage ─────────────────────────────────────────────────────────────
+function takeDamage() {
+    if (invincible > 0) return;
+    lives--;
+    invincible = 90; // ~1.5s at 60fps
+    updateHUD();
+    if (lives <= 0) {
+        endGame();
+    }
+}
+
+// ─── Game loop ────────────────────────────────────────────────────────────────
+let lastTime = 0;
+
+function loop(ts) {
+    if (!running) return;
+    const dt = Math.min(ts - lastTime, 50); // cap delta
+    lastTime = ts;
+
+    update(dt);
+    render();
+    rafId = requestAnimationFrame(loop);
+}
+
+function update(dt) {
+    // Auto-scroll increases with depth
+    const speedMult = 1 + Math.min(depthPx / 4000, 2.5);
+    const scrollDelta = SCROLL_SPD * speedMult;
+    worldOffsetY  += scrollDelta;
+    depthPx       += scrollDelta;
+    autoScrollY    = scrollDelta;
+
+    // Move player upward on screen by scroll amount (world moves up)
+    player.y -= autoScrollY;
+
+    // ── Input ──────────────────────────────────────────────────
+    player.vx = 0;
+    if (keys['ArrowLeft']  || keys['a'] || keys['A']) { player.vx = -MOVE_SPD; player.facingRight = false; }
+    if (keys['ArrowRight'] || keys['d'] || keys['D']) { player.vx =  MOVE_SPD; player.facingRight = true;  }
+    if ((keys['ArrowUp'] || keys['w'] || keys['W'] || keys[' ']) && player.onGround) {
+        player.vy = JUMP_VEL;
+        player.onGround = false;
+    }
+
+    // ── Physics ────────────────────────────────────────────────
+    player.vy += GRAVITY;
+
+    // World Y: convert player screen Y to world Y
+    const worldPlayerY = player.y + worldOffsetY;
+
+    // Resolve in world coordinates
+    const res = resolveCollisions(player.x, worldPlayerY, player.vx, player.vy);
+    player.x  = res.x;
+    player.vy = res.vy;
+    player.vx = res.vx;
+    player.onGround = res.onGround;
+    // Convert back to screen Y
+    player.y = res.y - worldOffsetY;
+
+    // ── If player falls off screen bottom → just let camera carry them ──
+    if (player.y > H + TILE * 2) {
+        player.y = H + TILE * 2;
+    }
+
+    // If player goes above the visible area: camera won't scroll back up, so clamp
+    if (player.y < -PLAYER_H * 2) {
+        player.y = -PLAYER_H * 2;
+    }
+
+    // ── Ensure cave rows ahead ──────────────────────────────────
+    const visibleBottomRow = Math.floor((worldOffsetY + H) / TILE) + 5;
+    ensureRows(visibleBottomRow);
+
+    // ── Gem collection ─────────────────────────────────────────
+    const pWX = player.x;
+    const pWY = worldPlayerY;
+
+    for (const gem of gems) {
+        if (gem.collected) continue;
+        const gx = gem.col * TILE;
+        const gy = gem.row * TILE;
+        // AABB
+        if (pWX < gx + TILE && pWX + PLAYER_W > gx &&
+            pWY < gy + TILE && pWY + PLAYER_H > gy) {
+            gem.collected = true;
+            gemsCount++;
+            score += GEM_TYPES[gem.type].value * Math.floor(1 + depthPx / 1000);
+            updateHUD();
+        }
+        gem.pulse += 0.07;
+    }
+
+    // ── Bat movement ───────────────────────────────────────────
+    for (const bat of bats) {
+        if (!bat.alive) continue;
+        bat.x += bat.vx;
+        if (bat.x <= bat.left || bat.x >= bat.right - TILE) bat.vx *= -1;
+        bat.wing += 0.2;
+
+        // Collision with player
+        if (invincible === 0) {
+            const bx = bat.x - TILE/2;
+            const by = bat.y - worldOffsetY - TILE/2;
+            const bx2 = bx + TILE;
+            const by2 = by + TILE;
+            const px2 = player.x + PLAYER_W;
+            const py2 = player.y + PLAYER_H;
+            if (player.x < bx2 && px2 > bx && player.y < by2 && py2 > by) {
+                takeDamage();
+            }
+        }
+    }
+
+    // ── Stalactite collision ───────────────────────────────────
+    if (invincible === 0) {
+        for (const stal of stalactites) {
+            if (!stal.alive) continue;
+            // Stalactite occupies col = stal.col, rows stal.row to stal.row + stal.len - 1
+            for (let i = 0; i < stal.len; i++) {
+                const sr = stal.row + i;
+                const sx = stal.col * TILE;
+                const sy = sr * TILE;
+                const screenSY = sy - worldOffsetY;
+                if (screenSY < -TILE || screenSY > H + TILE) continue;
+                const px2 = player.x + PLAYER_W - 4;
+                const py2 = pWY + PLAYER_H - 4;
+                if (pWX + 4 < sx + TILE && px2 > sx &&
+                    pWY + 4 < sy + TILE && py2 > sy) {
+                    takeDamage();
+                }
+            }
+        }
+    }
+
+    // ── Invincibility countdown ───────────────────────────────
+    if (invincible > 0) invincible--;
+
+    // ── Player walk animation ──────────────────────────────────
+    if (player.vx !== 0) player.frame = (player.frame + 0.15) % 2;
+}
+
+// ─── Rendering ────────────────────────────────────────────────────────────────
+function render() {
+    ctx.clearRect(0, 0, W, H);
+
+    // ── Background ────────────────────────────────────────────
+    ctx.fillStyle = '#0a0a0f';
+    ctx.fillRect(0, 0, W, H);
+
+    // ── Tiles ─────────────────────────────────────────────────
+    const topRow    = Math.floor(worldOffsetY / TILE);
+    const bottomRow = Math.ceil((worldOffsetY + H) / TILE);
+
+    for (let r = topRow; r <= bottomRow; r++) {
+        ensureRows(r);
+        const row = tileMap[r];
+        if (!row) continue;
+        const screenY = r * TILE - worldOffsetY;
+
+        for (let c = 0; c < COLS; c++) {
+            if (row[c] === 1) {
+                drawStone(ctx, c * TILE, screenY);
+            }
+        }
+    }
+
+    // ── Stalactites ───────────────────────────────────────────
+    for (const stal of stalactites) {
+        if (!stal.alive) continue;
+        const screenBaseY = stal.row * TILE - worldOffsetY;
+        if (screenBaseY > H + TILE * 5 || screenBaseY < -TILE * stal.len - TILE) continue;
+        drawStalactite(ctx, stal.col * TILE, screenBaseY, stal.len);
+    }
+
+    // ── Gems ──────────────────────────────────────────────────
+    ctx.save();
+    for (const gem of gems) {
+        if (gem.collected) continue;
+        const gsx = gem.col * TILE;
+        const gsy = gem.row * TILE - worldOffsetY;
+        if (gsy < -TILE || gsy > H + TILE) continue;
+
+        const t = GEM_TYPES[gem.type];
+        const scale = 1 + Math.sin(gem.pulse) * 0.12;
+        const cx2 = gsx + TILE / 2;
+        const cy2 = gsy + TILE / 2;
+
+        // Glow
+        const grad = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, TILE * 0.8);
+        grad.addColorStop(0, t.color + 'aa');
+        grad.addColorStop(1, 'transparent');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(cx2, cy2, TILE * 0.8, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.font = `${Math.round(TILE * 0.85 * scale)}px serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(t.emoji, cx2, cy2 + 1);
+    }
+    ctx.restore();
+
+    // ── Bats ──────────────────────────────────────────────────
+    ctx.save();
+    ctx.font = `${TILE}px serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const bat of bats) {
+        if (!bat.alive) continue;
+        const bsx = bat.x;
+        const bsy = bat.y - worldOffsetY;
+        if (bsy < -TILE || bsy > H + TILE) continue;
+        const wobble = Math.sin(bat.wing) * 3;
+        ctx.fillText('🦇', bsx, bsy + wobble);
+    }
+    ctx.restore();
+
+    // ── Player ────────────────────────────────────────────────
+    const blink = invincible > 0 && Math.floor(invincible / 5) % 2 === 0;
+    if (!blink) {
+        drawPlayer(ctx, player.x, player.y, player.facingRight);
+    }
+
+    // ── Torch light overlay ───────────────────────────────────
+    renderLight();
+}
+
+function drawStone(c, x, y) {
+    // Base stone
+    c.fillStyle = '#2a2a2a';
+    c.fillRect(x, y, TILE, TILE);
+
+    // Texture variation
+    const hash = ((x * 7 + y * 13) & 0xff);
+    const v = 30 + (hash & 0x1f);
+    c.fillStyle = `rgb(${v},${v},${v})`;
+    c.fillRect(x + 2, y + 2, TILE - 4, TILE - 4);
+
+    // Edge highlight
+    c.fillStyle = '#111';
+    c.fillRect(x, y + TILE - 2, TILE, 2);
+    c.fillRect(x + TILE - 2, y, 2, TILE);
+
+    // Occasional lighter speckle
+    if ((hash & 0x3) === 0) {
+        c.fillStyle = '#555';
+        c.fillRect(x + (hash & 0x7) + 2, y + ((hash >> 3) & 0x7) + 2, 3, 3);
+    }
+}
+
+function drawStalactite(c, x, screenY, len) {
+    for (let i = 0; i < len - 1; i++) {
+        const sy = screenY + i * TILE;
+        const w  = TILE * (0.4 - i * 0.04);
+        const cx2 = x + TILE / 2;
+        c.fillStyle = '#3a3340';
+        c.beginPath();
+        c.rect(cx2 - w/2, sy, w, TILE);
+        c.fill();
+    }
+    // Tip
+    const tipY = screenY + (len - 1) * TILE;
+    const cx2  = x + TILE / 2;
+    c.fillStyle = '#5a4f66';
+    c.beginPath();
+    c.moveTo(cx2 - TILE * 0.18, tipY);
+    c.lineTo(cx2 + TILE * 0.18, tipY);
+    c.lineTo(cx2, tipY + TILE * 0.7);
+    c.closePath();
+    c.fill();
+}
+
+function drawPlayer(c, x, y, facingRight) {
+    c.save();
+    if (!facingRight) {
+        c.translate(x + PLAYER_W, y);
+        c.scale(-1, 1);
+        c.translate(-0, 0);
+    } else {
+        c.translate(x, y);
+    }
+
+    // Pulsing arrow indicator above player
+    const pulse = 0.55 + 0.45 * Math.sin(Date.now() * 0.005);
+    c.globalAlpha = pulse;
+    c.fillStyle = '#ffe040';
+    c.shadowColor = '#ffe040';
+    c.shadowBlur = 8;
+    c.beginPath();
+    c.moveTo(PLAYER_W / 2, -14);
+    c.lineTo(PLAYER_W / 2 - 6, -4);
+    c.lineTo(PLAYER_W / 2 + 6, -4);
+    c.closePath();
+    c.fill();
+    c.globalAlpha = 1;
+    c.shadowBlur = 0;
+
+    // Body
+    c.shadowColor = '#ff8800';
+    c.shadowBlur = 10;
+    c.fillStyle = '#e8641c';
+    c.beginPath();
+    c.roundRect(2, 8, PLAYER_W - 4, PLAYER_H - 8, 4);
+    c.fill();
+    c.shadowBlur = 0;
+
+    // Helmet
+    c.shadowColor = '#ffe040';
+    c.shadowBlur = 8;
+    c.fillStyle = '#f0c040';
+    c.beginPath();
+    c.ellipse(PLAYER_W/2, 6, 9, 7, 0, 0, Math.PI * 2);
+    c.fill();
+    c.shadowBlur = 0;
+
+    // Headlamp
+    c.fillStyle = '#fffaaa';
+    c.beginPath();
+    c.arc(PLAYER_W - 3, 5, 4, 0, Math.PI * 2);
+    c.fill();
+
+    // Eyes
+    c.fillStyle = '#222';
+    c.beginPath();
+    c.arc(PLAYER_W - 5, 6, 1.5, 0, Math.PI * 2);
+    c.fill();
+
+    // Legs (walk animation)
+    const legAngle = Math.sin(player.frame * Math.PI) * 5;
+    c.fillStyle = '#5b4b2e';
+    c.fillRect(3,           PLAYER_H - 8 + legAngle,      5, 8);
+    c.fillRect(PLAYER_W - 8, PLAYER_H - 8 - legAngle,     5, 8);
+
+    c.restore();
+}
+
+function renderLight() {
+    lctx.clearRect(0, 0, W, H);
+
+    // Dark overlay
+    lctx.fillStyle = 'rgba(0,0,0,0.82)';
+    lctx.fillRect(0, 0, W, H);
+
+    const cx = player.x + PLAYER_W / 2;
+    const cy = player.y + PLAYER_H / 3;
+
+    // Punch hole: torch glow
+    lctx.globalCompositeOperation = 'destination-out';
+
+    const grad = lctx.createRadialGradient(cx, cy, 0, cx, cy, 160);
+    grad.addColorStop(0,   'rgba(0,0,0,1)');
+    grad.addColorStop(0.35,'rgba(0,0,0,0.9)');
+    grad.addColorStop(0.65,'rgba(0,0,0,0.5)');
+    grad.addColorStop(1,   'rgba(0,0,0,0)');
+    lctx.fillStyle = grad;
+    lctx.beginPath();
+    lctx.arc(cx, cy, 160, 0, Math.PI * 2);
+    lctx.fill();
+
+    lctx.globalCompositeOperation = 'source-over';
+
+    // Warm torch tint
+    const warmGrad = lctx.createRadialGradient(cx, cy, 0, cx, cy, 90);
+    warmGrad.addColorStop(0,   'rgba(255,180,60,0.18)');
+    warmGrad.addColorStop(0.5, 'rgba(255,140,20,0.06)');
+    warmGrad.addColorStop(1,   'rgba(0,0,0,0)');
+    lctx.fillStyle = warmGrad;
+    lctx.beginPath();
+    lctx.arc(cx, cy, 90, 0, Math.PI * 2);
+    lctx.fill();
+}
+
+// ─── HUD ──────────────────────────────────────────────────────────────────────
+function updateHUD() {
+    document.getElementById('statDepth').textContent = Math.floor(depthPx / 24) + 'm';
+    document.getElementById('statGems').textContent  = gemsCount;
+    document.getElementById('statLives').textContent = '❤️'.repeat(Math.max(0, lives));
+}
+
+// ─── Game init / end ─────────────────────────────────────────────────────────
+function initGame() {
+    // Clear state
+    Object.keys(tileMap).forEach(k => delete tileMap[k]);
+    // Also reset the array if it was used as array
+    tileMap.length = 0;
+    generatedRows = 0;
+    corridorCenter = 7;
+    corridorWidth  = 7;
+    gems        = [];
+    bats        = [];
+    stalactites = [];
+    score       = 0;
+    gemsCount   = 0;
+    lives       = 3;
+    depthPx     = 0;
+    worldOffsetY = 0;
+    invincible  = 0;
+
+    // Generate initial rows
+    ensureRows(ROWS_VIS + 5);
+    initPlayer();
+    updateHUD();
+}
+
+function startGame() {
+    document.getElementById('startOverlay').style.display = 'none';
+    initGame();
+    running = true;
+    lastTime = performance.now();
+    rafId = requestAnimationFrame(loop);
+}
+
+function endGame() {
+    running = false;
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+
+    document.getElementById('goDepth').textContent = Math.floor(depthPx / 24) + 'm';
+    document.getElementById('goGems').textContent  = gemsCount;
+    document.getElementById('goScore').textContent = score;
+    document.getElementById('gameOverOverlay').classList.add('show');
+}
+
+function restartGame() {
+    document.getElementById('gameOverOverlay').classList.remove('show');
+    initGame();
+    running = true;
+    lastTime = performance.now();
+    rafId = requestAnimationFrame(loop);
+}
+
+// ─── Input ────────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+    keys[e.key] = true;
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) {
+        e.preventDefault();
+    }
+});
+document.addEventListener('keyup', e => { keys[e.key] = false; });
+
+// Mobile buttons
+function holdKey(k, down) {
+    keys[k] = down;
+}
+
+document.getElementById('btnLeft').addEventListener('pointerdown',  e => { e.preventDefault(); holdKey('ArrowLeft', true); });
+document.getElementById('btnLeft').addEventListener('pointerup',    e => { holdKey('ArrowLeft', false); });
+document.getElementById('btnLeft').addEventListener('pointerleave', e => { holdKey('ArrowLeft', false); });
+
+document.getElementById('btnRight').addEventListener('pointerdown',  e => { e.preventDefault(); holdKey('ArrowRight', true); });
+document.getElementById('btnRight').addEventListener('pointerup',    e => { holdKey('ArrowRight', false); });
+document.getElementById('btnRight').addEventListener('pointerleave', e => { holdKey('ArrowRight', false); });
+
+document.getElementById('btnJump').addEventListener('pointerdown',  e => { e.preventDefault(); holdKey('ArrowUp', true); });
+document.getElementById('btnJump').addEventListener('pointerup',    e => { holdKey('ArrowUp', false); });
+document.getElementById('btnJump').addEventListener('pointerleave', e => { holdKey('ArrowUp', false); });
+
+document.getElementById('btnStart').addEventListener('click', startGame);
+</script>
+</body>
+</html>

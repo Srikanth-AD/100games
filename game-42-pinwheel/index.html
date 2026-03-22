@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>PINWHEEL</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#87CEEB;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H, scl;
+
+function resize() {
+  W = cv.width  = window.innerWidth;
+  H = cv.height = window.innerHeight;
+  const vw = W, vh = H;
+  scl = Math.min(vw / 375, vh / 600);
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ─── Audio ───────────────────────────────────────────────────────────────────
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+
+function sfxSpin() {
+  const o = AC.createOscillator();
+  const g = AC.createGain();
+  o.connect(g); g.connect(AC.destination);
+  o.type = 'sine';
+  o.frequency.setValueAtTime(300 + Math.random() * 200, AC.currentTime);
+  o.frequency.exponentialRampToValueAtTime(180, AC.currentTime + 0.18);
+  g.gain.setValueAtTime(0.08, AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.18);
+  o.start(); o.stop(AC.currentTime + 0.18);
+}
+
+function sfxGust() {
+  const buf = AC.createBuffer(1, AC.sampleRate * 0.6, AC.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.max(0, 1 - i / d.length);
+  const src = AC.createBufferSource();
+  const g = AC.createGain();
+  const filt = AC.createBiquadFilter();
+  src.buffer = buf;
+  filt.type = 'bandpass';
+  filt.frequency.value = 800;
+  filt.Q.value = 0.5;
+  src.connect(filt); filt.connect(g); g.connect(AC.destination);
+  g.gain.setValueAtTime(0.18, AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.55);
+  src.start(); src.stop(AC.currentTime + 0.6);
+}
+
+function sfxCombo() {
+  const notes = [523, 659, 784, 1047];
+  notes.forEach((freq, i) => {
+    const o = AC.createOscillator();
+    const g = AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    o.type = 'triangle';
+    const t = AC.currentTime + i * 0.1;
+    o.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0.12, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+    o.start(t); o.stop(t + 0.2);
+  });
+}
+
+function sfxTick() {
+  const o = AC.createOscillator();
+  const g = AC.createGain();
+  o.connect(g); g.connect(AC.destination);
+  o.type = 'square';
+  o.frequency.setValueAtTime(880, AC.currentTime);
+  g.gain.setValueAtTime(0.04, AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.05);
+  o.start(); o.stop(AC.currentTime + 0.06);
+}
+
+function sfxSuperGust() {
+  const notes = [440, 554, 659, 880, 1108];
+  notes.forEach((freq, i) => {
+    const o = AC.createOscillator();
+    const g = AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    o.type = 'sine';
+    const t = AC.currentTime + i * 0.07;
+    o.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0.14, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+    o.start(t); o.stop(t + 0.22);
+  });
+}
+
+// ─── Game State ───────────────────────────────────────────────────────────────
+let state = 'start';
+let score = 0;
+let timeLeft = 60;
+let lastTick = 0;
+let elapsed = 0;
+
+const THRESHOLD = 1.0; // rad/s for scoring
+const NUM_WHEELS = 5;
+
+// Pinwheels
+let wheels = [];
+function initWheels() {
+  wheels = [];
+  const lx = W * 0.5 - scl * 375 * 0.5;
+  for (let i = 0; i < NUM_WHEELS; i++) {
+    const t = (i + 0.5) / NUM_WHEELS;
+    wheels.push({
+      x: lx + t * scl * 375,
+      spinSpeed: 0.3 + Math.random() * 0.5,
+      angle: Math.random() * Math.PI * 2,
+      wobble: 0,
+    });
+  }
+}
+
+// Clouds
+let clouds = [];
+function initClouds() {
+  clouds = [];
+  for (let i = 0; i < 4; i++) {
+    clouds.push({
+      x: Math.random() * W,
+      y: H * 0.08 + Math.random() * H * 0.18,
+      speed: scl * (0.12 + Math.random() * 0.18),
+      r: scl * (28 + Math.random() * 22),
+    });
+  }
+}
+
+// Wind gust particles
+let windParticles = [];
+let nextGustTime = 5 + Math.random() * 3;
+let gustTimer = 0;
+let superGustActive = false;
+let superGustTimer = 0;
+
+// Combo state
+let comboActive = false;
+let comboPopup = { alpha: 0, text: '' };
+
+// Pointer tracking
+let pointerDown = false;
+let px = 0, py = 0;
+let pvx = 0, pvy = 0;
+let spinSoundCooldown = 0;
+
+// Score/sec accumulator
+let scoreFrac = 0;
+
+function resumeAC() {
+  if (AC.state === 'suspended') AC.resume();
+}
+
+// ─── Pointer Events ───────────────────────────────────────────────────────────
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  resumeAC();
+  if (state === 'start') {
+    state = 'play';
+    resetGame();
+    return;
+  }
+  if (state === 'over') {
+    state = 'start';
+    return;
+  }
+  pointerDown = true;
+  px = e.clientX; py = e.clientY;
+  pvx = 0; pvy = 0;
+}, { passive: false });
+
+cv.addEventListener('pointermove', e => {
+  e.preventDefault();
+  if (!pointerDown || state !== 'play') return;
+  const nx = e.clientX, ny = e.clientY;
+  pvx = nx - px; pvy = ny - py;
+  const swipeSpeed = Math.sqrt(pvx * pvx + pvy * pvy);
+  if (swipeSpeed > 2) {
+    // Compute hub y the same way as drawScene
+    const ty = H * 0.5 - scl * 300;
+    const gameH = scl * 600;
+    const groundY = ty + gameH * 0.68;
+    const stickH = scl * 130;
+    const hubY = groundY - stickH;
+    wheels.forEach(w => {
+      const dx = nx - w.x, dy = ny - hubY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < 60 * scl) {
+        w.spinSpeed += swipeSpeed * 0.015;
+        w.wobble = Math.min(w.wobble + 0.3, 1.2);
+      }
+    });
+    if (spinSoundCooldown <= 0 && swipeSpeed > 8) {
+      sfxSpin();
+      spinSoundCooldown = 0.15;
+    }
+  }
+  px = nx; py = ny;
+}, { passive: false });
+
+cv.addEventListener('pointerup', e => {
+  e.preventDefault();
+  pointerDown = false;
+  pvx = 0; pvy = 0;
+}, { passive: false });
+
+cv.addEventListener('pointercancel', e => {
+  e.preventDefault();
+  pointerDown = false;
+}, { passive: false });
+
+// ─── Reset ────────────────────────────────────────────────────────────────────
+function resetGame() {
+  score = 0;
+  timeLeft = 60;
+  lastTick = 0;
+  elapsed = 0;
+  scoreFrac = 0;
+  gustTimer = 0;
+  nextGustTime = 5 + Math.random() * 3;
+  superGustActive = false;
+  superGustTimer = 0;
+  comboActive = false;
+  comboPopup = { alpha: 0, text: '' };
+  windParticles = [];
+  spinSoundCooldown = 0;
+  initWheels();
+  initClouds();
+}
+
+// ─── Wind Gust ────────────────────────────────────────────────────────────────
+function triggerGust(isSuper) {
+  const isSuperGust = isSuper || (Math.random() < 0.12);
+  if (isSuperGust) {
+    superGustActive = true;
+    superGustTimer = 2;
+    comboPopup = { alpha: 1, text: 'SUPER GUST! 5x' };
+    sfxSuperGust();
+  } else {
+    sfxGust();
+  }
+  // Boost all pinwheels
+  wheels.forEach(w => {
+    w.spinSpeed += 0.5 + Math.random() * 2.0;
+  });
+  // Spawn wind particles
+  const lx = W * 0.5 - scl * 375 * 0.5;
+  const count = 20 + Math.floor(Math.random() * 11);
+  for (let i = 0; i < count; i++) {
+    windParticles.push({
+      x: lx - 20 * scl,
+      y: H * 0.15 + Math.random() * H * 0.65,
+      speed: scl * (5 + Math.random() * 6),
+      alpha: 0.7 + Math.random() * 0.3,
+      len: scl * (10 + Math.random() * 14),
+      delay: Math.random() * 0.3,
+    });
+  }
+}
+
+// ─── Update ───────────────────────────────────────────────────────────────────
+let lastTime = 0;
+function update(ts) {
+  const dt = Math.min((ts - lastTime) / 1000, 0.05);
+  lastTime = ts;
+
+  if (state !== 'play') return;
+
+  elapsed += dt;
+  timeLeft = Math.max(0, 60 - elapsed);
+
+  // Tick sound every second
+  const sec = Math.floor(elapsed);
+  if (sec > lastTick) {
+    lastTick = sec;
+    sfxTick();
+  }
+
+  if (timeLeft <= 0) {
+    state = 'over';
+    return;
+  }
+
+  // Spin decay
+  wheels.forEach(w => {
+    w.spinSpeed *= Math.pow(0.985, dt * 60);
+    w.spinSpeed = Math.max(0, w.spinSpeed);
+    w.angle += w.spinSpeed * dt;
+    w.wobble *= Math.pow(0.92, dt * 60);
+  });
+
+  // Wind gust timer
+  gustTimer += dt;
+  if (gustTimer >= nextGustTime) {
+    gustTimer = 0;
+    nextGustTime = 5 + Math.random() * 3;
+    triggerGust(false);
+  }
+
+  // Super gust timer
+  if (superGustActive) {
+    superGustTimer -= dt;
+    if (superGustTimer <= 0) superGustActive = false;
+  }
+
+  // Wind particles
+  const lx = W * 0.5 - scl * 375 * 0.5;
+  const rx = lx + scl * 375;
+  windParticles.forEach(p => {
+    p.delay -= dt;
+    if (p.delay <= 0) {
+      p.x += p.speed * dt * 60;
+      p.alpha -= dt * 0.8;
+    }
+  });
+  windParticles = windParticles.filter(p => p.x < rx + 30 * scl && p.alpha > 0);
+
+  // Check combo (all 5 above threshold)
+  const aboveThreshold = wheels.filter(w => w.spinSpeed >= THRESHOLD).length;
+  const wasCombo = comboActive;
+  comboActive = aboveThreshold === NUM_WHEELS;
+  if (comboActive && !wasCombo) {
+    comboPopup = { alpha: 1, text: '+COMBO!' };
+    sfxCombo();
+  }
+
+  // Score per second
+  let baseRate = aboveThreshold; // 1 per spinning wheel per second
+  let multiplier = 1;
+  if (comboActive) multiplier = 3;
+  if (superGustActive) multiplier = 5;
+  scoreFrac += baseRate * multiplier * dt;
+  while (scoreFrac >= 1) {
+    score++;
+    scoreFrac--;
+  }
+
+  // Combo popup fade
+  if (comboPopup.alpha > 0) {
+    comboPopup.alpha -= dt * 0.5;
+    if (comboPopup.alpha < 0) comboPopup.alpha = 0;
+  }
+
+  // Spin sound cooldown
+  if (spinSoundCooldown > 0) spinSoundCooldown -= dt;
+
+  // Clouds drift
+  clouds.forEach(c => {
+    c.x += c.speed * dt * 60;
+    if (c.x - c.r * 2 > W) c.x = -c.r * 2;
+  });
+}
+
+// ─── Draw Helpers ─────────────────────────────────────────────────────────────
+function drawCloud(x, y, r) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.beginPath();
+  ctx.arc(x,       y,       r,       0, Math.PI * 2);
+  ctx.arc(x + r,   y + r * 0.1, r * 0.8, 0, Math.PI * 2);
+  ctx.arc(x - r,   y + r * 0.1, r * 0.75, 0, Math.PI * 2);
+  ctx.arc(x + r * 0.5, y - r * 0.5, r * 0.6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawPinwheel(w) {
+  const { x, y, angle, spinSpeed, wobble } = w;
+  const hubR    = scl * 6;
+  const bladeL  = scl * 28;
+
+  const wobbleX = Math.sin(Date.now() * 0.02 + x) * wobble * scl * 2.5;
+
+  ctx.save();
+  ctx.translate(x + wobbleX, y);
+
+  // Hub
+  ctx.fillStyle = '#3a2a1a';
+  ctx.beginPath();
+  ctx.arc(0, 0, hubR, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Blades
+  const bladeColors = ['#EF4444', '#3B82F6', '#FACC15', '#22C55E'];
+  const fast = spinSpeed > 3.5;
+  const blurCopies = fast ? 3 : (spinSpeed > 1.5 ? 1 : 0);
+
+  for (let pass = -blurCopies; pass <= 0; pass++) {
+    const alphaFactor = pass === 0 ? 1 : 0.25 - pass * 0.03;
+    const angleOffset = pass * (spinSpeed * 0.018);
+    for (let i = 0; i < 4; i++) {
+      const a = angle + angleOffset + (i / 4) * Math.PI * 2;
+      const bx = Math.cos(a) * bladeL;
+      const by = Math.sin(a) * bladeL;
+      const lx = Math.cos(a + Math.PI * 0.5) * hubR * 0.7;
+      const ly = Math.sin(a + Math.PI * 0.5) * hubR * 0.7;
+      const rx = Math.cos(a - Math.PI * 0.5) * hubR * 0.7;
+      const ry = Math.sin(a - Math.PI * 0.5) * hubR * 0.7;
+      const col = bladeColors[i];
+      // Parse color with alpha
+      ctx.save();
+      ctx.globalAlpha = alphaFactor;
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(lx, ly);
+      ctx.lineTo(rx, ry);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // Hub cap
+  ctx.fillStyle = '#888';
+  ctx.beginPath();
+  ctx.arc(0, 0, hubR * 0.55, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#eee';
+  ctx.beginPath();
+  ctx.arc(0, 0, hubR * 0.3, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// ─── Draw HUD ─────────────────────────────────────────────────────────────────
+function drawHUD() {
+  const lx = W * 0.5 - scl * 375 * 0.5;
+  const hudY = H * 0.5 - scl * 300 + scl * 14;
+
+  // Score top-left
+  ctx.save();
+  ctx.font = `bold ${scl * 18}px Arial`;
+  ctx.fillStyle = '#fff';
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  ctx.shadowColor = 'rgba(0,0,0,0.4)';
+  ctx.shadowBlur = 4;
+  ctx.fillText(`SCORE: ${score}`, lx + scl * 8, hudY);
+
+  // Timer top-right
+  ctx.textAlign = 'right';
+  ctx.fillStyle = timeLeft < 10 ? '#ff4444' : '#fff';
+  ctx.fillText(`${Math.ceil(timeLeft)}s`, lx + scl * 367, hudY);
+
+  ctx.restore();
+
+  // Power meter top-center
+  const totalSpin = wheels.reduce((s, w) => s + w.spinSpeed, 0);
+  const maxSpin = NUM_WHEELS * 4; // max display
+  const fraction = Math.min(totalSpin / maxSpin, 1);
+  const barW = scl * 110;
+  const barH = scl * 14;
+  const bx = W * 0.5 - barW * 0.5;
+  const by = hudY;
+
+  ctx.save();
+  // Bar bg
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.roundRect(bx, by, barW, barH, scl * 4);
+  ctx.fill();
+  // Bar fill
+  const allAbove = wheels.every(w => w.spinSpeed >= THRESHOLD);
+  const barColor = allAbove ? '#22C55E' : (fraction > 0.4 ? '#FACC15' : '#EF4444');
+  ctx.fillStyle = barColor;
+  ctx.beginPath();
+  ctx.roundRect(bx, by, barW * fraction, barH, scl * 4);
+  ctx.fill();
+  // Label
+  ctx.fillStyle = '#fff';
+  ctx.font = `bold ${scl * 9}px Arial`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowColor = 'rgba(0,0,0,0.5)';
+  ctx.shadowBlur = 2;
+  ctx.fillText('POWER', bx + barW * 0.5, by + barH * 0.5);
+  ctx.restore();
+
+  // Combo/supergust popup
+  if (comboPopup.alpha > 0) {
+    ctx.save();
+    ctx.globalAlpha = comboPopup.alpha;
+    const cY = H * 0.5 - scl * 60;
+    ctx.font = `bold ${scl * 30}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = comboPopup.text.includes('SUPER') ? '#FACC15' : '#22C55E';
+    ctx.shadowBlur = scl * 16 * comboPopup.alpha;
+    ctx.fillStyle = comboPopup.text.includes('SUPER') ? '#FACC15' : '#fff';
+    ctx.fillText(comboPopup.text, W * 0.5, cY);
+    ctx.restore();
+  }
+
+  // Multiplier badge
+  if (superGustActive) {
+    ctx.save();
+    ctx.font = `bold ${scl * 13}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#FACC15';
+    ctx.shadowColor = '#f97316';
+    ctx.shadowBlur = 8;
+    ctx.fillText('5x SCORE', W * 0.5, hudY + scl * 18);
+    ctx.restore();
+  } else if (comboActive) {
+    ctx.save();
+    ctx.font = `bold ${scl * 13}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#22C55E';
+    ctx.shadowColor = '#14532d';
+    ctx.shadowBlur = 6;
+    ctx.fillText('3x COMBO', W * 0.5, hudY + scl * 18);
+    ctx.restore();
+  }
+}
+
+// ─── Draw Scene ───────────────────────────────────────────────────────────────
+function drawScene() {
+  const lx = W * 0.5 - scl * 375 * 0.5;
+  const ty = H * 0.5 - scl * 300;
+  const gameH = scl * 600;
+  const gameW = scl * 375;
+
+  // Sky gradient
+  const skyGrad = ctx.createLinearGradient(lx, ty, lx, ty + gameH * 0.82);
+  skyGrad.addColorStop(0, '#6EC6F5');
+  skyGrad.addColorStop(1, '#B8E3FF');
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(lx, ty, gameW, gameH);
+
+  // Clouds
+  clouds.forEach(c => drawCloud(c.x, c.y, c.r));
+
+  // Ground gradient
+  const groundY = ty + gameH * 0.68;
+  const groundGrad = ctx.createLinearGradient(lx, groundY, lx, ty + gameH);
+  groundGrad.addColorStop(0, '#4ADE80');
+  groundGrad.addColorStop(0.3, '#22C55E');
+  groundGrad.addColorStop(1, '#15803D');
+  ctx.fillStyle = groundGrad;
+  ctx.fillRect(lx, groundY, gameW, ty + gameH - groundY);
+
+  // Grass tufts
+  ctx.fillStyle = '#16A34A';
+  for (let i = 0; i < 18; i++) {
+    const gx = lx + (i / 17) * gameW;
+    const gh = scl * (4 + (i % 3) * 2);
+    ctx.beginPath();
+    ctx.moveTo(gx, groundY);
+    ctx.lineTo(gx + scl * 3, groundY - gh);
+    ctx.lineTo(gx + scl * 6, groundY);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Wind particles
+  windParticles.forEach(p => {
+    if (p.delay > 0) return;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, p.alpha);
+    ctx.strokeStyle = p.alpha > 0.5 ? '#a5f3fc' : '#e0f2fe';
+    ctx.lineWidth = scl * 2;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.lineTo(p.x - p.len, p.y);
+    ctx.stroke();
+    ctx.restore();
+  });
+
+  // Pinwheels (draw sticks first, then wheels on top)
+  wheels.forEach(w => {
+    const stickH = scl * 130;
+    const stickW = scl * 5;
+    const wobbleX = Math.sin(Date.now() * 0.02 + w.x) * w.wobble * scl * 2.5;
+    const groundTop = groundY;
+    // Draw stick from ground up (with wobble)
+    ctx.save();
+    ctx.translate(w.x + wobbleX, groundTop);
+    ctx.fillStyle = '#8B5E3C';
+    ctx.fillRect(-stickW / 2, -stickH, stickW, stickH);
+    ctx.restore();
+  });
+
+  wheels.forEach(w => {
+    // Hub at top of stick - pass original x so drawPinwheel computes wobble internally
+    const stickH = scl * 130;
+    const groundTop = groundY;
+    drawPinwheel({
+      x: w.x,
+      y: groundTop - stickH,
+      angle: w.angle,
+      spinSpeed: w.spinSpeed,
+      wobble: w.wobble,
+    });
+  });
+}
+
+// ─── Draw Screens ─────────────────────────────────────────────────────────────
+function drawStart() {
+  // Background scene
+  drawSceneBackground();
+
+  ctx.save();
+  // Title
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `900 ${scl * 58}px Arial`;
+  ctx.shadowColor = 'rgba(0,0,0,0.3)';
+  ctx.shadowBlur = scl * 8;
+  // Gradient text effect
+  const grad = ctx.createLinearGradient(W * 0.5 - scl * 120, 0, W * 0.5 + scl * 120, 0);
+  grad.addColorStop(0, '#EF4444');
+  grad.addColorStop(0.25, '#FACC15');
+  grad.addColorStop(0.5, '#22C55E');
+  grad.addColorStop(0.75, '#3B82F6');
+  grad.addColorStop(1, '#EF4444');
+  ctx.fillStyle = grad;
+  ctx.fillText('PINWHEEL', W * 0.5, H * 0.5 - scl * 80);
+
+  // Subtitle
+  ctx.font = `bold ${scl * 15}px Arial`;
+  ctx.fillStyle = '#fff';
+  ctx.shadowBlur = 4;
+  ctx.fillText('Swipe to spin • Wind gusts help!', W * 0.5, H * 0.5 - scl * 38);
+
+  // Tap to start
+  const pulse = 0.85 + 0.15 * Math.sin(Date.now() * 0.004);
+  ctx.globalAlpha = pulse;
+  ctx.fillStyle = '#fff';
+  ctx.font = `bold ${scl * 22}px Arial`;
+  ctx.shadowColor = 'rgba(0,120,255,0.5)';
+  ctx.shadowBlur = scl * 12;
+  ctx.fillText('TAP TO START', W * 0.5, H * 0.5 + scl * 10);
+  ctx.restore();
+}
+
+function drawOver() {
+  drawSceneBackground();
+  ctx.save();
+  // Overlay
+  ctx.fillStyle = 'rgba(0,0,30,0.55)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.font = `900 ${scl * 42}px Arial`;
+  ctx.fillStyle = '#FACC15';
+  ctx.shadowColor = '#92400e';
+  ctx.shadowBlur = scl * 10;
+  ctx.fillText('GAME OVER', W * 0.5, H * 0.5 - scl * 80);
+
+  ctx.font = `bold ${scl * 22}px Arial`;
+  ctx.fillStyle = '#fff';
+  ctx.shadowColor = 'rgba(0,0,0,0.5)';
+  ctx.shadowBlur = 6;
+  ctx.fillText(`Final Score: ${score}`, W * 0.5, H * 0.5 - scl * 32);
+
+  const pulse = 0.85 + 0.15 * Math.sin(Date.now() * 0.004);
+  ctx.globalAlpha = pulse;
+  ctx.font = `bold ${scl * 20}px Arial`;
+  ctx.fillStyle = '#86efac';
+  ctx.shadowColor = 'rgba(0,200,100,0.5)';
+  ctx.shadowBlur = scl * 10;
+  ctx.fillText('TAP TO PLAY AGAIN', W * 0.5, H * 0.5 + scl * 20);
+  ctx.restore();
+}
+
+function drawSceneBackground() {
+  const lx = W * 0.5 - scl * 375 * 0.5;
+  const ty = H * 0.5 - scl * 300;
+  const gameH = scl * 600;
+  const gameW = scl * 375;
+  const skyGrad = ctx.createLinearGradient(lx, ty, lx, ty + gameH * 0.82);
+  skyGrad.addColorStop(0, '#6EC6F5');
+  skyGrad.addColorStop(1, '#B8E3FF');
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, W, H);
+  clouds.forEach(c => drawCloud(c.x, c.y, c.r));
+  const groundY = ty + gameH * 0.68;
+  const groundGrad = ctx.createLinearGradient(lx, groundY, lx, ty + gameH);
+  groundGrad.addColorStop(0, '#4ADE80');
+  groundGrad.addColorStop(0.3, '#22C55E');
+  groundGrad.addColorStop(1, '#15803D');
+  ctx.fillStyle = groundGrad;
+  ctx.fillRect(0, groundY, W, ty + gameH - groundY);
+}
+
+// ─── Main Loop ───────────────────────────────────────────────────────────────
+let loopInitialized = false;
+function loop(ts) {
+  requestAnimationFrame(loop);
+
+  if (!loopInitialized) {
+    lastTime = ts;
+    loopInitialized = true;
+  }
+
+  // Clear
+  ctx.clearRect(0, 0, W, H);
+  // Letterbox bg
+  ctx.fillStyle = '#1a3a6a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Drift clouds on start/over screens (update() handles it during play)
+  if (state !== 'play') {
+    const dt = Math.min((ts - lastTime) / 1000, 0.05);
+    clouds.forEach(c => {
+      c.x += c.speed * dt * 60;
+      if (c.x - c.r * 2 > W) c.x = -c.r * 2;
+    });
+  }
+
+  if (state === 'start') {
+    drawStart();
+  } else if (state === 'play') {
+    update(ts);
+    drawScene();
+    drawHUD();
+  } else if (state === 'over') {
+    drawOver();
+  }
+
+  lastTime = ts;
+}
+
+// Init
+initClouds();
+initWheels();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

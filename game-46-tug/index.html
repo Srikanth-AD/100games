@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>TUG</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+let W,H,scl;
+
+function resize(){
+  const vw=window.innerWidth,vh=window.innerHeight;
+  scl=Math.min(vw/375,vh/600);
+  W=Math.round(375*scl);H=Math.round(600*scl);
+  cv.width=W;cv.height=H;
+}
+resize();
+window.addEventListener('resize',resize);
+
+const AC=new (window.AudioContext||window.webkitAudioContext)();
+function beep(type){
+  const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime;
+  o.connect(g);g.connect(AC.destination);
+  if(type==='tap'){o.type='sine';o.frequency.setValueAtTime(500,t);o.frequency.linearRampToValueAtTime(700,t+0.04);g.gain.setValueAtTime(0.12,t);g.gain.linearRampToValueAtTime(0,t+0.07);}
+  else if(type==='win'){
+    [440,554,659,880].forEach((f,i)=>{
+      const o2=AC.createOscillator(),g2=AC.createGain();o2.connect(g2);g2.connect(AC.destination);
+      o2.type='square';o2.frequency.value=f;
+      g2.gain.setValueAtTime(0.15,t+i*0.09);g2.gain.linearRampToValueAtTime(0,t+i*0.09+0.14);
+      o2.start(t+i*0.09);o2.stop(t+i*0.09+0.18);
+    });return;
+  }
+  else if(type==='lose'){o.type='sawtooth';o.frequency.setValueAtTime(300,t);o.frequency.linearRampToValueAtTime(60,t+0.4);g.gain.setValueAtTime(0.2,t);g.gain.linearRampToValueAtTime(0,t+0.4);}
+  else if(type==='crowd'){o.type='triangle';o.frequency.setValueAtTime(300,t);o.frequency.linearRampToValueAtTime(500,t+0.15);g.gain.setValueAtTime(0.1,t);g.gain.linearRampToValueAtTime(0,t+0.2);}
+  o.start(t);o.stop(t+0.5);
+}
+
+// --- State ---
+let gs='start',score=0,level=1;
+let wins=0,losses=0; // rounds in current match (first to 2 wins/loses)
+let hiScore=+(localStorage.getItem('tug_hi')||0);
+let popups=[];
+
+// Rope physics
+// knot position: 0 = far left (player wins), 1 = far right (cpu wins), 0.5 = center
+let knotPos=0.5;
+const WIN_THRESH=0.15,LOSE_THRESH=0.85;
+
+// Power
+let playerPower=0;  // 0–1, drives left
+let cpuPower=0;     // 0–1, drives right
+const POWER_DECAY=0.55; // per second
+const POWER_MAX=1;
+const KNOT_SPEED=0.38; // how fast knot moves per second per power-unit differential
+
+// CPU tap rhythm
+let cpuTimer=0;
+let cpuInterval=0; // seconds between cpu taps, gets shorter each level
+
+// Visuals
+let shakeX=0,shakeY=0,shakeT=0;
+let groundY=0;
+let ropeY=0;
+
+// Animation state
+let playerLean=0,cpuLean=0; // 0–1 strain
+let tapFlash=0;
+
+// Round countdown (optional — no timer, tug until someone wins)
+
+function initRound(){
+  knotPos=0.5;
+  playerPower=0;cpuPower=0;
+  cpuInterval=Math.max(0.28,1.1-level*0.07);
+  cpuTimer=cpuInterval*0.5;
+  tapFlash=0;
+  groundY=H*0.64;
+  ropeY=groundY-35*scl;
+}
+
+function initMatch(){
+  wins=0;losses=0;score=0;
+  initRound();
+}
+
+// CPU logic: taps at fixed interval, power proportional to level
+function cpuTap(){
+  const cpuStr=0.25+level*0.04; // each level cpu gets stronger per tap
+  cpuPower=Math.min(POWER_MAX,cpuPower+cpuStr);
+  beep('crowd');
+}
+
+function playerTap(){
+  const playerStr=0.32;
+  playerPower=Math.min(POWER_MAX,playerPower+playerStr);
+  beep('tap');
+  tapFlash=0.35;
+  shakeX=(Math.random()-0.5)*5*scl;
+  shakeY=(Math.random()-0.5)*3*scl;
+  shakeT=0.12;
+}
+
+let last=0;
+function update(ts){
+  requestAnimationFrame(update);
+  const dt=Math.min(ts-last,50);last=ts;
+  const sec=dt/1000;
+
+  if(gs==='play'){
+    // CPU taps
+    cpuTimer-=sec;
+    if(cpuTimer<=0){cpuTimer=cpuInterval+(Math.random()-0.5)*cpuInterval*0.3;cpuTap();}
+
+    // Decay
+    playerPower=Math.max(0,playerPower-POWER_DECAY*sec);
+    cpuPower=Math.max(0,cpuPower-POWER_DECAY*sec);
+
+    // Move knot
+    const diff=cpuPower-playerPower; // positive = moves right
+    knotPos+=diff*KNOT_SPEED*sec;
+    knotPos=Math.max(0,Math.min(1,knotPos));
+
+    // Lean
+    playerLean=Math.min(1,playerPower*1.5);
+    cpuLean=Math.min(1,cpuPower*1.5);
+
+    // Shake decay
+    if(shakeT>0){shakeT-=sec;if(shakeT<=0){shakeX=0;shakeY=0;}}
+
+    // Check win/lose
+    if(knotPos<=WIN_THRESH){
+      gs='roundover';
+      wins++;
+      const pts=100+level*20;score+=pts;
+      if(score>hiScore){hiScore=score;localStorage.setItem('tug_hi',hiScore);}
+      beep('win');
+      popups.push({x:W/2,y:H*0.38,text:'YOUR SIDE!',life:2,col:'#69f0ae'});
+      popups.push({x:W/2,y:H*0.44,text:`+${pts}`,life:2,col:'#fff'});
+      setTimeout(()=>{
+        if(wins>=2){
+          level++;gs='matchwin';
+        } else {
+          gs='play';initRound();
+        }
+      },1600);
+    } else if(knotPos>=LOSE_THRESH){
+      gs='roundover';
+      losses++;
+      beep('lose');
+      popups.push({x:W/2,y:H*0.38,text:'THEY WIN!',life:2,col:'#ff5252'});
+      setTimeout(()=>{
+        if(losses>=2){
+          gs='matchlose';
+        } else {
+          gs='play';initRound();
+        }
+      },1600);
+    }
+  }
+
+  if(tapFlash>0)tapFlash-=sec*2.5;
+  popups.forEach(p=>{p.y-=0.4*scl*dt/16;p.life-=0.03*dt/16;});
+  popups=popups.filter(p=>p.life>0);
+
+  draw();
+}
+
+// --- Draw helpers ---
+function drawPerson(x,groundY,facingRight,lean,color,label){
+  ctx.save();
+  ctx.translate(x,0);
+
+  const leanSign=facingRight?1:-1;
+  const leanAngle=lean*leanSign*0.28;
+  ctx.translate(0,groundY);
+  ctx.rotate(leanAngle);
+
+  const hs=22*scl; // head size
+  const bodyH=34*scl;
+  const legH=22*scl;
+
+  // Legs (animated lean)
+  ctx.strokeStyle=color;ctx.lineWidth=5*scl;ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(0,-bodyH*0.05);
+  ctx.lineTo(-8*scl*leanSign,legH);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0,-bodyH*0.05);
+  ctx.lineTo(8*scl*leanSign,legH+4*scl);
+  ctx.stroke();
+
+  // Body
+  ctx.strokeStyle=color;ctx.lineWidth=7*scl;
+  ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(0,-bodyH);ctx.stroke();
+
+  // Arms — reaching forward (toward rope)
+  const armForward=facingRight?1:-1;
+  ctx.strokeStyle=color;ctx.lineWidth=5*scl;
+  ctx.beginPath();
+  ctx.moveTo(0,-bodyH*0.7);
+  ctx.lineTo(armForward*18*scl,-bodyH*0.5+lean*4*scl);
+  ctx.stroke();
+  // back arm
+  ctx.beginPath();
+  ctx.moveTo(0,-bodyH*0.7);
+  ctx.lineTo(-armForward*14*scl,-bodyH*0.85);
+  ctx.stroke();
+
+  // Head
+  ctx.fillStyle=color;
+  ctx.beginPath();ctx.arc(0,-bodyH-hs*0.9,hs*0.8,0,Math.PI*2);ctx.fill();
+
+  // Face
+  const ex=armForward*hs*0.25,ey=-bodyH-hs*0.95;
+  ctx.fillStyle='#000';
+  ctx.beginPath();ctx.arc(ex,ey,hs*0.16,0,Math.PI*2);ctx.fill();
+  // mouth (strain = wider open)
+  ctx.strokeStyle='#000';ctx.lineWidth=hs*0.1;ctx.lineCap='round';
+  const mw=hs*(0.2+lean*0.3);
+  ctx.beginPath();
+  ctx.arc(0,-bodyH-hs*0.65,mw,0.3,Math.PI-0.3);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawRope(knotPos){
+  const rx0=30*scl,rx1=W-30*scl;
+  const rx=rx0+(rx1-rx0)*knotPos;
+  const ry=ropeY;
+
+  // Rope segments (player side + cpu side)
+  // Player side: from player's hand to knot
+  const playerX=80*scl;
+  const cpuX=W-80*scl;
+
+  // Draw rope as catenary-ish curve
+  ctx.strokeStyle='#c8a86b';ctx.lineWidth=4*scl;ctx.lineCap='round';
+
+  // Player rope
+  ctx.beginPath();
+  ctx.moveTo(playerX+18*scl,ry);
+  const sagL=(rx-playerX)*0.12;
+  ctx.quadraticCurveTo((playerX+rx)/2,ry+sagL,rx,ry);
+  ctx.stroke();
+
+  // CPU rope
+  ctx.beginPath();
+  ctx.moveTo(cpuX-18*scl,ry);
+  const sagR=(cpuX-rx)*0.12;
+  ctx.quadraticCurveTo((cpuX+rx)/2,ry+sagR,rx,ry);
+  ctx.stroke();
+
+  // Center knot
+  ctx.fillStyle='#e74c3c';
+  ctx.strokeStyle='#c0392b';ctx.lineWidth=2*scl;
+  ctx.beginPath();ctx.arc(rx,ry,8*scl,0,Math.PI*2);ctx.fill();ctx.stroke();
+  // knot cross
+  ctx.strokeStyle='#c0392b';ctx.lineWidth=2.5*scl;
+  ctx.beginPath();ctx.moveTo(rx-5*scl,ry);ctx.lineTo(rx+5*scl,ry);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(rx,ry-5*scl);ctx.lineTo(rx,ry+5*scl);ctx.stroke();
+}
+
+function drawGround(){
+  // Sky gradient
+  const grad=ctx.createLinearGradient(0,0,0,groundY);
+  grad.addColorStop(0,'#1a1035');grad.addColorStop(1,'#2d1b5e');
+  ctx.fillStyle=grad;ctx.fillRect(0,0,W,groundY);
+
+  // Ground
+  ctx.fillStyle='#2d4a1e';ctx.fillRect(0,groundY,W,H-groundY);
+  ctx.fillStyle='#3a6128';ctx.fillRect(0,groundY,W,6*scl);
+
+  // Win/lose lines
+  const lx=(WIN_THRESH*(W-60*scl))+30*scl;
+  const rx=(LOSE_THRESH*(W-60*scl))+30*scl;
+  ctx.strokeStyle='rgba(100,255,100,0.5)';ctx.lineWidth=2*scl;ctx.setLineDash([4*scl,4*scl]);
+  ctx.beginPath();ctx.moveTo(lx,ropeY-20*scl);ctx.lineTo(lx,groundY+8*scl);ctx.stroke();
+  ctx.strokeStyle='rgba(255,100,100,0.5)';
+  ctx.beginPath();ctx.moveTo(rx,ropeY-20*scl);ctx.lineTo(rx,groundY+8*scl);ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Flags
+  drawFlag(lx,ropeY-30*scl,'#4caf50','▲ WIN');
+  drawFlag(rx,ropeY-30*scl,'#f44336','LOSE ▼');
+}
+
+function drawFlag(x,y,color,label){
+  ctx.fillStyle=color;
+  ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+20*scl,y-8*scl);ctx.lineTo(x+20*scl,y+8*scl);ctx.closePath();ctx.fill();
+}
+
+function drawPowerBar(x,y,w,h,power,color,label){
+  ctx.fillStyle='#111';ctx.fillRect(x,y,w,h);
+  ctx.fillStyle=color;ctx.fillRect(x,y,w*power,h);
+  ctx.strokeStyle='rgba(255,255,255,0.2)';ctx.lineWidth=1;ctx.strokeRect(x,y,w,h);
+  ctx.fillStyle='rgba(255,255,255,0.6)';ctx.font=`bold ${9*scl}px monospace`;
+  ctx.textAlign='center';ctx.fillText(label,x+w/2,y-3*scl);
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#0a060f';ctx.fillRect(0,0,W,H);
+
+  if(gs==='start'){drawStart();return;}
+
+  // Shake
+  ctx.save();
+  ctx.translate(shakeX,shakeY);
+
+  drawGround();
+
+  // People
+  drawPerson(80*scl,groundY,true,playerLean,'#4fc3f7','YOU');
+  drawPerson(W-80*scl,groundY,false,cpuLean,'#ef5350','CPU');
+
+  drawRope(knotPos);
+
+  // Tap zone (large, invisible touch target bottom half)
+  if(gs==='play'){
+    // Tap hint
+    ctx.fillStyle=`rgba(100,200,255,${0.08+tapFlash*0.2})`;
+    ctx.fillRect(0,groundY+8*scl,W,H-groundY-8*scl);
+    ctx.fillStyle=`rgba(100,200,255,${0.5+tapFlash*0.4})`;
+    ctx.font=`bold ${22*scl}px monospace`;ctx.textAlign='center';
+    const pulse=0.7+0.3*Math.sin(Date.now()/200);
+    ctx.globalAlpha=pulse;
+    ctx.fillText('TAP!',W/2,H*0.83);
+    ctx.globalAlpha=1;
+  }
+
+  // Power bars
+  drawPowerBar(10*scl,H-28*scl,120*scl,10*scl,playerPower,'#4fc3f7','YOU');
+  drawPowerBar(W-130*scl,H-28*scl,120*scl,10*scl,cpuPower,'#ef5350','CPU');
+
+  ctx.restore();
+
+  // HUD
+  ctx.textAlign='center';
+  ctx.fillStyle='#fff';ctx.font=`bold ${15*scl}px monospace`;
+  ctx.fillText(`${score}`,W/2,22*scl);
+  ctx.fillStyle='#556';ctx.font=`${11*scl}px monospace`;
+  ctx.fillText(`BEST ${hiScore}`,W/2,35*scl);
+  ctx.textAlign='left';
+  ctx.fillStyle='#ccc';ctx.font=`bold ${12*scl}px monospace`;
+  ctx.fillText(`LV ${level}`,10*scl,22*scl);
+
+  // Round pips (wins/losses)
+  for(let i=0;i<2;i++){
+    ctx.fillStyle=i<wins?'#4caf50':'#222';
+    ctx.beginPath();ctx.arc(10*scl+i*16*scl,36*scl,6*scl,0,Math.PI*2);ctx.fill();
+  }
+  for(let i=0;i<2;i++){
+    ctx.fillStyle=i<losses?'#f44336':'#222';
+    ctx.beginPath();ctx.arc(W-10*scl-i*16*scl,36*scl,6*scl,0,Math.PI*2);ctx.fill();
+  }
+
+  // Popups
+  popups.forEach(p=>{
+    ctx.globalAlpha=Math.min(1,p.life);
+    ctx.fillStyle=p.col;ctx.font=`bold ${20*scl}px monospace`;
+    ctx.textAlign='center';ctx.fillText(p.text,p.x,p.y);
+    ctx.globalAlpha=1;
+  });
+
+  if(gs==='matchwin')drawMatchResult(true);
+  else if(gs==='matchlose')drawMatchResult(false);
+}
+
+function drawStart(){
+  ctx.textAlign='center';
+  ctx.fillStyle='#fff';ctx.font=`bold ${48*scl}px monospace`;
+  ctx.fillText('TUG',W/2,H*0.25);
+  ctx.font=`bold ${22*scl}px monospace`;ctx.fillStyle='#aaa';
+  ctx.fillText('OF WAR',W/2,H*0.33);
+  ctx.font=`${13*scl}px monospace`;ctx.fillStyle='#778';
+  ctx.fillText('TAP RAPIDLY TO PULL YOUR SIDE',W/2,H*0.44);
+  ctx.fillText('FIRST TO WIN 2 ROUNDS WINS',W/2,H*0.49);
+  const pulse=0.65+0.35*Math.sin(Date.now()/420);
+  ctx.globalAlpha=pulse;
+  ctx.fillStyle='#4fc3f7';ctx.font=`bold ${18*scl}px monospace`;
+  ctx.fillText('TAP TO START',W/2,H*0.72);
+  ctx.globalAlpha=1;
+  if(hiScore>0){
+    ctx.fillStyle='#445';ctx.font=`${12*scl}px monospace`;
+    ctx.fillText(`BEST: ${hiScore}`,W/2,H*0.85);
+  }
+}
+
+function drawMatchResult(won){
+  ctx.fillStyle='rgba(0,0,0,0.7)';ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';
+  ctx.fillStyle=won?'#69f0ae':'#ff5252';
+  ctx.font=`bold ${38*scl}px monospace`;
+  ctx.fillText(won?'YOU WIN!':'YOU LOSE',W/2,H*0.38);
+  ctx.fillStyle='#aaa';ctx.font=`${16*scl}px monospace`;
+  ctx.fillText(`SCORE  ${score}`,W/2,H*0.5);
+  ctx.fillStyle='#445';ctx.fillText(`BEST   ${hiScore}`,W/2,H*0.57);
+  const pulse=0.65+0.35*Math.sin(Date.now()/420);
+  ctx.globalAlpha=pulse;
+  ctx.fillStyle='#4fc3f7';ctx.font=`bold ${17*scl}px monospace`;
+  ctx.fillText(won?'NEXT LEVEL →':'TRY AGAIN',W/2,H*0.72);
+  ctx.globalAlpha=1;
+}
+
+function onTap(x,y){
+  AC.resume();
+  if(gs==='start'){
+    gs='play';initMatch();popups=[];return;
+  }
+  if(gs==='matchwin'){
+    gs='play';initMatch();popups=[];return;
+  }
+  if(gs==='matchlose'){
+    gs='play';level=1;initMatch();popups=[];return;
+  }
+  if(gs==='play'){
+    playerTap();
+  }
+}
+
+cv.addEventListener('pointerdown',e=>{
+  const r=cv.getBoundingClientRect();
+  const x=(e.clientX-r.left)*(W/r.width);
+  const y=(e.clientY-r.top)*(H/r.height);
+  onTap(x,y);
+});
+
+// Allow rapid repeat taps
+cv.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  const r=cv.getBoundingClientRect();
+  for(let i=0;i<e.changedTouches.length;i++){
+    const t=e.changedTouches[i];
+    const x=(t.clientX-r.left)*(W/r.width);
+    const y=(t.clientY-r.top)*(H/r.height);
+    onTap(x,y);
+  }
+},{passive:false});
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

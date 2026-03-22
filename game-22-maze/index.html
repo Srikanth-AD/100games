@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>MAZE</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+let W,H,scl;
+function resize(){const vw=window.innerWidth,vh=window.innerHeight;scl=Math.min(vw/375,vh/600);W=Math.round(375*scl);H=Math.round(600*scl);cv.width=W;cv.height=H;}
+resize();window.addEventListener('resize',resize);
+
+const AC=new (window.AudioContext||window.webkitAudioContext)();
+function beep(type){
+  const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime;
+  o.connect(g);g.connect(AC.destination);
+  if(type==='step'){o.type='sine';o.frequency.setValueAtTime(300,t);g.gain.setValueAtTime(0.05,t);g.gain.linearRampToValueAtTime(0,t+0.05);}
+  else if(type==='safe'){o.type='triangle';o.frequency.setValueAtTime(440,t);o.frequency.linearRampToValueAtTime(660,t+0.1);g.gain.setValueAtTime(0.2,t);g.gain.linearRampToValueAtTime(0,t+0.15);}
+  else if(type==='exit'){[523,659,784,1047].forEach((f,i)=>{const o2=AC.createOscillator(),g2=AC.createGain();o2.connect(g2);g2.connect(AC.destination);o2.frequency.value=f;g2.gain.setValueAtTime(0.2,t+i*0.09);g2.gain.linearRampToValueAtTime(0,t+i*0.09+0.14);o2.start(t+i*0.09);o2.stop(t+i*0.09+0.18);});}
+  else if(type==='caught'){o.type='sawtooth';o.frequency.setValueAtTime(300,t);o.frequency.linearRampToValueAtTime(80,t+0.25);g.gain.setValueAtTime(0.3,t);g.gain.linearRampToValueAtTime(0,t+0.3);}
+  o.start(t);o.stop(t+0.3);
+}
+
+// ── Maze generation (recursive backtracker) ─────────────────
+let MCOLS,MROWS,CELL;
+let maze=[];   // array of {walls:{N,S,E,W}, visited, safe, isExit}
+let player={col:0,row:0};
+let attackers=[];
+let gs='start',score=0,level=1,lives=3;
+let playerInvuln=0,inSafe=false;
+let flashT=0;
+let hiScore=+(localStorage.getItem('maze_hi')||0);
+let popups=[];
+
+function mazeSize(){
+  const s=5+level*2;return{cols:Math.min(s,13),rows:Math.min(s+2,17)};
+}
+
+function buildMaze(){
+  const {cols,rows}=mazeSize();MCOLS=cols;MROWS=rows;
+  const mw=W*0.88,mh=H*0.72;
+  CELL=Math.min(mw/MCOLS,mh/MROWS);
+  maze=[];
+  for(let r=0;r<MROWS;r++){
+    for(let c=0;c<MCOLS;c++){
+      maze.push({col:c,row:r,walls:{N:true,S:true,E:true,W:true},visited:false,safe:false,isExit:false});
+    }
+  }
+  // Recursive backtracker
+  const stack=[];const start=cellAt(0,0);start.visited=true;stack.push(start);
+  while(stack.length){
+    const cur=stack[stack.length-1];
+    const nbrs=neighbors(cur.col,cur.row).filter(n=>!n.visited);
+    if(!nbrs.length){stack.pop();continue;}
+    const next=nbrs[Math.random()*nbrs.length|0];
+    removeWall(cur,next);next.visited=true;stack.push(next);
+  }
+  // Mark safe zones (every ~1/4 of maze area)
+  const nSafe=2+level;
+  for(let i=0;i<nSafe;i++){
+    const c=1+Math.floor(Math.random()*(MCOLS-2));
+    const r=1+Math.floor(Math.random()*(MROWS-2));
+    const cell=cellAt(c,r);if(cell)cell.safe=true;
+  }
+  // Exit: bottom-right corner
+  const exitCell=cellAt(MCOLS-1,MROWS-1);if(exitCell)exitCell.isExit=true;
+  player={col:0,row:0};
+  spawnAttackers();
+}
+
+function cellAt(col,row){return maze[row*MCOLS+col];}
+function neighbors(col,row){
+  const nb=[];
+  if(row>0)nb.push(cellAt(col,row-1));
+  if(row<MROWS-1)nb.push(cellAt(col,row+1));
+  if(col>0)nb.push(cellAt(col-1,row));
+  if(col<MCOLS-1)nb.push(cellAt(col+1,row));
+  return nb;
+}
+function removeWall(a,b){
+  const dc=b.col-a.col,dr=b.row-a.row;
+  if(dc===1){a.walls.E=false;b.walls.W=false;}
+  else if(dc===-1){a.walls.W=false;b.walls.E=false;}
+  else if(dr===1){a.walls.S=false;b.walls.N=false;}
+  else if(dr===-1){a.walls.N=false;b.walls.S=false;}
+}
+
+function spawnAttackers(){
+  attackers=[];
+  const n=1+Math.floor(level/2);
+  for(let i=0;i<n;i++){
+    attackers.push({
+      col:MCOLS-1-i%MCOLS,row:MROWS-2-Math.floor(i/MCOLS),
+      spd:Math.max(35,90-level*5),
+      t:i*20,
+      prevCol:MCOLS-1,prevRow:MROWS-1,
+    });
+  }
+}
+
+// BFS pathfinder for attackers
+function bfsPath(fromCol,fromRow,toCol,toRow){
+  const dist=new Array(MROWS*MCOLS).fill(Infinity);
+  const prev=new Array(MROWS*MCOLS).fill(null);
+  const idx=(c,r)=>r*MCOLS+c;
+  const q=[{col:fromCol,row:fromRow}];
+  dist[idx(fromCol,fromRow)]=0;
+  while(q.length){
+    const cur=q.shift();
+    if(cur.col===toCol&&cur.row===toRow)break;
+    const cell=cellAt(cur.col,cur.row);
+    const dirs=[{dc:0,dr:-1,w:'N'},{dc:0,dr:1,w:'S'},{dc:1,dr:0,w:'E'},{dc:-1,dr:0,w:'W'}];
+    dirs.forEach(d=>{
+      if(cell.walls[d.w])return;
+      const nc=cur.col+d.dc,nr=cur.row+d.dr;
+      if(nc<0||nc>=MCOLS||nr<0||nr>=MROWS)return;
+      if(dist[idx(nc,nr)]>dist[idx(cur.col,cur.row)]+1){
+        dist[idx(nc,nr)]=dist[idx(cur.col,cur.row)]+1;
+        prev[idx(nc,nr)]=cur;
+        q.push({col:nc,row:nr});
+      }
+    });
+  }
+  // Reconstruct first step
+  let cur={col:toCol,row:toRow};
+  while(prev[idx(cur.col,cur.row)]&&!(prev[idx(cur.col,cur.row)].col===fromCol&&prev[idx(cur.col,cur.row)].row===fromRow)){
+    cur=prev[idx(cur.col,cur.row)];
+  }
+  return prev[idx(cur.col,cur.row)]?cur:null;
+}
+
+function movePlayer(dir){
+  const c=cellAt(player.col,player.row);
+  if(!c)return;
+  let nc=player.col,nr=player.row;
+  if(dir==='N'&&!c.walls.N)nr--;
+  else if(dir==='S'&&!c.walls.S)nr++;
+  else if(dir==='E'&&!c.walls.E)nc++;
+  else if(dir==='W'&&!c.walls.W)nc--;
+  else return;
+  if(nc<0||nc>=MCOLS||nr<0||nr>=MROWS)return;
+  player.col=nc;player.row=nr;beep('step');
+  const dest=cellAt(nc,nr);
+  if(dest.safe){inSafe=true;beep('safe');score+=5;if(score>hiScore)hiScore=score;}
+  else inSafe=false;
+  // Check if player walked into an attacker
+  if(playerInvuln<=0){
+    attackers.forEach(a=>{
+      if(a.col===player.col&&a.row===player.row){
+        beep('caught');lives--;playerInvuln=90;
+        if(lives<=0)setTimeout(()=>gs='over',600);
+      }
+    });
+  }
+  if(dest.isExit){
+    score+=50+level*20;if(score>hiScore)hiScore=score;beep('exit');
+    level++;flashT=1.5;
+    setTimeout(()=>{buildMaze();popups.push({x:W/2,y:H/2,text:'LEVEL '+level+'!',life:1.8,col:'#ffd700'});},400);
+  }
+}
+
+function init(){
+  score=0;lives=3;level=1;playerInvuln=0;inSafe=false;popups=[];
+  buildMaze();
+}
+
+// D-pad touch
+let dpCenter={x:0,y:0};
+function initDP(){dpCenter={x:W*0.5,y:H*0.87};}
+
+let last=0;
+function update(ts){
+  requestAnimationFrame(update);
+  const dt=Math.min(ts-last,50);last=ts;
+  if(gs!=='play'){draw();return;}
+
+  playerInvuln=Math.max(0,playerInvuln-dt/16);
+  flashT=Math.max(0,flashT-dt/16*0.05);
+
+  // Attackers
+  attackers.forEach(a=>{
+    a.t+=dt/16;
+    if(a.t>=a.spd){
+      a.t=0;
+      if(inSafe&&cellAt(player.col,player.row)?.safe){
+        // Don't enter safe zones
+        return;
+      }
+      const next=bfsPath(a.col,a.row,player.col,player.row);
+      if(next){a.col=next.col;a.row=next.row;}
+      if(a.col===player.col&&a.row===player.row&&playerInvuln<=0){
+        beep('caught');lives--;playerInvuln=90;
+        if(lives<=0)setTimeout(()=>gs='over',600);
+      }
+    }
+  });
+
+  popups.forEach(p=>{p.life-=dt/16*0.03;});
+  popups=popups.filter(p=>p.life>0);
+  draw();
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#0a0512');bg.addColorStop(1,'#050a0f');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+
+  if(gs==='play'||gs==='over'){
+    const mw=MCOLS*CELL,mh=MROWS*CELL;
+    const ox=(W-mw)/2,oy=H*0.12;
+
+    // Flash on level up
+    if(flashT>0){ctx.fillStyle=`rgba(255,215,0,${flashT*0.15})`;ctx.fillRect(0,0,W,H);}
+
+    // Draw maze cells
+    maze.forEach(c=>{
+      const x=ox+c.col*CELL,y=oy+c.row*CELL;
+      // Safe zone glow
+      if(c.safe){ctx.fillStyle='rgba(255,215,0,0.08)';ctx.fillRect(x,y,CELL,CELL);}
+      if(c.isExit){ctx.fillStyle='rgba(105,240,174,0.18)';ctx.fillRect(x,y,CELL,CELL);}
+      // Walls
+      ctx.strokeStyle='#3a2060';ctx.lineWidth=Math.max(1.5,2.5*scl);
+      if(c.walls.N){ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+CELL,y);ctx.stroke();}
+      if(c.walls.S){ctx.beginPath();ctx.moveTo(x,y+CELL);ctx.lineTo(x+CELL,y+CELL);ctx.stroke();}
+      if(c.walls.W){ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x,y+CELL);ctx.stroke();}
+      if(c.walls.E){ctx.beginPath();ctx.moveTo(x+CELL,y);ctx.lineTo(x+CELL,y+CELL);ctx.stroke();}
+      // Safe icon
+      if(c.safe){ctx.textAlign='center';ctx.font=`${CELL*0.5}px sans-serif`;ctx.fillText('⚡',x+CELL/2,y+CELL*0.65);}
+      // Exit icon
+      if(c.isExit){ctx.textAlign='center';ctx.font=`${CELL*0.5}px sans-serif`;ctx.fillText('🚪',x+CELL/2,y+CELL*0.65);}
+    });
+
+    // Attackers
+    attackers.forEach(a=>{
+      const ax=ox+a.col*CELL+CELL/2,ay=oy+a.row*CELL+CELL/2;
+      ctx.fillStyle='#b00020';ctx.shadowColor='#ff0030';ctx.shadowBlur=8;
+      ctx.beginPath();ctx.arc(ax,ay,CELL*0.36,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
+      ctx.fillStyle='#ff0';ctx.beginPath();ctx.arc(ax-CELL*0.1,ay-CELL*0.08,CELL*0.1,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.arc(ax+CELL*0.1,ay-CELL*0.08,CELL*0.1,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='rgba(255,0,32,0.2)';ctx.beginPath();ctx.arc(ax,ay,CELL*0.7,0,Math.PI*2);ctx.fill();
+    });
+
+    // Player
+    const px=ox+player.col*CELL+CELL/2,py=oy+player.row*CELL+CELL/2;
+    if(!(playerInvuln>0&&Math.floor(playerInvuln/6)%2===0)){
+      ctx.fillStyle=inSafe?'rgba(255,215,0,0.25)':'transparent';
+      if(inSafe){ctx.beginPath();ctx.arc(px,py,CELL*0.55,0,Math.PI*2);ctx.fill();}
+      ctx.fillStyle='#fff';ctx.shadowColor='#448aff';ctx.shadowBlur=10;
+      ctx.beginPath();ctx.arc(px,py,CELL*0.3,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
+      ctx.fillStyle='#448aff';ctx.beginPath();ctx.arc(px,py,CELL*0.2,0,Math.PI*2);ctx.fill();
+    }
+
+    // D-Pad
+    initDP();drawDpad();
+
+    // Popups
+    popups.forEach(p=>{
+      ctx.save();ctx.globalAlpha=Math.min(1,p.life);ctx.textAlign='center';
+      ctx.font=`bold ${14*scl}px "Arial Black",sans-serif`;
+      ctx.fillStyle=p.col;ctx.shadowColor=p.col;ctx.shadowBlur=10;ctx.fillText(p.text,p.x,p.y);ctx.shadowBlur=0;ctx.restore();
+    });
+
+    drawHUD();
+  }
+
+  if(gs==='start'){
+    ctx.fillStyle='rgba(0,0,0,0.65)';ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.font=`bold ${50*scl}px "Arial Black",sans-serif`;
+    ctx.fillStyle='#fff';ctx.shadowColor='#7c4dff';ctx.shadowBlur=20;
+    ctx.fillText('MAZE',W/2,H*0.3);ctx.shadowBlur=0;
+    ctx.font=`${12*scl}px sans-serif`;ctx.fillStyle='rgba(124,77,255,0.9)';
+    ctx.fillText('Navigate to the exit 🚪',W/2,H*0.4);
+    ctx.fillText('Hide in ⚡ safe zones from pursuers',W/2,H*0.46);
+    ctx.fillText('Maze grows with each level',W/2,H*0.52);
+    ctx.font=`bold ${14*scl}px sans-serif`;ctx.fillStyle='#7c4dff';
+    ctx.fillText('TAP TO START',W/2,H*0.65);
+    if(hiScore>0){ctx.font=`${10*scl}px sans-serif`;ctx.fillStyle='rgba(124,77,255,0.5)';ctx.fillText('BEST '+hiScore,W/2,H*0.73);}
+  }
+
+  if(gs==='over'){
+    ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.font=`bold ${34*scl}px "Arial Black",sans-serif`;
+    ctx.fillStyle='#b00020';ctx.shadowColor='#ff0030';ctx.shadowBlur=16;
+    ctx.fillText('CAUGHT!',W/2,H*0.38);ctx.shadowBlur=0;
+    ctx.font=`bold ${22*scl}px sans-serif`;ctx.fillStyle='#fff';
+    ctx.fillText('Score: '+score,W/2,H*0.48);
+    ctx.font=`${13*scl}px sans-serif`;ctx.fillStyle='rgba(255,255,255,0.6)';
+    ctx.fillText('TAP to escape again',W/2,H*0.6);
+  }
+}
+
+function drawDpad(){
+  const cx=dpCenter.x,cy=dpCenter.y,r=28*scl;
+  const dirs=[{d:'N',a:-Math.PI/2},{d:'S',a:Math.PI/2},{d:'E',a:0},{d:'W',a:Math.PI}];
+  ctx.fillStyle='rgba(255,255,255,0.08)';ctx.beginPath();ctx.arc(cx,cy,r*2.2,0,Math.PI*2);ctx.fill();
+  dirs.forEach(dir=>{
+    const bx=cx+Math.cos(dir.a)*r*1.2,by=cy+Math.sin(dir.a)*r*1.2;
+    ctx.fillStyle='rgba(124,77,255,0.35)';ctx.beginPath();ctx.arc(bx,by,r*0.7,0,Math.PI*2);ctx.fill();
+    ctx.textAlign='center';ctx.font=`${18*scl}px sans-serif`;
+    ctx.fillStyle='rgba(255,255,255,0.7)';
+    const arrow={N:'↑',S:'↓',E:'→',W:'←'}[dir.d];
+    ctx.fillText(arrow,bx,by+6*scl);
+  });
+}
+
+function drawHUD(){
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.45)';ctx.fillRect(0,0,W,32*scl);
+  ctx.textAlign='left';ctx.font=`bold ${15*scl}px "Arial Black",sans-serif`;
+  ctx.fillStyle='#fff';ctx.fillText(score,W*0.05,22*scl);
+  ctx.font=`${8*scl}px sans-serif`;ctx.fillStyle='rgba(255,255,255,0.4)';ctx.fillText('SCORE',W*0.05,12*scl);
+  ctx.textAlign='center';ctx.font=`bold ${12*scl}px "Arial Black",sans-serif`;
+  ctx.fillStyle='#7c4dff';ctx.fillText('LV '+level,W/2,21*scl);
+  ctx.textAlign='right';ctx.font=`${14*scl}px sans-serif`;
+  for(let i=0;i<3;i++){ctx.globalAlpha=i<lives?1:0.2;ctx.fillText('❤️',W*0.96-(i*18*scl),22*scl);}ctx.globalAlpha=1;
+  ctx.restore();
+}
+
+// Input
+let dpadDown=null;
+cv.addEventListener('pointerdown',e=>{
+  e.preventDefault();AC.resume();
+  if(gs==='start'){gs='play';init();return;}
+  if(gs==='over'){gs='start';return;}
+  const r=cv.getBoundingClientRect();
+  const px=(e.clientX-r.left)*(W/r.width),py=(e.clientY-r.top)*(H/r.height);
+  initDP();
+  const cx=dpCenter.x,cy=dpCenter.y;
+  const dx=px-cx,dy=py-cy;
+  const dist=Math.sqrt(dx*dx+dy*dy);
+  if(dist>20*scl&&dist<60*scl){
+    if(Math.abs(dx)>Math.abs(dy))movePlayer(dx>0?'E':'W');
+    else movePlayer(dy>0?'S':'N');
+  }
+});
+document.addEventListener('keydown',e=>{
+  if(gs==='start'){AC.resume();gs='play';init();return;}
+  if(gs==='over'){gs='start';return;}
+  if(gs!=='play')return;
+  if(e.key==='ArrowUp'||e.key==='w'||e.key==='W'){e.preventDefault();movePlayer('N');}
+  else if(e.key==='ArrowDown'||e.key==='s'||e.key==='S'){e.preventDefault();movePlayer('S');}
+  else if(e.key==='ArrowLeft'||e.key==='a'||e.key==='A'){e.preventDefault();movePlayer('W');}
+  else if(e.key==='ArrowRight'||e.key==='d'||e.key==='D'){e.preventDefault();movePlayer('E');}
+});
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>BASH</title>
+<link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&display=swap" rel="stylesheet">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#110600;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+if(!CanvasRenderingContext2D.prototype.roundRect){
+  CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h,r){
+    r=Math.min(typeof r==='number'?r:r[0], Math.abs(w)/2, Math.abs(h)/2);
+    this.moveTo(x+r,y);
+    this.lineTo(x+w-r,y);   this.arcTo(x+w,y,   x+w,y+r,   r);
+    this.lineTo(x+w,y+h-r); this.arcTo(x+w,y+h, x+w-r,y+h, r);
+    this.lineTo(x+r,y+h);   this.arcTo(x,y+h,   x,y+h-r,   r);
+    this.lineTo(x,y+r);     this.arcTo(x,y,      x+r,y,     r);
+    this.closePath();
+  };
+}
+
+
+const COLS = 4, ROWS = 5, GAP = 9, LIVES_MAX = 3;
+
+let W, H, bW, bH, gridX, gridY;
+
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = W;
+  canvas.height = H;
+  const size = Math.min(W - 32, H * 0.55, 400);
+  bW = Math.floor((size - GAP * (COLS - 1)) / COLS);
+  bH = Math.floor(bW * 0.52);
+  gridX = (W - (bW * COLS + GAP * (COLS - 1))) / 2;
+  gridY = H * 0.18;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── State ────────────────────────────────────────────────
+let gs       = 'start'; // start | play | over
+let score    = 0, lives = LIVES_MAX, level = 1, combo = 0;
+let best     = +localStorage.getItem('bash_best') || 0;
+let spawnT   = 0, spawnI = 1800, maxActive = 1;
+let bricks   = [], parts = [], popups = [];
+let shake    = 0, lastTs = 0;
+
+// ── Brick ────────────────────────────────────────────────
+const CREATURE = [
+  { color:'#6dff4f', name:'SLIME'  },
+  { color:'#ff5252', name:'IMP'    },
+  { color:'#82cfff', name:'GHOST'  },
+  { color:'#ffd740', name:'GOBLIN' },
+  { color:'#cf6fff', name:'WRAITH' },
+];
+
+class Brick {
+  constructor(c, r) { this.c=c; this.r=r; this.idle(); }
+  idle() {
+    this.state='idle'; this.creature=0;
+    this.t=0; this.tMax=0; this.alpha=1; this.sc=1;
+  }
+  get x() { return gridX + this.c*(bW+GAP); }
+  get y() { return gridY + this.r*(bH+GAP); }
+}
+
+function initBricks() {
+  bricks=[];
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) bricks.push(new Brick(c,r));
+}
+
+// ── Spawn ─────────────────────────────────────────────────
+function spawnCreature() {
+  const idle = bricks.filter(b=>b.state==='idle');
+  if(!idle.length) return;
+  const b = idle[Math.random()*idle.length|0];
+  b.state    = 'shaking';
+  b.creature = Math.random()*CREATURE.length|0;
+  b.tMax     = Math.max(1300, 3200 - level*160);
+  b.t        = b.tMax;
+  beep('appear');
+}
+
+// ── Hit ───────────────────────────────────────────────────
+function punch(b) {
+  if(b.state!=='shaking') return false;
+  b.state='hit'; b.t=380; b.sc=1;
+  combo++;
+  const pts = 10 * combo * level;
+  score += pts;
+  if(score>best){ best=score; localStorage.setItem('bash_best',best); }
+  burst(b.x+bW/2, b.y+bH/2, CREATURE[b.creature].color);
+  popups.push({x:b.x+bW/2, y:b.y-4, txt:`+${pts}`, col:CREATURE[b.creature].color, life:1.2});
+  shake=10;
+  beep('hit');
+  // level up every 10 * level hits worth of score
+  if(score >= level*200) {
+    level++;
+    spawnI    = Math.max(500, 1800 - level*110);
+    maxActive = Math.min(5, 1+Math.floor(level/2));
+    popups.push({x:W/2, y:H/2-20, txt:`LEVEL ${level}`, col:'#fff', life:2, big:true});
+  }
+  return true;
+}
+
+function miss(b) {
+  b.state='broken'; b.t=700; b.alpha=1;
+  lives--;
+  combo=0; shake=18;
+  beep('miss');
+  popups.push({x:b.x+bW/2, y:b.y, txt:'MISS!', col:'#ff3300', life:1});
+  if(lives<=0) setTimeout(()=>{ gs='over'; },900);
+}
+
+// ── Particles ─────────────────────────────────────────────
+function burst(cx, cy, accentColor) {
+  const brickColors=['#c1440e','#d4622a','#8b2e07','#e8763a'];
+  for(let i=0;i<14;i++){
+    const a=Math.random()*Math.PI*2, sp=2+Math.random()*5;
+    parts.push({
+      x:cx, y:cy,
+      vx:Math.cos(a)*sp, vy:Math.sin(a)*sp-2.5,
+      w:3+Math.random()*9, h:2+Math.random()*5,
+      col: i<10 ? brickColors[brickColors.length*Math.random()|0] : accentColor,
+      life:1, dec:0.018+Math.random()*0.02, grav:0.18
+    });
+  }
+}
+
+// ── Draw brick ────────────────────────────────────────────
+function drawBrick(b, ox, oy) {
+  const x=b.x+ox, y=b.y+oy, w=bW, h=bH;
+  const prog = b.state==='shaking' ? 1-(b.t/b.tMax) : 0;
+  const wobX = b.state==='shaking' ? Math.sin(Date.now()/55)*(2+prog*6) : 0;
+
+  ctx.save();
+  ctx.translate(x+w/2+wobX, y+h/2);
+
+  if(b.state==='hit'){
+    const p=1-b.t/380;
+    ctx.globalAlpha=1-p*0.9;
+    ctx.scale(1+p*0.4, 1+p*0.4);
+  } else if(b.state==='broken'){
+    ctx.globalAlpha=b.alpha;
+  }
+
+  // ── Face (brick body) ──
+  const faceColor = b.state==='shaking'
+    ? lerpColor('#c1440e','#ff1a00',prog)
+    : '#c1440e';
+  ctx.fillStyle=faceColor;
+  ctx.beginPath(); ctx.roundRect(-w/2,-h/2,w,h,5); ctx.fill();
+
+  // top highlight
+  ctx.fillStyle='rgba(255,255,255,0.16)';
+  ctx.beginPath(); ctx.roundRect(-w/2,-h/2,w,h*0.32,[5,5,0,0]); ctx.fill();
+
+  // bottom shadow
+  ctx.fillStyle='rgba(0,0,0,0.28)';
+  ctx.fillRect(-w/2, h/2-h*0.18, w, h*0.18);
+
+  // cracks
+  const cracks=b.state==='shaking' ? Math.floor(prog*4) : (b.state==='broken'?4:0);
+  if(cracks>0) drawCracks(w,h,cracks);
+
+  // time bar (bottom of brick, shrinks as time runs out)
+  if(b.state==='shaking') {
+    const bw=(1-prog)*w;
+    ctx.fillStyle=lerpColor('#00ff88','#ff2200',prog);
+    ctx.globalAlpha=0.7;
+    ctx.fillRect(-w/2, h/2-5, bw, 4);
+    ctx.globalAlpha = b.state==='hit' ? 1-((1-b.t/380)*0.9) : 1;
+  }
+
+  // creature eyes peeking through cracks
+  if(b.state==='shaking' && cracks>=2) {
+    ctx.globalAlpha *= 0.6+prog*0.4;
+    drawEyes(b.creature, w, h);
+  }
+  // creature fully revealed
+  if(b.state==='broken') {
+    drawCreature(b.creature, w, h);
+  }
+
+  ctx.restore();
+}
+
+function drawCracks(w, h, lvl) {
+  ctx.strokeStyle='rgba(0,0,0,0.55)';
+  ctx.lineWidth=1.5;
+  ctx.beginPath();
+  ctx.moveTo(w*0.05, -h*0.28); ctx.lineTo(w*0.18, h*0.1); ctx.lineTo(-w*0.06, h*0.32);
+  if(lvl>=2){ ctx.moveTo(0,0); ctx.lineTo(-w*0.28,-h*0.22); ctx.lineTo(-w*0.2,-h*0.45); }
+  if(lvl>=3){ ctx.moveTo(w*0.1,-h*0.05); ctx.lineTo(w*0.3,-h*0.3); ctx.moveTo(w*0.18,h*0.1); ctx.lineTo(w*0.35,h*0.32); }
+  ctx.stroke();
+}
+
+function drawEyes(type, w, h) {
+  const col=CREATURE[type].color;
+  const ey=h*0.08, ex=w*0.13, r=w*0.07;
+  ctx.fillStyle=col;
+  ctx.beginPath(); ctx.arc(-ex,ey,r,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( ex,ey,r,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#000';
+  ctx.beginPath(); ctx.arc(-ex+r*0.2,ey,r*0.48,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( ex+r*0.2,ey,r*0.48,0,Math.PI*2); ctx.fill();
+}
+
+function drawCreature(type, w, h) {
+  const col=CREATURE[type].color;
+  ctx.fillStyle=col;
+  switch(type){
+    case 0: // slime
+      ctx.beginPath(); ctx.ellipse(0,h*0.05,w*0.34,h*0.36,0,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(w*0.12,h*0.32,w*0.1,h*0.13,0,0,Math.PI*2); ctx.fill();
+      break;
+    case 1: // imp - triangle + horns
+      ctx.beginPath(); ctx.moveTo(0,-h*0.33); ctx.lineTo(w*0.3,h*0.3); ctx.lineTo(-w*0.3,h*0.3); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(-w*0.14,-h*0.22); ctx.lineTo(-w*0.07,-h*0.42); ctx.lineTo(-w*0.04,-h*0.18); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo( w*0.14,-h*0.22); ctx.lineTo( w*0.07,-h*0.42); ctx.lineTo( w*0.04,-h*0.18); ctx.closePath(); ctx.fill();
+      break;
+    case 2: // ghost
+      ctx.beginPath();
+      ctx.arc(0,-h*0.06,w*0.3,Math.PI,0);
+      ctx.lineTo(w*0.3,h*0.28);
+      ctx.quadraticCurveTo(w*0.2,h*0.16,w*0.1,h*0.28);
+      ctx.quadraticCurveTo(0,h*0.16,-w*0.1,h*0.28);
+      ctx.quadraticCurveTo(-w*0.2,h*0.16,-w*0.3,h*0.28);
+      ctx.closePath(); ctx.fill();
+      break;
+    case 3: // goblin - round + big ears
+      ctx.beginPath(); ctx.ellipse(0,-h*0.02,w*0.3,h*0.34,0,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(-w*0.35,-h*0.04,w*0.11,h*0.17,-0.4,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse( w*0.35,-h*0.04,w*0.11,h*0.17, 0.4,0,Math.PI*2); ctx.fill();
+      break;
+    case 4: // wraith - skull
+      ctx.beginPath(); ctx.ellipse(0,-h*0.06,w*0.32,h*0.36,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#1a0030';
+      ctx.beginPath(); ctx.ellipse(-w*0.11,-h*0.1,w*0.085,h*0.09,0,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse( w*0.11,-h*0.1,w*0.085,h*0.09,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#fff';
+      for(let i=-1;i<=1;i++) ctx.fillRect(i*w*0.09-w*0.04,h*0.1,w*0.07,h*0.12);
+      return;
+  }
+  drawEyes(type,w,h);
+}
+
+// ── HUD ───────────────────────────────────────────────────
+function drawHUD() {
+  const gy2 = gridY + ROWS*(bH+GAP) - GAP;
+
+  ctx.textAlign='left';
+  ctx.font=`bold ${Math.floor(bH*0.45)}px "Black Ops One"`;
+  ctx.fillStyle='rgba(255,255,255,0.38)';
+  ctx.fillText('SCORE', gridX, gridY-38);
+  ctx.font=`bold ${Math.floor(bH*0.95)}px "Black Ops One"`;
+  ctx.fillStyle='#fff';
+  ctx.fillText(score, gridX, gridY-12);
+
+  ctx.textAlign='right';
+  ctx.font=`bold ${Math.floor(bH*0.45)}px "Black Ops One"`;
+  ctx.fillStyle='rgba(255,255,255,0.38)';
+  ctx.fillText('LEVEL', gridX+COLS*(bW+GAP)-GAP, gridY-38);
+  ctx.font=`bold ${Math.floor(bH*0.95)}px "Black Ops One"`;
+  ctx.fillStyle='#fff';
+  ctx.fillText(level, gridX+COLS*(bW+GAP)-GAP, gridY-12);
+
+  ctx.textAlign='center';
+  ctx.font=`bold ${Math.floor(bH*0.38)}px "Black Ops One"`;
+  ctx.fillStyle='rgba(255,255,255,0.25)';
+  ctx.fillText(`BEST ${best}`, W/2, gridY-30);
+
+  // Lives
+  const heartSize = Math.max(20, Math.min(28, bW*0.35));
+  const heartY = gy2 + heartSize + 16;
+  for(let i=0;i<LIVES_MAX;i++){
+    ctx.globalAlpha = i < lives ? 1 : 0.15;
+    ctx.font=`${heartSize}px sans-serif`;
+    ctx.fillText('❤️', W/2+(i-1)*(heartSize+8), heartY);
+  }
+  ctx.globalAlpha=1;
+
+  // Combo
+  if(combo>1){
+    ctx.font=`bold ${Math.floor(bH*0.5)}px "Black Ops One"`;
+    ctx.fillStyle='#ffd740';
+    ctx.shadowColor='#ffa000'; ctx.shadowBlur=12;
+    ctx.fillText(`x${combo} COMBO`, W/2, heartY+heartSize+10);
+    ctx.shadowBlur=0;
+  }
+  ctx.textAlign='left';
+}
+
+// ── Screens ───────────────────────────────────────────────
+function drawStart() {
+  ctx.fillStyle='#110600'; ctx.fillRect(0,0,W,H);
+  // ghost bricks bg
+  ctx.globalAlpha=0.18;
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+    ctx.fillStyle='#c1440e';
+    ctx.beginPath();
+    ctx.roundRect(gridX+c*(bW+GAP), gridY+r*(bH+GAP), bW, bH, 5);
+    ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  ctx.textAlign='center';
+  ctx.font=`bold ${Math.min(80,W*0.2)}px "Black Ops One"`;
+  ctx.shadowColor='#ff4400'; ctx.shadowBlur=28;
+  ctx.fillStyle='#fff';
+  ctx.fillText('BASH', W/2, H*0.35);
+  ctx.shadowBlur=0;
+
+  ctx.font=`${Math.min(17,W*0.045)}px "Black Ops One"`;
+  ctx.fillStyle='rgba(255,190,120,0.75)';
+  ctx.fillText("something's hiding...", W/2, H*0.35 + Math.min(80,W*0.2)*0.55);
+
+  const pulse=0.65+Math.sin(Date.now()/520)*0.35;
+  ctx.globalAlpha=pulse;
+  ctx.font=`bold ${Math.min(22,W*0.06)}px "Black Ops One"`;
+  ctx.fillStyle='#fff';
+  ctx.fillText('TAP TO PLAY', W/2, H*0.64);
+  ctx.globalAlpha=1;
+
+  if(best>0){
+    ctx.font=`${Math.min(14,W*0.038)}px "Black Ops One"`;
+    ctx.fillStyle='rgba(255,215,0,0.45)';
+    ctx.fillText(`BEST ${best}`, W/2, H*0.64+Math.min(22,W*0.06)+10);
+  }
+  ctx.textAlign='left';
+}
+
+function drawOver() {
+  ctx.fillStyle='rgba(0,0,0,0.72)'; ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';
+  ctx.font=`bold ${Math.min(56,W*0.14)}px "Black Ops One"`;
+  ctx.shadowColor='#ff2200'; ctx.shadowBlur=22;
+  ctx.fillStyle='#ff3300';
+  ctx.fillText('GAME OVER', W/2, H*0.36);
+  ctx.shadowBlur=0;
+
+  ctx.font=`bold ${Math.min(20,W*0.053)}px "Black Ops One"`;
+  ctx.fillStyle='#fff';
+  ctx.fillText(`SCORE  ${score}`, W/2, H*0.49);
+  ctx.fillStyle='rgba(255,215,0,0.9)';
+  ctx.fillText(`BEST   ${best}`,  W/2, H*0.56);
+
+  const pulse=0.65+Math.sin(Date.now()/520)*0.35;
+  ctx.globalAlpha=pulse;
+  ctx.font=`bold ${Math.min(22,W*0.058)}px "Black Ops One"`;
+  ctx.fillStyle='#fff';
+  ctx.fillText('TAP TO RETRY', W/2, H*0.70);
+  ctx.globalAlpha=1;
+  ctx.textAlign='left';
+}
+
+// ── Audio ─────────────────────────────────────────────────
+let ac;
+function initAC(){ if(!ac) ac=new(window.AudioContext||window.webkitAudioContext)(); }
+function beep(type){
+  if(!ac) return;
+  const o=ac.createOscillator(), g=ac.createGain();
+  o.connect(g); g.connect(ac.destination);
+  const t=ac.currentTime;
+  switch(type){
+    case 'hit':
+      o.frequency.setValueAtTime(220,t); o.frequency.exponentialRampToValueAtTime(55,t+0.12);
+      g.gain.setValueAtTime(0.28,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.12);
+      o.start(t); o.stop(t+0.12); break;
+    case 'miss':
+      o.type='sawtooth';
+      o.frequency.setValueAtTime(90,t); o.frequency.exponentialRampToValueAtTime(40,t+0.28);
+      g.gain.setValueAtTime(0.35,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.28);
+      o.start(t); o.stop(t+0.28); break;
+    case 'appear':
+      o.type='square';
+      o.frequency.setValueAtTime(400,t); o.frequency.setValueAtTime(520,t+0.04);
+      g.gain.setValueAtTime(0.08,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.1);
+      o.start(t); o.stop(t+0.1); break;
+  }
+}
+
+// ── Game loop ─────────────────────────────────────────────
+function startGame(){
+  score=0; lives=LIVES_MAX; level=1; combo=0;
+  spawnT=0; spawnI=1800; maxActive=1;
+  parts=[]; popups=[]; shake=0;
+  initBricks();
+  gs='play';
+}
+
+function update(dt){
+  if(gs!=='play') return;
+  shake*=0.78; if(shake<0.1) shake=0;
+
+  spawnT-=dt;
+  if(spawnT<=0){
+    if(bricks.filter(b=>b.state==='shaking').length < maxActive) spawnCreature();
+    spawnT=spawnI;
+  }
+
+  bricks.forEach(b=>{
+    if(b.state==='shaking'){ b.t-=dt; if(b.t<=0) miss(b); }
+    if(b.state==='hit'){
+      b.t-=dt; b.sc=1+(1-b.t/380)*0.45;
+      if(b.t<=0) b.idle();
+    }
+    if(b.state==='broken'){
+      b.t-=dt; b.alpha=Math.max(0,b.t/700);
+      if(b.t<=0) b.idle();
+    }
+  });
+
+  parts=parts.filter(p=>p.life>0);
+  parts.forEach(p=>{ p.x+=p.vx; p.y+=p.vy; p.vy+=p.grav; p.vx*=0.97; p.life-=p.dec; });
+
+  popups=popups.filter(p=>p.life>0);
+  popups.forEach(p=>{ p.y-=0.9; p.life-=0.018; });
+}
+
+function draw(){
+  ctx.fillStyle='#110600'; ctx.fillRect(0,0,W,H);
+
+  if(gs==='start'){ drawStart(); return; }
+
+  const ox=shake?(Math.random()-0.5)*shake:0;
+  const oy=shake?(Math.random()-0.5)*shake:0;
+
+  bricks.forEach(b=>drawBrick(b,ox,oy));
+
+  parts.forEach(p=>{
+    ctx.save(); ctx.globalAlpha=Math.max(0,p.life);
+    ctx.fillStyle=p.col; ctx.fillRect(p.x-p.w/2,p.y-p.h/2,p.w,p.h);
+    ctx.restore();
+  });
+
+  popups.forEach(p=>{
+    ctx.save(); ctx.globalAlpha=Math.min(1,p.life*1.8);
+    ctx.font=`bold ${p.big?Math.min(34,W*0.09):Math.min(19,W*0.05)}px "Black Ops One"`;
+    ctx.fillStyle=p.col; ctx.textAlign='center';
+    ctx.shadowColor=p.col; ctx.shadowBlur=10;
+    ctx.fillText(p.txt,p.x,p.y); ctx.shadowBlur=0;
+    ctx.restore();
+  });
+
+  if(gs==='play') drawHUD();
+  if(gs==='over'){ drawOver(); }
+}
+
+function loop(ts){
+  const dt=Math.min(ts-lastTs,50); lastTs=ts;
+  update(dt); draw();
+  requestAnimationFrame(loop);
+}
+
+// ── Input ─────────────────────────────────────────────────
+function tap(x,y){
+  initAC();
+  if(gs==='start'||gs==='over'){ startGame(); return; }
+  let hit=false;
+  bricks.forEach(b=>{
+    if(b.state!=='shaking') return;
+    const pad=10;
+    if(x>=b.x-pad && x<=b.x+bW+pad && y>=b.y-pad && y<=b.y+bH+pad){
+      punch(b); hit=true;
+    }
+  });
+  if(!hit) combo=0;
+}
+
+canvas.addEventListener('pointerdown', e=>{
+  const r=canvas.getBoundingClientRect();
+  tap((e.clientX-r.left)*(W/r.width),(e.clientY-r.top)*(H/r.height));
+}, {passive:true});
+
+function lerpColor(a,b,t){
+  const p=n=>{return[n>>16&255,n>>8&255,n&255];}
+  const ah=p(parseInt(a.slice(1),16)), bh=p(parseInt(b.slice(1),16));
+  return `rgb(${ah.map((v,i)=>Math.round(v+(bh[i]-v)*t)).join(',')})`;
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

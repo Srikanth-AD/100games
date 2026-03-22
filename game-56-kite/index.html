@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>KITE</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#1a3a6a;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H;
+function resize() {
+  W = cv.width = window.innerWidth;
+  H = cv.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ─── Audio ───────────────────────────────────────────────────────────────────
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function sfx(type) {
+  if (!AC) return;
+  const o = AC.createOscillator();
+  const g = AC.createGain();
+  o.connect(g); g.connect(AC.destination);
+  if (type === 'collect_star') {
+    o.type = 'sine';
+    o.frequency.setValueAtTime(880, AC.currentTime);
+    o.frequency.exponentialRampToValueAtTime(1760, AC.currentTime + 0.15);
+    g.gain.setValueAtTime(0.2, AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.2);
+    o.start(); o.stop(AC.currentTime + 0.2);
+  } else if (type === 'collect_coin') {
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(660, AC.currentTime);
+    o.frequency.exponentialRampToValueAtTime(990, AC.currentTime + 0.1);
+    g.gain.setValueAtTime(0.15, AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.15);
+    o.start(); o.stop(AC.currentTime + 0.15);
+  } else if (type === 'hit') {
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(200, AC.currentTime);
+    o.frequency.exponentialRampToValueAtTime(80, AC.currentTime + 0.3);
+    g.gain.setValueAtTime(0.25, AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.35);
+    o.start(); o.stop(AC.currentTime + 0.35);
+  } else if (type === 'warning') {
+    o.type = 'square';
+    o.frequency.setValueAtTime(440, AC.currentTime);
+    o.frequency.setValueAtTime(330, AC.currentTime + 0.1);
+    o.frequency.setValueAtTime(440, AC.currentTime + 0.2);
+    g.gain.setValueAtTime(0.1, AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.3);
+    o.start(); o.stop(AC.currentTime + 0.3);
+  }
+}
+
+// ─── Keys ────────────────────────────────────────────────────────────────────
+const keys = {};
+window.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space'].includes(e.code)) e.preventDefault();
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// Touch controls
+const touch = { left:false, right:false, up:false, down:false };
+let touchStartX = 0, touchStartY = 0;
+
+cv.addEventListener('touchstart', e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    touchStartX = t.clientX;
+    touchStartY = t.clientY;
+  }
+}, { passive: false });
+
+cv.addEventListener('touchmove', e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    const dx = t.clientX - touchStartX;
+    const dy = t.clientY - touchStartY;
+    touch.left  = dx < -20;
+    touch.right = dx > 20;
+    touch.up    = dy < -20;
+    touch.down  = dy > 20;
+  }
+}, { passive: false });
+
+cv.addEventListener('touchend', e => {
+  e.preventDefault();
+  touch.left = touch.right = touch.up = touch.down = false;
+}, { passive: false });
+
+function isLeft()  { return keys['ArrowLeft']  || keys['KeyA'] || touch.left; }
+function isRight() { return keys['ArrowRight'] || keys['KeyD'] || touch.right; }
+function isUp()    { return keys['ArrowUp']    || keys['KeyW'] || touch.up; }
+function isDown()  { return keys['ArrowDown']  || keys['KeyS'] || touch.down; }
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+const MIN_STRING = 80;
+const MAX_STRING = 500;
+const PERSON_X_RATIO = 0.5;
+const PERSON_Y_RATIO = 0.82;
+const GRAVITY = 0.06;
+const LIFT    = 0.14;
+const DRAG    = 0.97;
+
+// ─── State ───────────────────────────────────────────────────────────────────
+let state = 'start'; // 'start' | 'play' | 'dead' | 'over'
+let score = 0, lives = 3, multiplier = 1, multiTimer = 0;
+let scrollX = 0;
+let t = 0;
+let hitTimer = 0;
+let warningTimer = 0;
+
+// Kite physics (angle from person in radians, 0 = straight up, positive = right)
+let kiteAngle  = -0.3;
+let kiteLen    = 250;
+let kiteVx     = 0;
+let kiteVy     = 0;
+let kiteLimp   = 0; // 0 = taut, >0 = limp/falling (frames)
+let kiteFlutter = 0;
+
+// Wind
+let windAngle = 0;
+let windStrength = 0;
+let windTarget = 0;
+
+// Parallax cloud layers
+const cloudLayers = [
+  { depth: 0.2, clouds: [] },
+  { depth: 0.5, clouds: [] },
+  { depth: 0.8, clouds: [] },
+];
+
+// Items and hazards
+let items = [];   // { type:'star'|'coin', x, y, age, collected }
+let hazards = []; // { type:'bird'|'storm', x, y, wingPhase, vx, collected }
+let particles = []; // { x, y, vx, vy, life, maxLife, color, size }
+
+// Kite tail
+let tailPoints = [];
+
+// Wind streaks
+let streaks = [];
+
+// Score popup
+let popups = []; // { x, y, text, life, color }
+
+function initGame() {
+  score = 0; lives = 3; multiplier = 1; multiTimer = 0;
+  scrollX = 0; t = 0; hitTimer = 0; warningTimer = 0;
+  kiteAngle = -0.3; kiteLen = 250;
+  kiteVx = 0; kiteVy = 0; kiteLimp = 0;
+  windAngle = 0; windStrength = 0.5; windTarget = 0.5;
+  items = []; hazards = []; particles = []; popups = [];
+  tailPoints = [];
+  streaks = [];
+
+  // Seed clouds
+  for (const layer of cloudLayers) {
+    layer.clouds = [];
+    for (let i = 0; i < 8; i++) {
+      layer.clouds.push({
+        x: Math.random() * 3000,
+        y: Math.random() * 0.6,
+        r: 40 + Math.random() * 80,
+        bumps: Math.floor(3 + Math.random() * 4),
+        alpha: 0.5 + Math.random() * 0.4,
+      });
+    }
+  }
+  // Seed streaks
+  for (let i = 0; i < 25; i++) {
+    streaks.push(newStreak(Math.random() * 4000));
+  }
+}
+
+function newStreak(x) {
+  return {
+    x: x,
+    y: Math.random() * 0.85,
+    len: 40 + Math.random() * 120,
+    speed: 0.3 + Math.random() * 0.5,
+    alpha: 0.03 + Math.random() * 0.06,
+  };
+}
+
+function spawnItem() {
+  const type = Math.random() < 0.4 ? 'star' : 'coin';
+  items.push({
+    type, collected: false,
+    x: W + 50,
+    y: H * (0.1 + Math.random() * 0.65),
+    age: 0,
+  });
+}
+
+function spawnHazard() {
+  const type = Math.random() < 0.5 ? 'bird' : 'storm';
+  hazards.push({
+    type, collected: false,
+    x: W + 80,
+    y: type === 'bird' ? H * (0.15 + Math.random() * 0.55)
+                       : H * (0.05 + Math.random() * 0.45),
+    wingPhase: 0,
+    vx: type === 'bird' ? -(1.5 + Math.random() * 2) : -(0.8 + Math.random()),
+    w: type === 'storm' ? 90 + Math.random() * 60 : 20,
+    h: type === 'storm' ? 50 + Math.random() * 30 : 14,
+    lightningTimer: 0,
+  });
+}
+
+function addParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = 1 + Math.random() * 4;
+    particles.push({
+      x, y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s,
+      life: 1,
+      maxLife: 1,
+      color,
+      size: 2 + Math.random() * 4,
+    });
+  }
+}
+
+function addPopup(x, y, text, color) {
+  popups.push({ x, y, text, color: color || '#fff', life: 1.2 });
+}
+
+// ─── Catenary helpers ─────────────────────────────────────────────────────────
+function getCatenaryPoints(x0, y0, x1, y1, slack, segs) {
+  // Approximate catenary with a bezier-like arc
+  const pts = [];
+  const mx = (x0 + x1) / 2;
+  const my = (y0 + y1) / 2 + slack;
+  for (let i = 0; i <= segs; i++) {
+    const s = i / segs;
+    const t = 1 - s;
+    const px = t*t*x0 + 2*t*s*mx + s*s*x1;
+    const py = t*t*y0 + 2*t*s*my + s*s*y1;
+    pts.push({ x: px, y: py });
+  }
+  return pts;
+}
+
+// ─── Draw helpers ─────────────────────────────────────────────────────────────
+function drawSkyGradient() {
+  const grd = ctx.createLinearGradient(0, 0, 0, H);
+  grd.addColorStop(0, '#0a1f4e');
+  grd.addColorStop(0.5, '#1a4a8a');
+  grd.addColorStop(1, '#4a90c4');
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawWindStreaks() {
+  const wDir = windAngle * 60; // pixel offset bias
+  for (const s of streaks) {
+    ctx.save();
+    ctx.globalAlpha = s.alpha * (0.5 + windStrength);
+    ctx.strokeStyle = '#c8e8ff';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const sx = ((s.x - scrollX * s.speed * 0.3) % (W + 400) + W + 400) % (W + 400) - 200;
+    ctx.moveTo(sx, s.y * H);
+    ctx.lineTo(sx + s.len + wDir * 0.5, s.y * H - 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawClouds() {
+  for (const layer of cloudLayers) {
+    for (const cl of layer.clouds) {
+      const px = ((cl.x - scrollX * layer.depth * 0.5) % (W + 500 + cl.r * 2) + W + 500 + cl.r * 2) % (W + 500 + cl.r * 2) - cl.r - 100;
+      const py = cl.y * H;
+      ctx.save();
+      ctx.globalAlpha = cl.alpha * (0.6 + layer.depth * 0.4);
+      // White fluffy cloud
+      const r = cl.r * (0.6 + layer.depth * 0.4);
+      ctx.fillStyle = `rgba(255,255,255,${0.7 + layer.depth * 0.2})`;
+      ctx.beginPath();
+      ctx.arc(px, py, r * 0.55, 0, Math.PI * 2);
+      for (let b = 0; b < cl.bumps; b++) {
+        const ba = (b / cl.bumps) * Math.PI * 1.5 - 0.5;
+        const br = r * (0.35 + Math.random() * 0.05);
+        ctx.arc(px + Math.cos(ba) * r * 0.5, py + Math.sin(ba) * r * 0.3, br, 0, Math.PI * 2);
+      }
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+}
+
+function drawGround() {
+  // Ground strip
+  const grd = ctx.createLinearGradient(0, H * PERSON_Y_RATIO + 30, 0, H);
+  grd.addColorStop(0, '#2d5a27');
+  grd.addColorStop(0.3, '#3d7a35');
+  grd.addColorStop(1, '#1a3a10');
+  ctx.fillStyle = grd;
+  ctx.beginPath();
+  ctx.moveTo(0, H * PERSON_Y_RATIO + 30);
+  // Wavy grass line
+  for (let x = 0; x <= W; x += 20) {
+    const wave = Math.sin((x + scrollX * 0.3) * 0.03) * 6;
+    ctx.lineTo(x, H * PERSON_Y_RATIO + 25 + wave);
+  }
+  ctx.lineTo(W, H);
+  ctx.lineTo(0, H);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawPerson(px, py) {
+  ctx.save();
+  ctx.fillStyle = '#1a1a1a';
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  // Body
+  ctx.beginPath();
+  ctx.moveTo(px, py - 28);
+  ctx.lineTo(px, py - 8);
+  ctx.stroke();
+  // Head
+  ctx.beginPath();
+  ctx.arc(px, py - 34, 7, 0, Math.PI * 2);
+  ctx.fill();
+  // Legs
+  ctx.beginPath();
+  ctx.moveTo(px, py - 8);
+  ctx.lineTo(px - 8, py + 6);
+  ctx.moveTo(px, py - 8);
+  ctx.lineTo(px + 8, py + 6);
+  ctx.stroke();
+  // Arms - right arm raised holding string
+  ctx.beginPath();
+  ctx.moveTo(px, py - 22);
+  ctx.lineTo(px + 12, py - 32);
+  ctx.stroke();
+  // Left arm
+  ctx.beginPath();
+  ctx.moveTo(px, py - 22);
+  ctx.lineTo(px - 10, py - 14);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawString(px, py, kx, ky, limp) {
+  if (limp > 0) {
+    // Limp string falls loosely
+    const slack = 30 + limp * 2;
+    const pts = getCatenaryPoints(px + 12, py - 32, kx, ky, slack, 20);
+    ctx.save();
+    ctx.strokeStyle = '#c8a060';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+  // Taut catenary
+  const dist = Math.hypot(kx - (px + 12), ky - (py - 32));
+  const slack = Math.max(0, kiteLen - dist) * 0.3 + 8;
+  const pts = getCatenaryPoints(px + 12, py - 32, kx, ky, slack, 20);
+  ctx.save();
+  ctx.strokeStyle = '#c8a060';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawKite(kx, ky, angle, limp, flutterPhase) {
+  ctx.save();
+  ctx.translate(kx, ky);
+
+  let tiltAngle = angle * 0.3;
+  if (limp > 0) {
+    tiltAngle = Math.PI * 0.6 + Math.sin(t * 0.1) * 0.2;
+  }
+  ctx.rotate(tiltAngle);
+
+  const kw = 28, kh = 38;
+
+  if (limp > 0) {
+    ctx.globalAlpha = 0.6 + Math.sin(t * 0.3) * 0.2;
+  }
+
+  // Kite body - diamond
+  const colors = ['#e63946', '#f4a261', '#2a9d8f', '#e9c46a'];
+  // Top-left quadrant
+  ctx.beginPath();
+  ctx.moveTo(0, -kh);
+  ctx.lineTo(-kw, 0);
+  ctx.lineTo(0, 8);
+  ctx.closePath();
+  ctx.fillStyle = colors[0];
+  ctx.fill();
+  // Top-right quadrant
+  ctx.beginPath();
+  ctx.moveTo(0, -kh);
+  ctx.lineTo(kw, 0);
+  ctx.lineTo(0, 8);
+  ctx.closePath();
+  ctx.fillStyle = colors[1];
+  ctx.fill();
+  // Bottom-left quadrant
+  ctx.beginPath();
+  ctx.moveTo(-kw, 0);
+  ctx.lineTo(0, kh);
+  ctx.lineTo(0, 8);
+  ctx.closePath();
+  ctx.fillStyle = colors[2];
+  ctx.fill();
+  // Bottom-right quadrant
+  ctx.beginPath();
+  ctx.moveTo(kw, 0);
+  ctx.lineTo(0, kh);
+  ctx.lineTo(0, 8);
+  ctx.closePath();
+  ctx.fillStyle = colors[3];
+  ctx.fill();
+
+  // Kite outline
+  ctx.beginPath();
+  ctx.moveTo(0, -kh);
+  ctx.lineTo(kw, 0);
+  ctx.lineTo(0, kh);
+  ctx.lineTo(-kw, 0);
+  ctx.closePath();
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Cross spars
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, -kh); ctx.lineTo(0, kh);
+  ctx.moveTo(-kw, 0); ctx.lineTo(kw, 0);
+  ctx.stroke();
+
+  // Tail ribbons
+  const tailLen = 100 + kh;
+  const numRibbons = 6;
+  for (let i = 0; i < numRibbons; i++) {
+    const frac = i / (numRibbons - 1);
+    const ribbonX = -kw * 0.7 + frac * kw * 1.4;
+    const rc = ['#e63946','#f4a261','#2a9d8f','#e9c46a','#e63946','#f4a261'][i];
+    ctx.beginPath();
+    ctx.moveTo(ribbonX * 0.2, kh);
+    // Ribbon flutters
+    const flutterAmp = 8 + i * 2;
+    for (let s = 1; s <= 8; s++) {
+      const frac2 = s / 8;
+      const wx = Math.sin(flutterPhase + i * 0.8 + frac2 * 3) * flutterAmp * frac2;
+      ctx.lineTo(ribbonX * (1 - frac2) + wx, kh + frac2 * tailLen * (0.6 + frac * 0.6));
+    }
+    ctx.strokeStyle = rc;
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = limp > 0 ? 0.4 : 0.85;
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawStar(x, y, age) {
+  const pulse = 1 + Math.sin(age * 0.12) * 0.2;
+  const r = 12 * pulse;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(age * 0.05);
+  ctx.fillStyle = '#ffe44d';
+  ctx.shadowColor = '#ffe44d';
+  ctx.shadowBlur = 12;
+  ctx.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const a = (i * 4 * Math.PI) / 5 - Math.PI / 2;
+    const ai = a + (2 * Math.PI) / 5;
+    if (i === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+    else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    ctx.lineTo(Math.cos(ai) * r * 0.45, Math.sin(ai) * r * 0.45);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawCoin(x, y, age) {
+  const wobble = Math.abs(Math.sin(age * 0.08)) * 0.7 + 0.3;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(wobble, 1);
+  const grd = ctx.createRadialGradient(-4, -4, 2, 0, 0, 14);
+  grd.addColorStop(0, '#ffe88a');
+  grd.addColorStop(0.6, '#f0a000');
+  grd.addColorStop(1, '#c07000');
+  ctx.fillStyle = grd;
+  ctx.shadowColor = '#f0a000';
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  ctx.arc(0, 0, 13, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#ffe88a';
+  ctx.font = 'bold 12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('$', 0, 1);
+  ctx.restore();
+}
+
+function drawBird(x, y, wingPhase) {
+  const flap = Math.sin(wingPhase) * 8;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.strokeStyle = '#2a1a0a';
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  // Body
+  ctx.moveTo(-3, 0);
+  ctx.lineTo(3, 0);
+  // Left wing
+  ctx.moveTo(-3, 0);
+  ctx.quadraticCurveTo(-12, -flap, -20, -flap * 0.3);
+  // Right wing
+  ctx.moveTo(3, 0);
+  ctx.quadraticCurveTo(12, -flap, 20, -flap * 0.3);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawStormCloud(x, y, w, h, lightningTimer) {
+  ctx.save();
+  ctx.translate(x, y);
+
+  const grd = ctx.createRadialGradient(0, 0, w * 0.1, 0, 0, w * 0.7);
+  grd.addColorStop(0, '#4a4a5a');
+  grd.addColorStop(0.5, '#2a2a38');
+  grd.addColorStop(1, '#1a1a28');
+  ctx.fillStyle = grd;
+  ctx.shadowColor = '#8888ff';
+  ctx.shadowBlur = lightningTimer > 0 ? 20 : 5;
+
+  // Bumpy storm cloud
+  ctx.beginPath();
+  ctx.arc(0, 0, w * 0.42, 0, Math.PI * 2);
+  ctx.arc(-w * 0.28, h * 0.1, w * 0.3, 0, Math.PI * 2);
+  ctx.arc(w * 0.28, h * 0.1, w * 0.3, 0, Math.PI * 2);
+  ctx.arc(-w * 0.15, -h * 0.25, w * 0.25, 0, Math.PI * 2);
+  ctx.arc(w * 0.15, -h * 0.2, w * 0.22, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Lightning bolt
+  if (lightningTimer > 0) {
+    ctx.strokeStyle = `rgba(255,255,128,${lightningTimer})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(5, h * 0.3);
+    ctx.lineTo(-3, h * 0.6);
+    ctx.lineTo(2, h * 0.6);
+    ctx.lineTo(-5, h);
+    ctx.stroke();
+    // Glow
+    ctx.strokeStyle = `rgba(255,255,200,${lightningTimer * 0.5})`;
+    ctx.lineWidth = 5;
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawHUD(px, py) {
+  // Score
+  ctx.save();
+  ctx.font = 'bold 28px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#fff';
+  ctx.shadowColor = '#000';
+  ctx.shadowBlur = 6;
+  ctx.fillText(Math.floor(score), W / 2, 38);
+  if (multiplier > 1) {
+    ctx.font = 'bold 16px monospace';
+    ctx.fillStyle = '#ffe44d';
+    ctx.fillText(`×${multiplier}`, W / 2, 58);
+  }
+
+  // Lives
+  ctx.textAlign = 'left';
+  ctx.font = '22px sans-serif';
+  for (let i = 0; i < 3; i++) {
+    ctx.fillStyle = i < lives ? '#e63946' : 'rgba(255,255,255,0.2)';
+    ctx.fillText('♦', 18 + i * 28, 38);
+  }
+
+  // Wind indicator
+  const wx = W - 80, wy = 36;
+  ctx.font = '12px monospace';
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.textAlign = 'right';
+  ctx.fillText('WIND', W - 16, 22);
+
+  // Wind arrow
+  const arrowAngle = windAngle * Math.PI * 0.5;
+  const arrowLen = 24 * windStrength;
+  ctx.save();
+  ctx.translate(wx, wy);
+  ctx.rotate(arrowAngle);
+  ctx.strokeStyle = `rgba(200,230,255,${0.4 + windStrength * 0.5})`;
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-arrowLen, 0);
+  ctx.lineTo(arrowLen, 0);
+  ctx.moveTo(arrowLen * 0.5, -6);
+  ctx.lineTo(arrowLen, 0);
+  ctx.lineTo(arrowLen * 0.5, 6);
+  ctx.stroke();
+  ctx.restore();
+
+  // Height indicator (right side)
+  const personY = H * PERSON_Y_RATIO;
+  const kx = personX() + Math.sin(kiteAngle) * kiteLen;
+  const ky = personY - 32 - Math.cos(kiteAngle) * kiteLen;
+  const heightFrac = 1 - (ky / (H * 0.9));
+  ctx.fillStyle = 'rgba(255,255,255,0.15)';
+  ctx.fillRect(W - 14, 60, 8, H * 0.5);
+  ctx.fillStyle = '#7ec8e3';
+  ctx.fillRect(W - 14, 60 + (H * 0.5) * (1 - heightFrac), 8, (H * 0.5) * heightFrac);
+
+  // Warning flash
+  if (warningTimer > 0) {
+    ctx.fillStyle = `rgba(255,80,0,${(warningTimer / 90) * 0.3})`;
+    ctx.fillRect(0, 0, W, H);
+    ctx.font = 'bold 22px monospace';
+    ctx.fillStyle = `rgba(255,120,0,${warningTimer / 90})`;
+    ctx.textAlign = 'center';
+    ctx.fillText('WARNING: STRING LIMIT!', W / 2, H / 2);
+  }
+
+  // Hit flash
+  if (hitTimer > 0) {
+    ctx.fillStyle = `rgba(255,0,0,${(hitTimer / 60) * 0.4})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  ctx.restore();
+}
+
+function drawPopups() {
+  for (const p of popups) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, p.life * 2);
+    ctx.font = 'bold 20px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = p.color;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 8;
+    ctx.fillText(p.text, p.x, p.y);
+    ctx.restore();
+  }
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.save();
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function personX() { return W * PERSON_X_RATIO; }
+function personY() { return H * PERSON_Y_RATIO; }
+
+// ─── Screens ──────────────────────────────────────────────────────────────────
+function drawStartScreen() {
+  drawSkyGradient();
+  drawWindStreaks();
+  drawClouds();
+  drawGround();
+
+  // Draw a preview kite
+  const px = W * 0.5, py = H * 0.78;
+  const kx = px - 80, ky = py - 220;
+  drawString(px, py, kx, ky, 0);
+  drawPerson(px, py);
+  drawKite(kx, ky, -0.4, 0, t * 0.08);
+
+  ctx.save();
+  // Title
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#000';
+  ctx.shadowBlur = 20;
+  ctx.font = 'bold 72px monospace';
+
+  const titleGrd = ctx.createLinearGradient(W/2 - 120, 0, W/2 + 120, 0);
+  titleGrd.addColorStop(0, '#e63946');
+  titleGrd.addColorStop(0.33, '#f4a261');
+  titleGrd.addColorStop(0.66, '#2a9d8f');
+  titleGrd.addColorStop(1, '#e9c46a');
+  ctx.fillStyle = titleGrd;
+  ctx.fillText('KITE', W / 2, H * 0.22);
+
+  ctx.font = '18px monospace';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText('Fly your kite through the sky!', W / 2, H * 0.3);
+
+  ctx.font = '15px monospace';
+  ctx.fillStyle = 'rgba(200,230,255,0.8)';
+  const lines = [
+    '← → / A D  —  Steer kite',
+    '↑ / W  —  Reel in (kite lower)',
+    '↓ / S  —  Let out (kite higher)',
+    'Collect stars ★ (+10) and coins $ (+5)',
+    'Avoid birds and storm clouds!',
+  ];
+  lines.forEach((l, i) => ctx.fillText(l, W/2, H * 0.38 + i * 26));
+
+  // Pulse start button
+  const pulse = 0.8 + Math.sin(t * 0.06) * 0.2;
+  ctx.globalAlpha = pulse;
+  ctx.font = 'bold 24px monospace';
+  ctx.fillStyle = '#ffe44d';
+  ctx.shadowColor = '#ffe44d';
+  ctx.shadowBlur = 15;
+  ctx.fillText('[ PRESS ANY KEY / TAP TO START ]', W / 2, H * 0.72);
+
+  ctx.restore();
+}
+
+function drawGameOverScreen() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#000';
+  ctx.shadowBlur = 20;
+
+  ctx.font = 'bold 60px monospace';
+  ctx.fillStyle = '#e63946';
+  ctx.fillText('GAME OVER', W / 2, H * 0.38);
+
+  ctx.font = 'bold 32px monospace';
+  ctx.fillStyle = '#ffe44d';
+  ctx.fillText(`SCORE: ${Math.floor(score)}`, W / 2, H * 0.5);
+
+  const pulse = 0.7 + Math.sin(t * 0.06) * 0.3;
+  ctx.globalAlpha = pulse;
+  ctx.font = '22px monospace';
+  ctx.fillStyle = '#fff';
+  ctx.fillText('[ PRESS ANY KEY / TAP TO RESTART ]', W / 2, H * 0.65);
+  ctx.restore();
+}
+
+// ─── Item/hazard spawn timers ─────────────────────────────────────────────────
+let itemTimer = 0, hazardTimer = 0;
+const ITEM_INTERVAL = 120;
+const HAZARD_INTERVAL = 200;
+
+// ─── Update ───────────────────────────────────────────────────────────────────
+let lastTime = 0;
+function update(ts) {
+  const dt = Math.min((ts - lastTime) / 16.67, 3);
+  lastTime = ts;
+  t += dt;
+
+  if (state === 'start') {
+    scrollX += 0.5 * dt;
+    return;
+  }
+  if (state === 'over' || state === 'dead') {
+    return;
+  }
+
+  // ── Scroll ──
+  scrollX += 1.5 * dt;
+
+  // ── Wind ──
+  windAngle = Math.sin(t * 0.008) * 1.2 + Math.sin(t * 0.003) * 0.5;
+  windStrength = 0.4 + Math.abs(Math.sin(t * 0.005)) * 0.6;
+
+  // ── Kite physics ──
+  const px = personX(), py = personY();
+  const handX = px + 12, handY = py - 32;
+
+  // Current kite world position
+  let kx = handX + Math.sin(kiteAngle) * kiteLen;
+  let ky = handY - Math.cos(kiteAngle) * kiteLen;
+
+  // Steering
+  const steerSpeed = 0.012;
+  if (isLeft())  kiteAngle -= steerSpeed * dt;
+  if (isRight()) kiteAngle += steerSpeed * dt;
+  kiteAngle = Math.max(-1.1, Math.min(1.1, kiteAngle));
+
+  // Reel in / let out
+  if (isUp())   kiteLen = Math.max(MIN_STRING, kiteLen - 1.5 * dt);
+  if (isDown()) kiteLen = Math.min(MAX_STRING, kiteLen + 1.5 * dt);
+
+  kiteFlutter += 0.08 * dt;
+
+  if (kiteLimp > 0) {
+    kiteLimp -= dt;
+    // Kite falls limp
+    kiteVy += GRAVITY * 2 * dt;
+    kx += kiteVx * dt;
+    ky += kiteVy * dt;
+    kiteVx *= 0.97;
+    kiteVy *= 0.97;
+    // Recompute angle/len from new position
+    const dx = kx - handX, dy = ky - handY;
+    kiteAngle = Math.atan2(dx, -dy);
+    kiteLen = Math.min(MAX_STRING, Math.hypot(dx, dy));
+    kiteLen = Math.max(MIN_STRING, kiteLen);
+  } else {
+    // Normal physics - forces on kite
+    // Wind force
+    kiteVx += windAngle * windStrength * 0.04 * dt;
+    // Lift
+    kiteVy -= LIFT * dt;
+    // Gravity
+    kiteVy += GRAVITY * dt;
+    // Drag
+    kiteVx *= Math.pow(DRAG, dt);
+    kiteVy *= Math.pow(DRAG, dt);
+
+    // Integrate into angle/len space
+    kx += kiteVx * dt;
+    ky += kiteVy * dt;
+
+    const dx = kx - handX, dy = ky - handY;
+    let newLen = Math.hypot(dx, dy);
+    let newAngle = Math.atan2(dx, -dy);
+
+    // Constrain to string length
+    if (newLen > kiteLen) {
+      newLen = kiteLen;
+    }
+    // Don't let it go below the hand
+    if (newLen < MIN_STRING * 0.5) newLen = MIN_STRING * 0.5;
+
+    kiteAngle = newAngle;
+    kiteLen = newLen;
+
+    // Recompute position
+    kx = handX + Math.sin(kiteAngle) * kiteLen;
+    ky = handY - Math.cos(kiteAngle) * kiteLen;
+
+    kiteVx = kiteVx * 0.9;
+    kiteVy = kiteVy * 0.9;
+  }
+
+  // ── Warning check ──
+  if (ky < 5 || ky > H * 0.85 || kiteLen <= MIN_STRING + 5 || kiteLen >= MAX_STRING - 5) {
+    if (warningTimer <= 0) sfx('warning');
+    warningTimer = Math.min(warningTimer + dt, 90);
+  } else {
+    warningTimer = Math.max(0, warningTimer - dt * 2);
+  }
+
+  // ── Score (per second while flying) ──
+  if (kiteLimp <= 0) {
+    score += 0.04 * dt;
+  }
+
+  // ── Multiplier decay ──
+  if (multiTimer > 0) {
+    multiTimer -= dt;
+    if (multiTimer <= 0) {
+      multiTimer = 0;
+      multiplier = 1;
+    }
+  }
+
+  // ── Spawn items ──
+  itemTimer -= dt;
+  if (itemTimer <= 0) {
+    spawnItem();
+    itemTimer = ITEM_INTERVAL * (0.7 + Math.random() * 0.6);
+  }
+  hazardTimer -= dt;
+  if (hazardTimer <= 0) {
+    spawnHazard();
+    hazardTimer = HAZARD_INTERVAL * (0.7 + Math.random() * 0.6);
+  }
+
+  // ── Update items ──
+  const kiteR = 26;
+  for (const item of items) {
+    if (item.collected) continue;
+    item.x -= 1.5 * dt;
+    item.age += dt;
+    const dist = Math.hypot(kx - item.x, ky - item.y);
+    if (dist < kiteR + 16 && kiteLimp <= 0) {
+      item.collected = true;
+      if (item.type === 'star') {
+        const pts = 10 * multiplier;
+        score += pts;
+        addPopup(item.x, item.y, `+${pts} ★`, '#ffe44d');
+        addParticles(item.x, item.y, '#ffe44d', 12);
+        sfx('collect_star');
+      } else {
+        const pts = 5 * multiplier;
+        score += pts;
+        addPopup(item.x, item.y, `+${pts}$`, '#f0a000');
+        addParticles(item.x, item.y, '#f0a000', 8);
+        sfx('collect_coin');
+      }
+      multiplier = Math.min(multiplier + 1, 8);
+      multiTimer = 180;
+    }
+  }
+  items = items.filter(i => !i.collected && i.x > -60);
+
+  // ── Update hazards ──
+  for (const h of hazards) {
+    if (h.collected) continue;
+    h.x += h.vx * dt;
+    h.wingPhase += 0.18 * dt;
+    if (h.lightningTimer > 0) h.lightningTimer -= 0.02 * dt;
+    if (Math.random() < 0.005) h.lightningTimer = 1;
+
+    const hitR = h.type === 'bird' ? 18 : Math.min(h.w, h.h) * 0.4;
+    const dist = Math.hypot(kx - h.x, ky - h.y);
+    if (dist < kiteR + hitR && kiteLimp <= 0 && hitTimer <= 0) {
+      h.collected = true;
+      lives--;
+      hitTimer = 60;
+      kiteLimp = 80;
+      kiteVx = (Math.random() - 0.5) * 8;
+      kiteVy = 3;
+      multiplier = 1;
+      multiTimer = 0;
+      addParticles(kx, ky, '#e63946', 20);
+      addPopup(kx, ky - 30, '!', '#e63946');
+      sfx('hit');
+      if (lives <= 0) {
+        state = 'over';
+      }
+    }
+  }
+  hazards = hazards.filter(h => !h.collected && h.x > -200);
+
+  // ── Update particles ──
+  for (const p of particles) {
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 0.1 * dt;
+    p.life -= 0.025 * dt;
+  }
+  particles = particles.filter(p => p.life > 0);
+
+  // ── Update popups ──
+  for (const p of popups) {
+    p.y -= 0.8 * dt;
+    p.life -= 0.02 * dt;
+  }
+  popups = popups.filter(p => p.life > 0);
+
+  // ── Hit timer ──
+  if (hitTimer > 0) hitTimer -= dt;
+
+  // ── Streaks scroll ──
+  for (const s of streaks) {
+    s.x -= s.speed * dt;
+  }
+}
+
+// ─── Draw ─────────────────────────────────────────────────────────────────────
+function draw() {
+  const px = personX(), py = personY();
+
+  drawSkyGradient();
+  drawWindStreaks();
+  drawClouds();
+
+  // Draw items
+  for (const item of items) {
+    if (item.collected) continue;
+    if (item.type === 'star') drawStar(item.x, item.y, item.age);
+    else drawCoin(item.x, item.y, item.age);
+  }
+
+  // Draw hazards
+  for (const h of hazards) {
+    if (h.collected) continue;
+    if (h.type === 'bird') drawBird(h.x, h.y, h.wingPhase);
+    else drawStormCloud(h.x, h.y, h.w, h.h, h.lightningTimer);
+  }
+
+  drawGround();
+  drawParticles();
+
+  const handX = px + 12, handY = py - 32;
+  const kx = handX + Math.sin(kiteAngle) * kiteLen;
+  const ky = handY - Math.cos(kiteAngle) * kiteLen;
+
+  drawString(px, py, kx, ky, kiteLimp);
+  drawPerson(px, py);
+  drawKite(kx, ky, kiteAngle, kiteLimp, kiteFlutter);
+
+  drawPopups();
+  drawHUD(px, py);
+}
+
+// ─── Main loop ───────────────────────────────────────────────────────────────
+function loop(ts) {
+  update(ts);
+
+  if (state === 'start') {
+    drawStartScreen();
+  } else if (state === 'over') {
+    draw();
+    drawGameOverScreen();
+  } else {
+    draw();
+  }
+
+  requestAnimationFrame(loop);
+}
+
+// ─── Input for state transitions ─────────────────────────────────────────────
+window.addEventListener('keydown', e => {
+  if (state === 'start') {
+    if (AC.state === 'suspended') AC.resume();
+    initGame();
+    state = 'play';
+  } else if (state === 'over') {
+    initGame();
+    state = 'play';
+  }
+});
+
+cv.addEventListener('touchstart', e => {
+  if (state === 'start') {
+    if (AC.state === 'suspended') AC.resume();
+    initGame();
+    state = 'play';
+  } else if (state === 'over') {
+    initGame();
+    state = 'play';
+  }
+}, { passive: false });
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+initGame();
+// Seed the start screen preview scroll offset
+scrollX = 200;
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

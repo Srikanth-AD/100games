@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>PIPES</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#001a0a;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H;
+function resize() { W = cv.width = window.innerWidth; H = cv.height = window.innerHeight; }
+resize();
+window.addEventListener('resize', () => { resize(); if(gameState !== 'start') initGame(); });
+
+// ── Audio ────────────────────────────────────────────────────────────────────
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function sfx(type) {
+  const t = AC.currentTime;
+  function tone(f, dur, wave, gain, delay=0) {
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    o.type = wave; o.frequency.value = f;
+    g.gain.setValueAtTime(gain, t+delay);
+    g.gain.linearRampToValueAtTime(0, t+delay+dur);
+    o.start(t+delay); o.stop(t+delay+dur+0.05);
+  }
+  if (type === 'rotate') {
+    tone(300, 0.08, 'square', 0.12);
+    tone(450, 0.06, 'square', 0.08, 0.06);
+  } else if (type === 'connect') {
+    tone(440, 0.12, 'sine', 0.2);
+    tone(550, 0.12, 'sine', 0.2, 0.1);
+    tone(660, 0.18, 'sine', 0.2, 0.2);
+  } else if (type === 'levelup') {
+    [440,550,660,880].forEach((f,i) => tone(f, 0.15, 'sine', 0.18, i*0.12));
+  } else if (type === 'gameover') {
+    [330,275,220,165].forEach((f,i) => tone(f, 0.2, 'sawtooth', 0.15, i*0.15));
+  } else if (type === 'tick') {
+    tone(220, 0.05, 'square', 0.08);
+  } else if (type === 'flow') {
+    tone(600, 0.05, 'sine', 0.06);
+    tone(800, 0.05, 'sine', 0.04, 0.04);
+  }
+}
+
+// ── Pipe Definitions ─────────────────────────────────────────────────────────
+// Each pipe type has openings: [top, right, bottom, left] booleans
+// Types: 'straight', 'elbow', 'tee', 'cross', 'dead' (one open)
+const PIPE_TYPES = {
+  straight: { base: [false, true, false, true] },   // ─ horizontal
+  elbow:    { base: [false, true, true, false] },    // ╔ top-right→bottom-right
+  tee:      { base: [false, true, true, true] },     // ╠ right+bottom+left
+  cross:    { base: [true,  true, true, true] },     // + all four
+};
+
+// Rotate openings array [top,right,bottom,left] 90° CW
+function rotateOpenings(arr, times=1) {
+  let r = [...arr];
+  for (let i = 0; i < times % 4; i++) {
+    r = [r[3], r[0], r[1], r[2]]; // left→top, top→right, right→bottom, bottom→left
+  }
+  return r;
+}
+
+// ── Game State ───────────────────────────────────────────────────────────────
+let gameState = 'start'; // 'start','playing','flowing','levelcomplete','gameover'
+let level = 1;
+let score = 0;
+let lives = 3;
+let timer = 60;
+let timerInterval = null;
+let gridSize = 7;
+let grid = [];       // grid[row][col] = { type, rot, openings }
+let flowPath = [];   // ordered list of {row,col} from source→drain
+let flowAnim = 0;    // how many tiles lit so far
+let flowTimer = 0;   // ms since last flow tick
+let hoverCell = { row:-1, col:-1 };
+let cursorCell = { row:0, col:0 };
+let connected = false;
+let lastTime = 0;
+let tileSize = 64;
+let gridOffX = 0, gridOffY = 0;
+let prevTimerSecond = 60;
+let shakeTimer = 0;
+
+// ── Grid Helpers ─────────────────────────────────────────────────────────────
+function computeTileSize() {
+  const hudH = 56;
+  const pad = 32;
+  const maxW = W - pad * 2;
+  const maxH = H - hudH - pad * 2;
+  tileSize = Math.floor(Math.min(maxW / gridSize, maxH / gridSize));
+  tileSize = Math.max(40, Math.min(tileSize, 90));
+  gridOffX = Math.floor((W - tileSize * gridSize) / 2);
+  gridOffY = Math.floor(hudH + (H - hudH - tileSize * gridSize) / 2);
+}
+
+function makeCell(type, rot) {
+  const base = PIPE_TYPES[type].base;
+  const openings = rotateOpenings(base, rot);
+  return { type, rot, openings };
+}
+
+// Check if cell at (r,c) opens toward direction d: 0=top,1=right,2=bottom,3=left
+function opens(r, c, d) {
+  if (r < 0 || r >= gridSize || c < 0 || c >= gridSize) return false;
+  return grid[r][c].openings[d];
+}
+
+// Neighbor in direction d from (r,c)
+const DR = [-1, 0, 1, 0];
+const DC = [0, 1, 0, -1];
+function neighbor(r, c, d) {
+  return { row: r + DR[d], col: c + DC[d] };
+}
+
+// Flood-fill from source (0,0) following pipe connections
+// Returns path array if drain (gs-1, gs-1) is reached, else null
+function findPath() {
+  const gs = gridSize;
+  const visited = Array.from({length:gs}, () => new Array(gs).fill(false));
+  const parent = Array.from({length:gs}, () => new Array(gs).fill(null));
+  const queue = [{row:0, col:0}];
+  visited[0][0] = true;
+
+  while (queue.length) {
+    const {row, col} = queue.shift();
+    if (row === gs-1 && col === gs-1) {
+      // reconstruct path
+      const path = [];
+      let cur = {row, col};
+      while (cur) {
+        path.unshift(cur);
+        cur = parent[cur.row][cur.col];
+      }
+      return path;
+    }
+    for (let d = 0; d < 4; d++) {
+      if (!opens(row, col, d)) continue;
+      const nb = neighbor(row, col, d);
+      if (nb.row < 0 || nb.row >= gs || nb.col < 0 || nb.col >= gs) continue;
+      const opp = (d + 2) % 4; // opposite direction
+      if (!opens(nb.row, nb.col, opp)) continue;
+      if (visited[nb.row][nb.col]) continue;
+      visited[nb.row][nb.col] = true;
+      parent[nb.row][nb.col] = {row, col};
+      queue.push(nb);
+    }
+  }
+  return null;
+}
+
+// ── Level Generation ─────────────────────────────────────────────────────────
+function initGame() {
+  computeTileSize();
+  gridSize = 6 + level; // level 1=7, level 2=8, level 3=9, etc.
+  gridSize = Math.min(gridSize, 10);
+  timer = 60 + level * 5;
+  prevTimerSecond = timer;
+  flowPath = [];
+  flowAnim = 0;
+  flowTimer = 0;
+  connected = false;
+  gameState = 'playing';
+  cursorCell = {row:0, col:0};
+  hoverCell = {row:-1, col:-1};
+
+  generateGrid();
+  clearInterval(timerInterval);
+  timerInterval = setInterval(tickTimer, 1000);
+}
+
+function generateGrid() {
+  computeTileSize();
+  const gs = gridSize;
+  grid = Array.from({length:gs}, () => new Array(gs).fill(null));
+
+  // First, carve a guaranteed solution path using random walk
+  const solutionPath = carvePath(0, 0, gs-1, gs-1);
+
+  // Assign pipe types based on path turns
+  assignSolutionPipes(solutionPath);
+
+  // Fill remaining cells with random pipes
+  for (let r = 0; r < gs; r++) {
+    for (let c = 0; c < gs; c++) {
+      if (!grid[r][c]) {
+        const types = ['straight','straight','elbow','elbow','tee','cross'];
+        const type = types[Math.floor(Math.random() * types.length)];
+        const rot = Math.floor(Math.random() * 4);
+        grid[r][c] = makeCell(type, rot);
+      }
+    }
+  }
+
+  // Randomize rotations of non-solution tiles to scramble
+  for (let r = 0; r < gs; r++) {
+    for (let c = 0; c < gs; c++) {
+      const isOnPath = solutionPath.some(p => p.row===r && p.col===c);
+      if (!isOnPath) {
+        const rot = Math.floor(Math.random() * 4);
+        const base = PIPE_TYPES[grid[r][c].type].base;
+        grid[r][c].rot = rot;
+        grid[r][c].openings = rotateOpenings(base, rot);
+      }
+    }
+  }
+
+  // Force source cell (0,0): opens right and down → elbow with rot=1
+  grid[0][0] = makeCell('elbow', 1); // base [false,true,true,false] rot1 → [false,false,true,true]...
+  // Let me compute: base elbow = [false,true,true,false]
+  // rot0: [F,T,T,F] opens right+bottom ✓ perfect for source
+  grid[0][0] = makeCell('elbow', 0);
+
+  // Force drain cell (gs-1,gs-1): needs to open left and top → elbow
+  // base elbow [F,T,T,F] rot2 = [T,F,F,T] opens top+left ✓
+  grid[gs-1][gs-1] = makeCell('elbow', 2);
+
+  // Now re-scramble the solution path cells (except source/drain) with a random but valid rotation
+  // to make puzzle non-trivially solved — randomize orientation
+  for (let i = 1; i < solutionPath.length - 1; i++) {
+    const {row, col} = solutionPath[i];
+    // pick a random rotation different from solved one to start scrambled
+    const cell = grid[row][col];
+    const scrambleRot = Math.floor(Math.random() * 4);
+    cell.rot = scrambleRot;
+    cell.openings = rotateOpenings(PIPE_TYPES[cell.type].base, scrambleRot);
+  }
+}
+
+function carvePath(sr, sc, er, ec) {
+  // Random walk from (sr,sc) to (er,ec) using constrained random walk
+  const gs = gridSize;
+  const path = [{row:sr, col:sc}];
+  const visited = Array.from({length:gs}, () => new Array(gs).fill(false));
+  visited[sr][sc] = true;
+
+  let r = sr, c = sc;
+  let attempts = 0;
+  while ((r !== er || c !== ec) && attempts < gs*gs*4) {
+    attempts++;
+    // bias toward destination
+    const dirs = [];
+    for (let d = 0; d < 4; d++) {
+      const nr = r + DR[d], nc = c + DC[d];
+      if (nr < 0 || nr >= gs || nc < 0 || nc >= gs) continue;
+      if (visited[nr][nc]) continue;
+      const distNow = Math.abs(r-er)+Math.abs(c-ec);
+      const distNew = Math.abs(nr-er)+Math.abs(nc-ec);
+      // Weight toward destination
+      const w = distNew < distNow ? 3 : 1;
+      for (let i=0; i<w; i++) dirs.push(d);
+    }
+    if (!dirs.length) {
+      // backtrack
+      if (path.length > 1) {
+        path.pop();
+        const prev = path[path.length-1];
+        r = prev.row; c = prev.col;
+      } else break;
+      continue;
+    }
+    const d = dirs[Math.floor(Math.random()*dirs.length)];
+    r += DR[d]; c += DC[d];
+    visited[r][c] = true;
+    path.push({row:r, col:c});
+  }
+
+  // If we didn't reach destination, use direct path
+  if (r !== er || c !== ec) {
+    const fallback = [];
+    let cr = sr, cc = sc;
+    while (cr !== er) { fallback.push({row:cr,col:cc}); cr += (er>sr?1:-1); }
+    while (cc !== ec) { fallback.push({row:cr,col:cc}); cc += (ec>sc?1:-1); }
+    fallback.push({row:er,col:ec});
+    return fallback;
+  }
+  return path;
+}
+
+function assignSolutionPipes(path) {
+  const gs = gridSize;
+  for (let i = 0; i < path.length; i++) {
+    const {row, col} = path[i];
+    const prev = i > 0 ? path[i-1] : null;
+    const next = i < path.length-1 ? path[i+1] : null;
+
+    const openings = [false, false, false, false]; // top,right,bottom,left
+
+    if (prev) {
+      // direction from prev to current
+      const dr = row - prev.row, dc = col - prev.col;
+      if (dr === -1) openings[2] = true; // came from bottom, open bottom
+      if (dr === 1)  openings[0] = true; // came from top, open top
+      if (dc === -1) openings[1] = true; // came from right, open right
+      if (dc === 1)  openings[3] = true; // came from left, open left
+    }
+    if (next) {
+      const dr = next.row - row, dc = next.col - col;
+      if (dr === -1) openings[0] = true; // going up
+      if (dr === 1)  openings[2] = true; // going down
+      if (dc === -1) openings[3] = true; // going left
+      if (dc === 1)  openings[1] = true; // going right
+    }
+
+    // Determine pipe type and correct rotation
+    const openCount = openings.filter(Boolean).length;
+    let type, rot;
+
+    if (openCount === 4) {
+      type = 'cross'; rot = 0;
+    } else if (openCount === 3) {
+      type = 'tee';
+      // Find the closed direction and compute rotation
+      const closed = openings.indexOf(false);
+      // tee base [F,T,T,T] has top closed (rot0)
+      // rot0=top closed, rot1=right closed, rot2=bottom closed, rot3=left closed
+      rot = closed;
+    } else if (openCount === 2) {
+      if ((openings[0] && openings[2]) || (openings[1] && openings[3])) {
+        // straight
+        type = 'straight';
+        // straight base [F,T,F,T] = horizontal, rot1 = vertical
+        rot = (openings[0] && openings[2]) ? 1 : 0;
+      } else {
+        // elbow
+        type = 'elbow';
+        // elbow base [F,T,T,F] rot0 = right+bottom
+        // Find which two are open
+        const opens2 = openings.map((v,i)=>[v,i]).filter(([v])=>v).map(([,i])=>i);
+        // Pairs: [1,2]=rot0(right+bottom), [0,1]=rot3(top+right)? let me recheck
+        // rotateOpenings([F,T,T,F], k):
+        // rot0: [F,T,T,F] → right,bottom
+        // rot1: [F,F,T,T] → bottom,left (wait: left→top,top→right,right→bottom,bottom→left)
+        // Actually: r=[r[3],r[0],r[1],r[2]]
+        // rot0: [F,T,T,F]
+        // rot1: [F,F,T,T] = bottom+left... hmm
+        // Wait rot1: prev[3]=F→top, prev[0]=F→right, prev[1]=T→bottom, prev[2]=T→left → [F,F,T,T] bottom+left
+        // rot2: prev[3]=T→top, prev[0]=F→right... → [T,F,F,T] top+left
+        // rot3: [T,T,F,F] top+right
+        const pairToRot = {
+          '1,2': 0, // right+bottom
+          '2,3': 1, // bottom+left
+          '0,3': 2, // top+left
+          '0,1': 3, // top+right
+        };
+        const key = opens2.join(',');
+        rot = pairToRot[key] !== undefined ? pairToRot[key] : 0;
+      }
+    } else {
+      // fallback
+      type = 'straight'; rot = 0;
+    }
+
+    grid[row][col] = makeCell(type, rot);
+  }
+}
+
+// ── Timer ─────────────────────────────────────────────────────────────────────
+function tickTimer() {
+  if (gameState !== 'playing') return;
+  timer--;
+  if (timer <= 10 && timer > 0) sfx('tick');
+  if (timer <= 0) {
+    timer = 0;
+    clearInterval(timerInterval);
+    lives--;
+    shakeTimer = 0.5;
+    if (lives <= 0) {
+      gameState = 'gameover';
+      sfx('gameover');
+    } else {
+      sfx('gameover');
+      setTimeout(() => initGame(), 1500);
+    }
+  }
+}
+
+// ── Rotation ─────────────────────────────────────────────────────────────────
+function rotateCell(row, col) {
+  if (gameState !== 'playing') return;
+  if (row === 0 && col === 0) return; // source locked
+  if (row === gridSize-1 && col === gridSize-1) return; // drain locked
+  const cell = grid[row][col];
+  cell.rot = (cell.rot + 1) % 4;
+  cell.openings = rotateOpenings(PIPE_TYPES[cell.type].base, cell.rot);
+  sfx('rotate');
+}
+
+// ── Input ─────────────────────────────────────────────────────────────────────
+function cellFromXY(x, y) {
+  const col = Math.floor((x - gridOffX) / tileSize);
+  const row = Math.floor((y - gridOffY) / tileSize);
+  if (row >= 0 && row < gridSize && col >= 0 && col < gridSize) return {row, col};
+  return null;
+}
+
+cv.addEventListener('click', e => {
+  if (AC.state === 'suspended') AC.resume();
+  if (gameState === 'start' || gameState === 'gameover' || gameState === 'levelcomplete') {
+    if (gameState === 'gameover') { score = 0; lives = 3; level = 1; }
+    if (gameState === 'levelcomplete') { level++; }
+    if (gameState === 'start') { level = 1; score = 0; lives = 3; }
+    initGame();
+    return;
+  }
+  const cell = cellFromXY(e.clientX, e.clientY);
+  if (cell) rotateCell(cell.row, cell.col);
+});
+
+cv.addEventListener('mousemove', e => {
+  const cell = cellFromXY(e.clientX, e.clientY);
+  hoverCell = cell || {row:-1, col:-1};
+});
+
+cv.addEventListener('mouseleave', () => { hoverCell = {row:-1, col:-1}; });
+
+cv.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (AC.state === 'suspended') AC.resume();
+  if (gameState === 'start' || gameState === 'gameover' || gameState === 'levelcomplete') {
+    if (gameState === 'gameover') { score = 0; lives = 3; level = 1; }
+    if (gameState === 'levelcomplete') { level++; }
+    if (gameState === 'start') { level = 1; score = 0; lives = 3; }
+    initGame();
+    return;
+  }
+  const t = e.touches[0];
+  const cell = cellFromXY(t.clientX, t.clientY);
+  if (cell) rotateCell(cell.row, cell.col);
+}, {passive:false});
+
+window.addEventListener('keydown', e => {
+  if (AC.state === 'suspended') AC.resume();
+  if (gameState === 'start' || gameState === 'gameover' || gameState === 'levelcomplete') {
+    if (e.key === 'Enter' || e.key === ' ') {
+      if (gameState === 'gameover') { score = 0; lives = 3; level = 1; }
+      if (gameState === 'levelcomplete') { level++; }
+      if (gameState === 'start') { level = 1; score = 0; lives = 3; }
+      initGame();
+    }
+    return;
+  }
+  if (gameState !== 'playing') return;
+  if (e.key === 'ArrowUp')    { cursorCell.row = Math.max(0, cursorCell.row-1); e.preventDefault(); }
+  if (e.key === 'ArrowDown')  { cursorCell.row = Math.min(gridSize-1, cursorCell.row+1); e.preventDefault(); }
+  if (e.key === 'ArrowLeft')  { cursorCell.col = Math.max(0, cursorCell.col-1); e.preventDefault(); }
+  if (e.key === 'ArrowRight') { cursorCell.col = Math.min(gridSize-1, cursorCell.col+1); e.preventDefault(); }
+  if (e.key === ' ' || e.key === 'Enter') {
+    rotateCell(cursorCell.row, cursorCell.col);
+    e.preventDefault();
+  }
+});
+
+// ── Drawing Helpers ───────────────────────────────────────────────────────────
+function drawRoundedRect(x, y, w, h, r, fill, stroke, sw=0) {
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, r);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = sw; ctx.stroke(); }
+}
+
+function glowSet(color, blur) {
+  ctx.shadowColor = color;
+  ctx.shadowBlur = blur;
+}
+function glowClear() {
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+}
+
+// Draw pipe segment from center toward direction d
+function drawPipeSegment(cx, cy, d, ts, color, lit, alpha=1) {
+  const hw = ts * 0.13; // half pipe width
+  const len = ts * 0.5 + 1;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.lineCap = 'round';
+  ctx.lineWidth = hw * 2;
+
+  if (lit) {
+    glowSet(color, 12);
+  }
+
+  ctx.strokeStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  if (d === 0) ctx.lineTo(cx, cy - len); // top
+  if (d === 1) ctx.lineTo(cx + len, cy); // right
+  if (d === 2) ctx.lineTo(cx, cy + len); // bottom
+  if (d === 3) ctx.lineTo(cx - len, cy); // left
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawPipeCenter(cx, cy, ts, color, lit, alpha=1) {
+  const r = ts * 0.13;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  if (lit) glowSet(color, 14);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+  glowClear();
+}
+
+// Flowing water animation — animated dashes traveling along segment
+function drawFlowingWater(cx, cy, d, ts, progress) {
+  const len = ts * 0.5;
+  const hw = ts * 0.09;
+
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineWidth = hw * 2;
+
+  const waterColor = '#00eeff';
+  glowSet('#00ffff', 18);
+  ctx.strokeStyle = waterColor;
+
+  // Animate a dot traveling from center outward
+  const p = (progress % 1);
+  ctx.globalAlpha = 0.9;
+
+  ctx.beginPath();
+  let sx = cx, sy = cy;
+  let ex = cx, ey = cy;
+  if (d === 0) { ey = cy - len * p; sy = cy - len * Math.max(0, p-0.25); }
+  if (d === 1) { ex = cx + len * p; sx = cx + len * Math.max(0, p-0.25); }
+  if (d === 2) { ey = cy + len * p; sy = cy + len * Math.max(0, p-0.25); }
+  if (d === 3) { ex = cx - len * p; sx = cx - len * Math.max(0, p-0.25); }
+  ctx.moveTo(sx, sy);
+  ctx.lineTo(ex, ey);
+  ctx.stroke();
+
+  ctx.restore();
+  glowClear();
+}
+
+// ── Tile Drawing ──────────────────────────────────────────────────────────────
+function drawTile(row, col, lit, flowProgress) {
+  const x = gridOffX + col * tileSize;
+  const y = gridOffY + row * tileSize;
+  const ts = tileSize;
+  const pad = 3;
+  const cx = x + ts/2, cy = y + ts/2;
+  const cell = grid[row][col];
+  const isSource = row===0 && col===0;
+  const isDrain = row===gridSize-1 && col===gridSize-1;
+  const isHover = hoverCell.row===row && hoverCell.col===col;
+  const isCursor = cursorCell.row===row && cursorCell.col===col;
+  const isLocked = isSource || isDrain;
+
+  // Tile background
+  let bgColor = '#1a2a1a';
+  if (lit) bgColor = '#0a1e2e';
+  if (isHover && !isLocked && gameState==='playing') bgColor = '#1e2e1e';
+  if (isCursor && gameState==='playing') bgColor = '#1e302e';
+
+  ctx.save();
+  drawRoundedRect(x+pad, y+pad, ts-pad*2, ts-pad*2, 6, bgColor, null);
+
+  // Border
+  let borderColor = '#2a3a2a';
+  if (lit) borderColor = '#0a4060';
+  if (isCursor && gameState==='playing') borderColor = '#40aa80';
+  drawRoundedRect(x+pad, y+pad, ts-pad*2, ts-pad*2, 6, null, borderColor, 1.5);
+
+  // Draw pipes
+  const pipeColor = lit ? '#00aacc' : '#445544';
+  const openings = cell.openings;
+
+  let openCount = 0;
+  for (let d = 0; d < 4; d++) {
+    if (openings[d]) {
+      openCount++;
+      drawPipeSegment(cx, cy, d, ts, pipeColor, lit);
+      // Flowing water
+      if (flowProgress > 0) {
+        drawFlowingWater(cx, cy, d, ts, flowProgress);
+      }
+    }
+  }
+  if (openCount > 0) {
+    drawPipeCenter(cx, cy, ts, pipeColor, lit);
+  }
+
+  // Source glow
+  if (isSource) {
+    ctx.save();
+    glowSet('#ffcc00', 24);
+    ctx.strokeStyle = '#ffcc00';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(cx, cy, ts*0.2, 0, Math.PI*2);
+    ctx.stroke();
+    glowSet('#ffdd44', 8);
+    ctx.fillStyle = '#ffcc00';
+    ctx.beginPath();
+    ctx.arc(cx, cy, ts*0.1, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Drain glow
+  if (isDrain) {
+    const dcolor = lit ? '#cc44ff' : '#662288';
+    ctx.save();
+    glowSet(dcolor, 20);
+    ctx.strokeStyle = dcolor;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(cx, cy, ts*0.2, 0, Math.PI*2);
+    ctx.stroke();
+    glowSet(dcolor, 8);
+    ctx.fillStyle = dcolor;
+    ctx.beginPath();
+    ctx.arc(cx, cy, ts*0.1, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Hover highlight
+  if (isHover && !isLocked && gameState==='playing') {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(100,255,150,0.4)';
+    ctx.lineWidth = 2;
+    drawRoundedRect(x+pad, y+pad, ts-pad*2, ts-pad*2, 6, null, 'rgba(100,255,150,0.4)', 2);
+    ctx.restore();
+  }
+
+  // Keyboard cursor
+  if (isCursor && gameState==='playing') {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(100,255,200,0.8)';
+    ctx.lineWidth = 2.5;
+    drawRoundedRect(x+pad, y+pad, ts-pad*2, ts-pad*2, 6, null, 'rgba(100,255,200,0.8)', 2.5);
+    ctx.restore();
+  }
+
+  glowClear();
+  ctx.restore();
+}
+
+// ── HUD ───────────────────────────────────────────────────────────────────────
+function drawHUD() {
+  const hudH = 52;
+  // Background bar
+  ctx.fillStyle = '#001208';
+  ctx.fillRect(0, 0, W, hudH);
+  ctx.strokeStyle = '#1a3a1a';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, hudH); ctx.lineTo(W, hudH);
+  ctx.stroke();
+
+  ctx.font = 'bold 14px monospace';
+  ctx.textBaseline = 'middle';
+
+  const cy = hudH/2;
+  const pad = 16;
+  const spacing = Math.min(130, (W - pad*2) / 4);
+
+  // Level
+  ctx.fillStyle = '#44aa66';
+  ctx.textAlign = 'left';
+  ctx.fillText('LVL', pad, cy - 8);
+  ctx.font = 'bold 22px monospace';
+  ctx.fillStyle = '#88ffaa';
+  glowSet('#44ff88', 8);
+  ctx.fillText(level, pad, cy + 8);
+  glowClear();
+
+  // Score
+  ctx.font = 'bold 14px monospace';
+  ctx.fillStyle = '#44aa66';
+  ctx.textAlign = 'center';
+  ctx.fillText('SCORE', W/2 - spacing*0.5, cy - 8);
+  ctx.font = 'bold 22px monospace';
+  ctx.fillStyle = '#88ffaa';
+  glowSet('#44ff88', 8);
+  ctx.fillText(score, W/2 - spacing*0.5, cy + 8);
+  glowClear();
+
+  // Timer
+  const timerColor = timer <= 10 ? '#ff4444' : (timer <= 20 ? '#ffaa22' : '#44aa66');
+  const timerGlow = timer <= 10 ? '#ff0000' : (timer <= 20 ? '#ff8800' : '#44ff88');
+  ctx.font = 'bold 14px monospace';
+  ctx.fillStyle = timerColor;
+  ctx.textAlign = 'center';
+  ctx.fillText('TIME', W/2 + spacing*0.5, cy - 8);
+  ctx.font = 'bold 22px monospace';
+  ctx.fillStyle = timerColor;
+  if (timer <= 10) glowSet(timerGlow, 12);
+  ctx.fillText(timer, W/2 + spacing*0.5, cy + 8);
+  glowClear();
+
+  // Lives
+  ctx.font = 'bold 14px monospace';
+  ctx.fillStyle = '#aa4466';
+  ctx.textAlign = 'right';
+  ctx.fillText('LIVES', W - pad, cy - 8);
+  ctx.font = 'bold 18px monospace';
+  let heartsStr = '';
+  for (let i = 0; i < 3; i++) heartsStr += (i < lives ? '♥' : '♡');
+  ctx.fillStyle = '#ff6688';
+  glowSet('#ff2255', 8);
+  ctx.fillText(heartsStr, W - pad, cy + 8);
+  glowClear();
+}
+
+// ── Overlay Screens ───────────────────────────────────────────────────────────
+function drawOverlay(lines, subLines, btnText) {
+  ctx.fillStyle = 'rgba(0,10,4,0.85)';
+  ctx.fillRect(0, 0, W, H);
+
+  const cx = W/2, cy = H/2;
+  const bw = Math.min(400, W*0.8), bh = 260;
+  const bx = cx - bw/2, by = cy - bh/2;
+
+  // Box
+  drawRoundedRect(bx, by, bw, bh, 16, '#051a0a', '#1a4a2a', 2);
+  glowSet('#22aa44', 30);
+  drawRoundedRect(bx, by, bw, bh, 16, null, '#22aa44', 2);
+  glowClear();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  let oy = by + 50;
+  lines.forEach((line, i) => {
+    ctx.font = `bold ${i===0?32:22}px monospace`;
+    ctx.fillStyle = i===0 ? '#88ffcc' : '#55cc88';
+    if (i===0) glowSet('#44ffaa', 15);
+    ctx.fillText(line, cx, oy);
+    glowClear();
+    oy += i===0 ? 44 : 32;
+  });
+
+  oy += 8;
+  subLines.forEach(line => {
+    ctx.font = '14px monospace';
+    ctx.fillStyle = '#336633';
+    ctx.fillText(line, cx, oy);
+    oy += 22;
+  });
+
+  // Button
+  const btnW = 180, btnH = 44;
+  const bx2 = cx - btnW/2, by2 = by + bh - 64;
+  drawRoundedRect(bx2, by2, btnW, btnH, 10, '#1a4a2a', '#44aa66', 2);
+  glowSet('#44ff88', 12);
+  ctx.font = 'bold 16px monospace';
+  ctx.fillStyle = '#88ffcc';
+  ctx.fillText(btnText, cx, by2 + btnH/2);
+  glowClear();
+}
+
+function drawStartScreen() {
+  // Background with subtle pipe art
+  ctx.fillStyle = '#001208';
+  ctx.fillRect(0, 0, W, H);
+
+  // Title
+  const cx = W/2, cy = H/2;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.font = `bold ${Math.min(72, W*0.15)}px monospace`;
+  glowSet('#00ff88', 40);
+  ctx.fillStyle = '#22ffaa';
+  ctx.fillText('PIPES', cx, cy - 100);
+  glowClear();
+
+  ctx.font = '18px monospace';
+  ctx.fillStyle = '#44aa66';
+  const instructions = [
+    'Rotate tiles to connect SOURCE → DRAIN',
+    'Click/Tap tile to rotate 90°',
+    'Arrow keys + Space to navigate',
+    'Beat the clock before water runs dry!'
+  ];
+  instructions.forEach((line, i) => {
+    ctx.fillText(line, cx, cy - 30 + i*28);
+  });
+
+  // Button
+  const bw = 200, bh = 50;
+  drawRoundedRect(cx-bw/2, cy+90, bw, bh, 12, '#1a4a2a', '#44aa66', 2);
+  glowSet('#44ff88', 15);
+  ctx.font = 'bold 20px monospace';
+  ctx.fillStyle = '#88ffcc';
+  ctx.fillText('▶  PLAY', cx, cy + 115);
+  glowClear();
+}
+
+// ── Game Loop ─────────────────────────────────────────────────────────────────
+let flowPathIndices = new Set();
+
+function update(dt) {
+  if (gameState === 'playing') {
+    // Check connection every frame
+    const path = findPath();
+    if (path) {
+      if (!connected) {
+        connected = true;
+        sfx('connect');
+        flowPath = path;
+        flowAnim = 0;
+        flowTimer = 0;
+        gameState = 'flowing';
+        clearInterval(timerInterval);
+      }
+    } else {
+      connected = false;
+    }
+  }
+
+  if (gameState === 'flowing') {
+    flowTimer += dt;
+    const flowSpeed = 120; // ms per tile
+    const newFlowAnim = Math.floor(flowTimer / flowSpeed);
+    if (newFlowAnim > flowAnim) {
+      sfx('flow');
+      flowAnim = newFlowAnim;
+    }
+    if (flowAnim >= flowPath.length) {
+      // Level complete!
+      const timeBonus = Math.max(0, timer) * 10;
+      score += 100 + timeBonus;
+      gameState = 'levelcomplete';
+      sfx('levelup');
+    }
+  }
+
+  if (shakeTimer > 0) shakeTimer -= dt / 1000;
+}
+
+function render(ts) {
+  ctx.clearRect(0, 0, W, H);
+
+  if (gameState === 'start') {
+    drawStartScreen();
+    return;
+  }
+
+  if (gameState === 'gameover') {
+    drawHUD();
+    drawOverlay(
+      ['GAME OVER', `Final Score: ${score}`],
+      ['Lives exhausted!', 'Better luck next time'],
+      'PLAY AGAIN'
+    );
+    return;
+  }
+
+  // Screen shake on timeout
+  let shakeX = 0, shakeY = 0;
+  if (shakeTimer > 0) {
+    shakeX = (Math.random()-0.5)*8*shakeTimer;
+    shakeY = (Math.random()-0.5)*8*shakeTimer;
+    ctx.save();
+    ctx.translate(shakeX, shakeY);
+  }
+
+  // Background
+  ctx.fillStyle = '#001208';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid background
+  const gw = tileSize * gridSize;
+  const gh = tileSize * gridSize;
+  drawRoundedRect(gridOffX-4, gridOffY-4, gw+8, gh+8, 8, '#030d05', '#0a2a0a', 1.5);
+
+  // Build set of lit tiles
+  const litSet = new Set();
+  const flowProgressMap = new Map();
+
+  if (gameState === 'flowing' || gameState === 'levelcomplete') {
+    for (let i = 0; i < Math.min(flowAnim+1, flowPath.length); i++) {
+      const {row, col} = flowPath[i];
+      litSet.add(`${row},${col}`);
+      if (i === flowAnim) {
+        const p = (flowTimer % 120) / 120;
+        flowProgressMap.set(`${row},${col}`, p);
+      } else {
+        flowProgressMap.set(`${row},${col}`, 1);
+      }
+    }
+  }
+
+  // Draw all tiles
+  for (let r = 0; r < gridSize; r++) {
+    for (let c = 0; c < gridSize; c++) {
+      const key = `${r},${c}`;
+      const lit = litSet.has(key);
+      const fp = flowProgressMap.get(key) || 0;
+      drawTile(r, c, lit, fp);
+    }
+  }
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(20,60,20,0.5)';
+  ctx.lineWidth = 0.5;
+  for (let r = 0; r <= gridSize; r++) {
+    ctx.beginPath();
+    ctx.moveTo(gridOffX, gridOffY + r*tileSize);
+    ctx.lineTo(gridOffX + gw, gridOffY + r*tileSize);
+    ctx.stroke();
+  }
+  for (let c = 0; c <= gridSize; c++) {
+    ctx.beginPath();
+    ctx.moveTo(gridOffX + c*tileSize, gridOffY);
+    ctx.lineTo(gridOffX + c*tileSize, gridOffY + gh);
+    ctx.stroke();
+  }
+
+  if (shakeTimer > 0) ctx.restore();
+
+  drawHUD();
+
+  if (gameState === 'levelcomplete') {
+    drawOverlay(
+      ['CONNECTED!', `Level ${level} Complete`],
+      [`Score: ${score}`, `Time Bonus: +${Math.max(0,timer)*10}`],
+      'NEXT LEVEL'
+    );
+  }
+}
+
+let rafId;
+function loop(ts) {
+  const dt = Math.min(ts - lastTime, 50);
+  lastTime = ts;
+  update(dt);
+  render(ts);
+  rafId = requestAnimationFrame(loop);
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+gameState = 'start';
+lastTime = performance.now();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

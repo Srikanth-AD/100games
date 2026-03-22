@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>FUSE</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+let W,H,scl;
+function resize(){
+  const vw=window.innerWidth,vh=window.innerHeight;
+  scl=Math.min(vw/375,vh/600);
+  W=Math.round(375*scl);H=Math.round(600*scl);
+  cv.width=W;cv.height=H;
+}
+resize();
+window.addEventListener('resize',resize);
+if(!CanvasRenderingContext2D.prototype.roundRect){
+  CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h,r){
+    r=Math.min(typeof r==='number'?r:r[0],Math.abs(w)/2,Math.abs(h)/2);
+    this.moveTo(x+r,y);this.lineTo(x+w-r,y);this.arcTo(x+w,y,x+w,y+r,r);
+    this.lineTo(x+w,y+h-r);this.arcTo(x+w,y+h,x+w-r,y+h,r);
+    this.lineTo(x+r,y+h);this.arcTo(x,y+h,x,y+h-r,r);
+    this.lineTo(x,y+r);this.arcTo(x,y,x+r,y,r);this.closePath();
+  };
+}
+
+// ── Audio ────────────────────────────────────────────────
+let ac;
+function initAC(){if(!ac)ac=new(window.AudioContext||window.webkitAudioContext)();}
+function snd(type){
+  if(!ac)return;
+  const t=ac.currentTime;
+  if(type==='spark'){
+    const o=ac.createOscillator(),g=ac.createGain();
+    o.type='triangle';o.connect(g);g.connect(ac.destination);
+    o.frequency.setValueAtTime(800+Math.random()*400,t);
+    o.frequency.exponentialRampToValueAtTime(200+Math.random()*200,t+0.06);
+    g.gain.setValueAtTime(0.06,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.06);
+    o.start(t);o.stop(t+0.06);
+  }else if(type==='snip'){
+    const o=ac.createOscillator(),g=ac.createGain();
+    o.type='sine';o.connect(g);g.connect(ac.destination);
+    o.frequency.setValueAtTime(1200,t);o.frequency.exponentialRampToValueAtTime(800,t+0.05);
+    g.gain.setValueAtTime(0.3,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.1);
+    o.start(t);o.stop(t+0.1);
+  }else if(type==='boom'){
+    const o=ac.createOscillator(),g=ac.createGain();
+    o.type='sawtooth';o.connect(g);g.connect(ac.destination);
+    o.frequency.setValueAtTime(180,t);o.frequency.exponentialRampToValueAtTime(20,t+0.9);
+    g.gain.setValueAtTime(0.5,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.9);
+    o.start(t);o.stop(t+0.9);
+    const o2=ac.createOscillator(),g2=ac.createGain();
+    o2.type='square';o2.connect(g2);g2.connect(ac.destination);
+    o2.frequency.setValueAtTime(60,t);o2.frequency.exponentialRampToValueAtTime(15,t+0.6);
+    g2.gain.setValueAtTime(0.3,t);g2.gain.exponentialRampToValueAtTime(0.001,t+0.6);
+    o2.start(t);o2.stop(t+0.6);
+  }else if(type==='defused'){
+    [0,4,7,12,16].forEach((n,i)=>{
+      const o=ac.createOscillator(),g=ac.createGain();
+      o.type='sine';o.connect(g);g.connect(ac.destination);
+      const f=330*Math.pow(2,n/12);
+      o.frequency.setValueAtTime(f,t+i*0.07);
+      g.gain.setValueAtTime(0.2,t+i*0.07);g.gain.exponentialRampToValueAtTime(0.001,t+i*0.07+0.4);
+      o.start(t+i*0.07);o.stop(t+i*0.07+0.4);
+    });
+  }
+}
+
+// ── Constants ────────────────────────────────────────────
+const WIRE_COLORS=[
+  {hex:'#e74c3c',name:'RED'},
+  {hex:'#3498db',name:'BLUE'},
+  {hex:'#2ecc71',name:'GREEN'},
+  {hex:'#f39c12',name:'YELLOW'},
+  {hex:'#9b59b6',name:'PURPLE'},
+  {hex:'#1abc9c',name:'TEAL'}
+];
+const FUSE_X1=40,FUSE_X2=335; // design coords
+const WIRE_Y_START=280,WIRE_Y_GAP=36; // design coords, top wire y
+
+// ── State ─────────────────────────────────────────────────
+let gs='start'; // start | play | over | boom
+let level=1,score=0,best=+localStorage.getItem('fuse_best')||0;
+let lives=3;
+let wires=[],correctIdx=0,clue='',clueColor='';
+let fuseTime=12,fuseElapsed=0;
+let cutWire=-1,cutCorrect=false;
+let boomAnim=0,boomCircles=[];
+let popups=[],sparks=[];
+let defusedAnim=0,defusedActive=false;
+let lastSparkSnd=0;
+let lastTs=0;
+
+// ── Wire data ─────────────────────────────────────────────
+function buildWires(){
+  const count=Math.min(6,Math.max(3,2+level));
+  // pick random distinct colors
+  const shuffled=[...WIRE_COLORS].sort(()=>Math.random()-0.5);
+  const chosen=shuffled.slice(0,count);
+  const startY=WIRE_Y_START-(count-1)*WIRE_Y_GAP/2;
+  return chosen.map((c,i)=>({
+    color:c.hex,
+    name:c.name,
+    y:startY+i*WIRE_Y_GAP,
+    phase:Math.random()*Math.PI*2,
+    cut:false,
+    idx:i
+  }));
+}
+
+function buildClue(wires){
+  const count=wires.length;
+  const clueType=level<=1?0:((level-1)%5);
+  // clueType: 0=direct color, 1=top, 2=bottom, 3=2nd from top, 4=not-color (3 wires only)
+  let idx=0;
+  let txt='',col='#fff';
+
+  if(clueType===0){
+    // direct color
+    idx=Math.floor(Math.random()*count);
+    txt=`CUT THE ${wires[idx].name} WIRE`;
+    col=wires[idx].color;
+  }else if(clueType===1){
+    // top
+    idx=0;
+    txt='CUT THE TOP WIRE';
+    col='#fff';
+  }else if(clueType===2){
+    // bottom
+    idx=count-1;
+    txt='CUT THE BOTTOM WIRE';
+    col='#fff';
+  }else if(clueType===3){
+    if(count>=3){
+      // 2nd from top or bottom alternating
+      if(Math.random()<0.5){
+        idx=1;txt='CUT THE 2ND FROM TOP';col='#fff';
+      }else{
+        idx=count-2;txt='CUT THE 2ND FROM BOTTOM';col='#fff';
+      }
+    }else{
+      idx=Math.floor(Math.random()*count);
+      txt=`CUT THE ${wires[idx].name} WIRE`;
+      col=wires[idx].color;
+    }
+  }else{
+    // not color (3-wire rounds: cut the one that's not the two named)
+    if(count===3){
+      const avoid1=Math.floor(Math.random()*count);
+      let avoid2=(avoid1+1+Math.floor(Math.random()*(count-1)))%count;
+      idx=3-avoid1-avoid2; if(idx<0||idx>=count)idx=0;
+      txt=`NOT ${wires[avoid1].name} OR ${wires[avoid2].name} — CUT THE OTHER`;
+      col='#fff';
+    }else{
+      idx=Math.floor(Math.random()*count);
+      txt=`CUT THE ${wires[idx].name} WIRE`;
+      col=wires[idx].color;
+    }
+  }
+  return{idx,txt,col};
+}
+
+function initRound(){
+  wires=buildWires();
+  const c=buildClue(wires);
+  correctIdx=c.idx;clue=c.txt;clueColor=c.col;
+  fuseTime=Math.max(4,12-level*0.5);
+  fuseElapsed=0;
+  cutWire=-1;cutCorrect=false;
+  popups=[];sparks=[];
+  defusedActive=false;defusedAnim=0;
+}
+
+function startGame(){
+  gs='play';level=1;score=0;lives=3;
+  boomCircles=[];popups=[];
+  initRound();
+}
+
+// ── Draw bomb ─────────────────────────────────────────────
+function drawBomb(x,y,w,h){
+  const r=12*scl;
+  ctx.fillStyle='#2c3e50';
+  ctx.beginPath();
+  ctx.roundRect(x*scl,y*scl,w*scl,h*scl,r);
+  ctx.fill();
+  // screws
+  const sw=5*scl;
+  [[x+6,y+6],[x+w-6,y+6],[x+6,y+h-6],[x+w-6,y+h-6]].forEach(([sx,sy])=>{
+    ctx.fillStyle='#1a252f';
+    ctx.beginPath();ctx.arc(sx*scl,sy*scl,sw,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='#34495e';ctx.lineWidth=0.8*scl;
+    ctx.beginPath();ctx.moveTo((sx-2)*scl,sy*scl);ctx.lineTo((sx+2)*scl,sy*scl);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(sx*scl,(sy-2)*scl);ctx.lineTo(sx*scl,(sy+2)*scl);ctx.stroke();
+  });
+  // skull face
+  const sx=x+w/2,sy=y+h/2-4;
+  ctx.fillStyle='#e74c3c';
+  ctx.beginPath();ctx.arc(sx*scl,sy*scl,11*scl,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#2c3e50';
+  ctx.beginPath();ctx.arc((sx-4)*scl,(sy-2)*scl,3.5*scl,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc((sx+4)*scl,(sy-2)*scl,3.5*scl,0,Math.PI*2);ctx.fill();
+  // cross-bones lines
+  ctx.strokeStyle='#2c3e50';ctx.lineWidth=2.5*scl;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo((sx-6)*scl,(sy+7)*scl);ctx.lineTo((sx+6)*scl,(sy+12)*scl);ctx.stroke();
+  ctx.beginPath();ctx.moveTo((sx+6)*scl,(sy+7)*scl);ctx.lineTo((sx-6)*scl,(sy+12)*scl);ctx.stroke();
+}
+
+// ── Draw wire ─────────────────────────────────────────────
+function drawWire(w,cut){
+  const x1=FUSE_X1,x2=FUSE_X2,y=w.y;
+  ctx.save();
+  ctx.lineWidth=4*scl;
+  if(cut){
+    // draw two segments with gap
+    const cutX=188; // cut in middle-ish
+    // left segment
+    ctx.strokeStyle=w.color;
+    ctx.beginPath();
+    for(let x=x1;x<=cutX-8;x+=2){
+      const yo=y+Math.sin(x/30+w.phase)*6;
+      if(x===x1)ctx.moveTo(x*scl,yo*scl);else ctx.lineTo(x*scl,yo*scl);
+    }
+    ctx.stroke();
+    // right segment
+    ctx.beginPath();
+    for(let x=cutX+8;x<=x2;x+=2){
+      const yo=y+Math.sin(x/30+w.phase)*6;
+      if(x===cutX+8)ctx.moveTo(x*scl,yo*scl);else ctx.lineTo(x*scl,yo*scl);
+    }
+    ctx.stroke();
+    // spark at cut point
+    const yo=(y+Math.sin(cutX/30+w.phase)*6)*scl;
+    ctx.shadowColor=w.color;ctx.shadowBlur=8*scl;
+    ctx.fillStyle=w.color;
+    ctx.beginPath();ctx.arc(cutX*scl,yo,3*scl,0,Math.PI*2);ctx.fill();
+    ctx.shadowBlur=0;
+  }else{
+    ctx.strokeStyle=w.color;
+    ctx.beginPath();
+    for(let x=x1;x<=x2;x+=2){
+      const yo=y+Math.sin(x/30+w.phase)*6;
+      if(x===x1)ctx.moveTo(x*scl,yo*scl);else ctx.lineTo(x*scl,yo*scl);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ── Draw fuse ─────────────────────────────────────────────
+let lastSparkT=0;
+function drawFuse(progress){
+  const y=240,x1=FUSE_X1,x2=FUSE_X2;
+  const burnX=x1+(x2-x1)*progress;
+
+  // unburned fuse track
+  ctx.save();
+  ctx.strokeStyle='rgba(255,255,255,0.15)';
+  ctx.lineWidth=3*scl;
+  ctx.setLineDash([6*scl,4*scl]);
+  ctx.beginPath();ctx.moveTo(x1*scl,y*scl);ctx.lineTo(x2*scl,y*scl);ctx.stroke();
+  ctx.setLineDash([]);
+
+  // burned portion
+  ctx.strokeStyle='#4a3020';
+  ctx.lineWidth=3*scl;
+  ctx.beginPath();ctx.moveTo(x1*scl,y*scl);ctx.lineTo(burnX*scl,y*scl);ctx.stroke();
+
+  // ember glow
+  if(progress<1){
+    ctx.shadowColor='#ff6600';ctx.shadowBlur=16*scl;
+    ctx.fillStyle='#ff8800';
+    ctx.beginPath();ctx.arc(burnX*scl,y*scl,5*scl,0,Math.PI*2);ctx.fill();
+    ctx.shadowColor='#ffcc00';ctx.shadowBlur=8*scl;
+    ctx.fillStyle='#ffee00';
+    ctx.beginPath();ctx.arc(burnX*scl,y*scl,2.5*scl,0,Math.PI*2);ctx.fill();
+    ctx.shadowBlur=0;
+  }
+  ctx.restore();
+
+  // spawn sparks periodically
+  const now=performance.now();
+  if(progress<1&&now-lastSparkT>80){
+    lastSparkT=now;
+    for(let i=0;i<3;i++){
+      const a=-Math.PI/2+(-0.5+Math.random())*1.2;
+      const sp=0.5+Math.random()*1.5;
+      sparks.push({x:burnX*scl,y:y*scl,vx:Math.cos(a)*sp*scl,vy:Math.sin(a)*sp*scl,life:1,col:Math.random()<0.5?'#ff8800':'#ffee00'});
+    }
+    const sndNow=Date.now();
+    if(sndNow-lastSparkSnd>150){lastSparkSnd=sndNow;snd('spark');}
+  }
+}
+
+// ── Draw HUD ─────────────────────────────────────────────
+function drawHUD(){
+  // top bar
+  ctx.fillStyle='rgba(0,0,0,0.6)';
+  ctx.fillRect(0,0,W,52*scl);
+
+  ctx.textAlign='left';ctx.font=`bold ${15*scl}px monospace`;
+  ctx.fillStyle='rgba(255,255,255,0.8)';
+  ctx.fillText(`LV ${level}`,10*scl,34*scl);
+
+  ctx.textAlign='center';ctx.font=`bold ${18*scl}px monospace`;
+  ctx.fillStyle='#fff';
+  ctx.fillText(score,W/2,34*scl);
+
+  ctx.textAlign='right';ctx.font=`${12*scl}px monospace`;
+  ctx.fillStyle='rgba(255,215,0,0.6)';
+  ctx.fillText(`BEST ${best}`,W-10*scl,34*scl);
+
+  // lives (heart shapes drawn simply as text)
+  ctx.textAlign='center';
+  for(let i=0;i<3;i++){
+    ctx.globalAlpha=i<lives?1:0.2;
+    ctx.font=`${18*scl}px sans-serif`;
+    ctx.fillText('♥',W/2+(i-1)*24*scl,H-18*scl);
+  }
+  ctx.globalAlpha=1;
+}
+
+// ── Draw clue ─────────────────────────────────────────────
+function drawClue(){
+  const lines=[];
+  if(clue.length>22){
+    // try to split
+    const words=clue.split(' ');
+    let l='';
+    for(const w of words){
+      if((l+' '+w).trim().length>22){lines.push(l.trim());l=w;}
+      else l=l?l+' '+w:w;
+    }
+    if(l)lines.push(l.trim());
+  }else lines.push(clue);
+
+  ctx.textAlign='center';
+  const fs=18*scl;
+  ctx.font=`bold ${fs}px monospace`;
+  ctx.fillStyle=clueColor;
+  ctx.shadowColor=clueColor;ctx.shadowBlur=8*scl;
+  lines.forEach((ln,i)=>ctx.fillText(ln,W/2,(140+i*24)*scl));
+  ctx.shadowBlur=0;
+}
+
+// ── Draw fuse time bar ────────────────────────────────────
+function drawTimeBar(progress){
+  const barW=295*scl,barH=8*scl;
+  const bx=(375-295)/2*scl,by=255*scl;
+  ctx.fillStyle='rgba(255,255,255,0.1)';
+  ctx.fillRect(bx,by,barW,barH);
+  const frac=1-progress;
+  ctx.fillStyle=frac>0.5?'#2ecc71':frac>0.25?'#f39c12':'#e74c3c';
+  ctx.fillRect(bx,by,barW*frac,barH);
+}
+
+// ── Draw start ───────────────────────────────────────────
+function drawStart(){
+  ctx.fillStyle='#0a0a14';ctx.fillRect(0,0,W,H);
+
+  // stars
+  for(let i=0;i<80;i++){
+    const x=((i*137.5)%375)*scl,y=((i*97.3)%600)*scl;
+    ctx.fillStyle=`rgba(255,255,255,${0.1+0.3*((i%3)/3)})`;
+    ctx.fillRect(x,y,1,1);
+  }
+
+  ctx.textAlign='center';
+  ctx.font=`bold ${64*scl}px monospace`;
+  ctx.fillStyle='#ff6600';
+  ctx.shadowColor='#ff4400';ctx.shadowBlur=24*scl;
+  ctx.fillText('FUSE',W/2,200*scl);
+  ctx.shadowBlur=0;
+
+  ctx.font=`${13*scl}px monospace`;
+  ctx.fillStyle='rgba(255,200,100,0.85)';
+  ctx.fillText('A BOMB. COLORED WIRES.',W/2,248*scl);
+  ctx.fillText('READ THE CLUE.',W/2,268*scl);
+  ctx.fillText('CUT THE RIGHT WIRE!',W/2,288*scl);
+  ctx.fillStyle='#e74c3c';
+  ctx.fillText('WRONG CUT = GAME OVER',W/2,316*scl);
+
+  const pulse=0.6+Math.sin(Date.now()/600)*0.4;
+  ctx.globalAlpha=pulse;
+  ctx.font=`bold ${18*scl}px monospace`;
+  ctx.fillStyle='#fff';
+  ctx.fillText('TAP TO START',W/2,385*scl);
+  ctx.globalAlpha=1;
+
+  if(best>0){
+    ctx.font=`${12*scl}px monospace`;
+    ctx.fillStyle='rgba(255,215,0,0.5)';
+    ctx.fillText(`BEST ${best}`,W/2,415*scl);
+  }
+}
+
+// ── Draw boom ────────────────────────────────────────────
+function drawBoom(){
+  ctx.fillStyle='rgba(0,0,0,0.8)';ctx.fillRect(0,0,W,H);
+  boomCircles.forEach(c=>{
+    ctx.save();
+    ctx.globalAlpha=Math.max(0,c.a);
+    ctx.fillStyle=c.col;
+    ctx.shadowColor=c.col;ctx.shadowBlur=20*scl;
+    ctx.beginPath();ctx.arc(W/2,H*0.45,c.r,0,Math.PI*2);ctx.fill();
+    ctx.shadowBlur=0;ctx.restore();
+  });
+  if(boomAnim>0.3){
+    ctx.textAlign='center';
+    ctx.font=`bold ${56*scl}px monospace`;
+    ctx.fillStyle='#ff4400';
+    ctx.shadowColor='#ff2200';ctx.shadowBlur=20*scl;
+    ctx.fillText('BOOM!',W/2,H*0.35);
+    ctx.shadowBlur=0;
+  }
+  if(boomAnim>0.6){
+    ctx.font=`${16*scl}px monospace`;
+    ctx.fillStyle='#fff';
+    ctx.fillText(`SCORE  ${score}`,W/2,H*0.56);
+    ctx.fillStyle='#ffd700';
+    ctx.fillText(`BEST   ${best}`,W/2,H*0.62);
+    const pulse=0.6+Math.sin(Date.now()/600)*0.4;
+    ctx.globalAlpha=pulse;
+    ctx.font=`bold ${16*scl}px monospace`;
+    ctx.fillStyle='#fff';
+    ctx.fillText('TAP TO RETRY',W/2,H*0.73);
+    ctx.globalAlpha=1;
+  }
+}
+
+// ── Wire hit-test ─────────────────────────────────────────
+function wireAtY(canvasY){
+  for(let i=0;i<wires.length;i++){
+    const wy=wires[i].y*scl;
+    if(Math.abs(canvasY-wy)<16*scl)return i;
+  }
+  return -1;
+}
+
+// ── Main loop ─────────────────────────────────────────────
+function loop(ts){
+  const dt=Math.min(ts-lastTs,50);lastTs=ts;
+  requestAnimationFrame(loop);
+
+  if(gs==='start'){drawStart();return;}
+
+  if(gs==='boom'){
+    boomAnim=Math.min(1,boomAnim+dt/800);
+    boomCircles.forEach(c=>{c.r+=c.vr*dt;c.a-=0.004*dt;});
+    drawBoom();
+    return;
+  }
+
+  // play or defused
+  if(gs==='play'||gs==='defused'){
+    if(gs==='play'&&cutWire<0&&fuseElapsed<fuseTime*1000){
+      fuseElapsed+=dt;
+    }
+    if(gs==='play'&&fuseElapsed>=fuseTime*1000){
+      // timeout — lose life
+      fuseElapsed=fuseTime*1000;
+      lives--;
+      if(lives<=0){
+        triggerBoom();
+      }else{
+        popups.push({x:W/2,y:200*scl,txt:'TIME OUT!',col:'#e74c3c',life:1.5});
+        setTimeout(()=>{initRound();gs='play';},1200);
+      }
+      gs='waiting';
+    }
+  }
+
+  const progress=Math.min(1,fuseElapsed/(fuseTime*1000));
+
+  // bg
+  ctx.fillStyle='#0a0a14';ctx.fillRect(0,0,W,H);
+
+  // play area
+  ctx.fillStyle='rgba(20,20,40,0.9)';
+  ctx.fillRect(20*scl,60*scl,335*scl,480*scl);
+  ctx.strokeStyle='rgba(255,255,255,0.08)';
+  ctx.lineWidth=1;
+  ctx.strokeRect(20*scl,60*scl,335*scl,480*scl);
+
+  // clue
+  if(gs!=='boom')drawClue();
+
+  // fuse
+  if(gs==='play'||gs==='waiting'||gs==='defused'){
+    drawFuse(progress);
+    drawTimeBar(progress);
+  }
+
+  // bomb body
+  drawBomb(300,210,55,70);
+
+  // wires
+  wires.forEach((w,i)=>drawWire(w,w.cut));
+
+  // sparks
+  sparks=sparks.filter(s=>s.life>0);
+  sparks.forEach(s=>{
+    ctx.save();ctx.globalAlpha=s.life;
+    ctx.fillStyle=s.col;ctx.beginPath();ctx.arc(s.x,s.y,2*scl,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+    s.x+=s.vx;s.y+=s.vy;s.vy+=0.05*scl;s.life-=dt/500;
+  });
+
+  // popups
+  popups=popups.filter(p=>p.life>0);
+  popups.forEach(p=>{
+    ctx.save();ctx.globalAlpha=Math.min(1,p.life);
+    ctx.textAlign='center';
+    ctx.font=`bold ${20*scl}px monospace`;
+    ctx.fillStyle=p.col;ctx.shadowColor=p.col;ctx.shadowBlur=8*scl;
+    ctx.fillText(p.txt,p.x,p.y);
+    ctx.shadowBlur=0;ctx.restore();
+    p.y-=0.4;p.life-=dt/1000;
+  });
+
+  // defused overlay
+  if(gs==='defused'||defusedActive){
+    defusedAnim=Math.min(1,defusedAnim+dt/300);
+    ctx.fillStyle=`rgba(46,204,113,${defusedAnim*0.2})`;
+    ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.font=`bold ${36*scl}px monospace`;
+    ctx.fillStyle='#2ecc71';
+    ctx.shadowColor='#2ecc71';ctx.shadowBlur=16*scl;
+    ctx.fillText('DEFUSED!',W/2,390*scl);
+    ctx.shadowBlur=0;
+  }
+
+  drawHUD();
+}
+
+// ── Trigger boom ─────────────────────────────────────────
+function triggerBoom(){
+  gs='boom';boomAnim=0;boomCircles=[];
+  snd('boom');
+  const cols=['#ff4400','#ff8800','#ffcc00','#ff2200'];
+  for(let i=0;i<6;i++){
+    boomCircles.push({r:i*20*scl,vr:0.15*scl+i*0.02*scl,a:0.9-i*0.1,col:cols[i%cols.length]});
+  }
+  if(score>best){best=score;localStorage.setItem('fuse_best',best);}
+}
+
+// ── Input ─────────────────────────────────────────────────
+function getPos(e){
+  const r=cv.getBoundingClientRect();
+  return{x:(e.clientX-r.left)*(W/r.width),y:(e.clientY-r.top)*(H/r.height)};
+}
+
+cv.addEventListener('pointerdown',e=>{
+  initAC();
+  const p=getPos(e);
+
+  if(gs==='start'){startGame();return;}
+  if(gs==='boom'){
+    if(boomAnim>0.6){gs='start';score=0;level=1;lives=3;boomCircles=[];return;}
+    return;
+  }
+  if(gs==='waiting'||gs==='defused'||defusedActive)return;
+  if(gs!=='play')return;
+
+  const wi=wireAtY(p.y);
+  if(wi<0)return;
+
+  snd('snip');
+  wires[wi].cut=true;
+  cutWire=wi;
+
+  // spawn sparks at cut point
+  const cutX=188;
+  const wy=wires[wi].y*scl;
+  for(let i=0;i<12;i++){
+    const a=Math.random()*Math.PI*2;
+    const sp=(1+Math.random()*2)*scl;
+    sparks.push({x:cutX*scl,y:wy,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:1,col:wires[wi].color});
+  }
+
+  if(wi===correctIdx){
+    // correct!
+    cutCorrect=true;
+    snd('defused');
+    const timeLeft=fuseTime*1000-fuseElapsed;
+    const pts=Math.ceil(timeLeft/(fuseTime*1000)*200)*level;
+    score+=pts;
+    if(score>best){best=score;localStorage.setItem('fuse_best',best);}
+    popups.push({x:W/2,y:340*scl,txt:`+${pts}`,col:'#2ecc71',life:2});
+    defusedActive=true;defusedAnim=0;
+    gs='defused';
+    setTimeout(()=>{
+      defusedActive=false;
+      level++;
+      initRound();
+      gs='play';
+    },2000);
+  }else{
+    // wrong!
+    lives=0;
+    triggerBoom();
+  }
+},{passive:true});
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

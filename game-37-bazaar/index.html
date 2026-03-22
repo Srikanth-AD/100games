@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>BAZAAR</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#1a1000;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H;
+function resize() { W = cv.width = window.innerWidth; H = cv.height = window.innerHeight; }
+resize();
+window.addEventListener('resize', resize);
+
+// ── Audio ─────────────────────────────────────────────────
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function sfx(type) {
+  const t = AC.currentTime;
+  function tone(f, dur, wave, gain, delay=0) {
+    const o=AC.createOscillator(), g=AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    o.type=wave; o.frequency.value=f;
+    g.gain.setValueAtTime(gain, t+delay);
+    g.gain.linearRampToValueAtTime(0, t+delay+dur);
+    o.start(t+delay); o.stop(t+delay+dur+0.02);
+  }
+  if (type==='shake') { tone(120,0.08,'sine',0.3); tone(180,0.06,'sine',0.2,0.04); }
+  if (type==='tick')  tone(900,0.035,'square',0.12);
+  if (type==='land')  { tone(300,0.1,'sine',0.3); tone(200,0.08,'sine',0.2,0.08); }
+  if (type==='buy')   { tone(440,0.07,'sine',0.22); tone(550,0.09,'sine',0.18,0.06); }
+  if (type==='sell')  { tone(660,0.07,'sine',0.22); tone(550,0.07,'sine',0.15,0.06); }
+  if (type==='cant')  tone(200,0.12,'sawtooth',0.15);
+  if (type==='next')  [400,500].forEach((f,i)=>tone(f,0.08,'sine',0.18,i*0.07));
+  if (type==='over')  [330,262,196].forEach((f,i)=>tone(f,0.18,'square',0.18,i*0.2));
+  if (type==='win')   [523,659,784,1047].forEach((f,i)=>tone(f,0.12,'sine',0.2,i*0.1));
+}
+
+// ── Constants ─────────────────────────────────────────────
+const GOODS = [
+  {name:'GRAIN', icon:'🌾', base:5,  col:'#f9a825'},
+  {name:'FISH',  icon:'🐟', base:9,  col:'#29b6f6'},
+  {name:'SILK',  icon:'🎀', base:16, col:'#ec407a'},
+  {name:'GEMS',  icon:'💎', base:26, col:'#66bb6a'},
+];
+// Die1 → which good gets SURPLUS (price drops): 1,2→grain 3,4→fish 5→silk 6→gems
+const D1MAP = [0,0,1,1,2,3];
+// Die2 → which good gets DEMAND (price rises): 1,2→gems 3,4→silk 5→fish 6→grain
+const D2MAP = [3,3,2,2,1,0];
+const MAX_INV = 8, TOTAL_TURNS = 15;
+
+// ── State ─────────────────────────────────────────────────
+let gs = 'start'; // start | idle | rolling | trade | over
+let gold, turn, prices, prevPrices, inventory, best;
+let d1=1, d2=1, dAnim=[1,1], rollT=0, lastTickT=0;
+let events=[]; // [{idx, type:'surplus'|'demand'|'volatile'}]
+let buyBtns=[], sellBtns=[], actionBtn=null;
+let lastTs=0, popups=[];
+
+function initGame() {
+  gold = 60;
+  turn = 1;
+  prices = GOODS.map(g=>g.base);
+  prevPrices = [...prices];
+  inventory = [0,0,0,0];
+  events = [];
+  d1=1; d2=1; dAnim=[1,1]; rollT=0;
+  gs = 'idle';
+  best = +localStorage.getItem('bazaar_best')||0;
+}
+
+// ── Price logic ───────────────────────────────────────────
+function rollDice() {
+  d1 = Math.ceil(Math.random()*6);
+  d2 = Math.ceil(Math.random()*6);
+  rollT = 0; lastTickT = 0;
+  gs = 'rolling';
+  sfx('shake');
+}
+
+function applyDice() {
+  prevPrices = [...prices];
+
+  // Random walk all goods ±8%
+  for(let i=0;i<4;i++){
+    const drift = (Math.random()-0.48)*0.10;
+    prices[i] = Math.round(prices[i]*(1+drift));
+    prices[i] = Math.max(Math.round(GOODS[i].base*0.35), Math.min(Math.round(GOODS[i].base*3), prices[i]));
+  }
+
+  const si = D1MAP[d1-1], di = D2MAP[d2-1];
+  const surplusMag = 0.28 + d1*0.04; // 32%–52% drop
+  const demandMag  = 0.28 + d2*0.04; // 32%–52% rise
+
+  if (si===di) {
+    // Volatile: big random swing
+    const swing = (Math.random()>0.5?1:-1)*(0.3+Math.random()*0.3);
+    prices[si] = Math.round(prices[si]*(1+swing));
+    prices[si] = Math.max(Math.round(GOODS[si].base*0.35), Math.min(Math.round(GOODS[si].base*3), prices[si]));
+    events = [{idx:si, type:'volatile'}];
+  } else {
+    prices[si] = Math.max(Math.round(GOODS[si].base*0.35), Math.round(prices[si]*(1-surplusMag)));
+    prices[di] = Math.min(Math.round(GOODS[di].base*3), Math.round(prices[di]*(1+demandMag)));
+    events = [{idx:si,type:'surplus'}, {idx:di,type:'demand'}];
+  }
+}
+
+function nextTurn() {
+  if (gs!=='trade') return;
+  turn++;
+  events=[];
+  if (turn>TOTAL_TURNS) {
+    // sell all inventory at current prices
+    for(let i=0;i<4;i++) gold+=inventory[i]*prices[i];
+    inventory=[0,0,0,0];
+    best=Math.max(gold,best);
+    localStorage.setItem('bazaar_best',best);
+    sfx(gold>=120?'win':'over');
+    gs='over';
+  } else {
+    gs='idle';
+    sfx('next');
+  }
+}
+
+function tryBuy(idx) {
+  if(gs!=='trade') return;
+  if(gold<prices[idx]||inventory[idx]>=MAX_INV){ sfx('cant'); return; }
+  gold-=prices[idx]; inventory[idx]++;
+  popups.push({x:0,y:0,idx,text:`-${prices[idx]}g`,col:'#f44336',t:0});
+  sfx('buy');
+}
+function trySell(idx) {
+  if(gs!=='trade') return;
+  if(inventory[idx]<=0){ sfx('cant'); return; }
+  gold+=prices[idx]; inventory[idx]--;
+  popups.push({x:0,y:0,idx,text:`+${prices[idx]}g`,col:'#4caf50',t:0});
+  sfx('sell');
+}
+
+// ── Drawing ───────────────────────────────────────────────
+function rr(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.arcTo(x+w,y,x+w,y+r,r);
+  ctx.lineTo(x+w,y+h-r);ctx.arcTo(x+w,y+h,x+w-r,y+h,r);
+  ctx.lineTo(x+r,y+h);ctx.arcTo(x,y+h,x,y+h-r,r);
+  ctx.lineTo(x,y+r);ctx.arcTo(x,y,x+r,y,r);ctx.closePath();
+}
+
+function drawDie(cx, cy, sz, val, glow) {
+  const x=cx-sz/2, y=cy-sz/2, r=sz*0.16;
+  ctx.save();
+  if(glow){ ctx.shadowColor='#ffd740'; ctx.shadowBlur=18; }
+  else     { ctx.shadowColor='rgba(0,0,0,0.45)'; ctx.shadowBlur=10; ctx.shadowOffsetY=4; }
+  rr(x,y,sz,sz,r);
+  const bg=ctx.createLinearGradient(x,y,x+sz,y+sz);
+  bg.addColorStop(0,'#f5f0e0'); bg.addColorStop(1,'#ddd5b8');
+  ctx.fillStyle=bg; ctx.fill();
+  ctx.shadowBlur=0; ctx.shadowOffsetY=0;
+  rr(x,y,sz,sz,r); ctx.strokeStyle='rgba(0,0,0,0.18)'; ctx.lineWidth=1.5; ctx.stroke();
+
+  const pip=(px,py)=>{
+    ctx.beginPath(); ctx.arc(cx+px*sz*0.27, cy+py*sz*0.27, sz*0.082, 0, Math.PI*2);
+    ctx.fillStyle='#1a1008'; ctx.fill();
+  };
+  const layouts=[[],[[ 0, 0]],[[-1,-1],[1,1]],[[-1,-1],[0,0],[1,1]],
+    [[-1,-1],[1,-1],[-1,1],[1,1]],[[-1,-1],[1,-1],[0,0],[-1,1],[1,1]],
+    [[-1,-1],[1,-1],[-1,0],[1,0],[-1,1],[1,1]]];
+  (layouts[val]||[]).forEach(([px,py])=>pip(px,py));
+  ctx.restore();
+}
+
+function trendStr(idx) {
+  const d = prices[idx]-prevPrices[idx];
+  const pct = d/prevPrices[idx];
+  if(pct>0.3)  return '↑↑';
+  if(pct>0.08) return '↑';
+  if(pct<-0.3) return '↓↓';
+  if(pct<-0.08)return '↓';
+  return '';
+}
+function trendCol(idx) {
+  const d=prices[idx]-prevPrices[idx];
+  if(d>0) return '#4caf50';
+  if(d<0) return '#f44336';
+  return 'rgba(255,255,255,0.4)';
+}
+function priceCol(idx) {
+  const ratio = prices[idx]/GOODS[idx].base;
+  if(ratio<=0.65) return '#4caf50';
+  if(ratio>=1.45) return '#f44336';
+  return '#fff';
+}
+
+function drawGoodPanel(x, y, w, h, idx) {
+  const g = GOODS[idx];
+  const evType = events.find(e=>e.idx===idx)?.type;
+  const rad = w*0.08;
+
+  // Panel bg
+  rr(x,y,w,h,rad);
+  ctx.fillStyle = evType==='demand'  ? 'rgba(244,67,54,0.14)'
+                : evType==='surplus' ? 'rgba(76,175,80,0.14)'
+                : evType==='volatile'? 'rgba(255,215,0,0.1)'
+                : 'rgba(255,255,255,0.06)';
+  ctx.fill();
+  ctx.strokeStyle = evType==='demand'  ? '#f44336'
+                  : evType==='surplus' ? '#4caf50'
+                  : evType==='volatile'? '#ffd740'
+                  : 'rgba(255,255,255,0.15)';
+  ctx.lineWidth = evType ? 2 : 1; ctx.stroke();
+
+  const pad=w*0.1;
+  const cx=x+w/2;
+
+  // Icon
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`${Math.min(h*0.24,26)}px serif`;
+  ctx.fillText(g.icon, cx, y+h*0.2);
+
+  // Name
+  ctx.font=`bold ${Math.min(w*0.13,12)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.55)';
+  ctx.fillText(g.name, cx, y+h*0.37);
+
+  // Price + trend
+  const trend=trendStr(idx);
+  ctx.font=`bold ${Math.min(h*0.18,20)}px Arial`;
+  ctx.fillStyle=priceCol(idx);
+  ctx.fillText(`${prices[idx]}g`, cx-(trend?8:0), y+h*0.54);
+  if(trend){
+    ctx.font=`bold ${Math.min(h*0.14,15)}px Arial`;
+    ctx.fillStyle=trendCol(idx);
+    ctx.fillText(trend, cx+w*0.26, y+h*0.54);
+  }
+
+  // Event label
+  if(evType){
+    ctx.font=`bold ${Math.min(h*0.11,11)}px Arial`;
+    ctx.fillStyle = evType==='demand'?'#f44336':evType==='surplus'?'#4caf50':'#ffd740';
+    const label = evType==='demand'?'HIGH DEMAND':evType==='surplus'?'SURPLUS':'VOLATILE';
+    ctx.fillText(label, cx, y+h*0.67);
+  }
+
+  // BUY / inv / SELL row
+  const bh=Math.min(h*0.2,22), bw=w*0.33, by=y+h*0.79, by2=by+bh/2;
+  const canBuy = gs==='trade'&&gold>=prices[idx]&&inventory[idx]<MAX_INV;
+  const canSell= gs==='trade'&&inventory[idx]>0;
+
+  // BUY button
+  const buyX=x+pad;
+  rr(buyX,by,bw,bh,bh*0.35);
+  ctx.fillStyle=canBuy?'#1b5e20':'rgba(255,255,255,0.08)'; ctx.fill();
+  ctx.strokeStyle=canBuy?'#4caf50':'rgba(255,255,255,0.1)'; ctx.lineWidth=1.5; ctx.stroke();
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(bh*0.6,12)}px Arial`;
+  ctx.fillStyle=canBuy?'#a5d6a7':'rgba(255,255,255,0.25)';
+  ctx.fillText('BUY',buyX+bw/2,by2);
+  buyBtns[idx]={x:buyX,y:by,w:bw,h:bh};
+
+  // Inventory count
+  ctx.font=`bold ${Math.min(bh*0.65,13)}px Arial`;
+  ctx.fillStyle='#fff'; ctx.textAlign='center';
+  ctx.fillText(inventory[idx], cx, by2);
+
+  // SELL button
+  const sellX=x+w-pad-bw;
+  rr(sellX,by,bw,bh,bh*0.35);
+  ctx.fillStyle=canSell?'#7f0000':'rgba(255,255,255,0.08)'; ctx.fill();
+  ctx.strokeStyle=canSell?'#f44336':'rgba(255,255,255,0.1)'; ctx.lineWidth=1.5; ctx.stroke();
+  ctx.font=`bold ${Math.min(bh*0.6,12)}px Arial`;
+  ctx.fillStyle=canSell?'#ef9a9a':'rgba(255,255,255,0.25)';
+  ctx.fillText('SELL',sellX+bw/2,by2);
+  sellBtns[idx]={x:sellX,y:by,w:bw,h:bh};
+}
+
+// ── Screens ───────────────────────────────────────────────
+function drawStart(now) {
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(W*0.18,74)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#ffd740';
+  ctx.shadowColor='#ff8800'; ctx.shadowBlur=20;
+  ctx.fillText('BAZAAR',W/2,H*0.22);
+  ctx.shadowBlur=0;
+  ctx.font=`${Math.min(W*0.05,20)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.5)';
+  ctx.fillText('ROLL DICE · BUY LOW · SELL HIGH',W/2,H*0.32);
+
+  // Animated dice preview
+  const sz=Math.min(W*0.2,76);
+  const bop=Math.sin(now*0.003)*6;
+  drawDie(W*0.32,H*0.52+bop,sz,Math.ceil((Math.sin(now*0.002)+1)*3)||1, false);
+  drawDie(W*0.68,H*0.52-bop,sz,Math.ceil((Math.cos(now*0.0025)+1)*3)||1, false);
+
+  ctx.font=`${Math.min(W*0.04,16)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.45)';
+  ctx.fillText(`${TOTAL_TURNS} TURNS · START WITH ${60} GOLD`,W/2,H*0.69);
+  if(best>0){
+    ctx.font=`bold ${Math.min(W*0.04,16)}px Arial`;
+    ctx.fillStyle='#ffd740';
+    ctx.fillText(`BEST: ${best}g`,W/2,H*0.75);
+  }
+
+  const p=0.65+0.35*Math.sin(now*0.003);
+  ctx.fillStyle=`rgba(255,255,255,${p})`;
+  ctx.font=`bold ${Math.min(W*0.056,22)}px Arial`;
+  ctx.fillText('TAP TO START',W/2,H*0.87);
+}
+
+function drawGame(now, dt) {
+  const pad=W*0.03;
+  // ── HUD ──────────────────────────────────────────────────
+  const hudH=H*0.1;
+  ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(W*0.07,28)}px Arial`;
+  ctx.fillStyle='#ffd740';
+  ctx.fillText(`💰 ${gold}g`, pad, hudH*0.5);
+
+  // Inventory value hint
+  const invVal=inventory.reduce((s,v,i)=>s+v*prices[i],0);
+  if(invVal>0){
+    ctx.font=`${Math.min(W*0.032,13)}px Arial`;
+    ctx.fillStyle='rgba(255,215,0,0.5)';
+    ctx.fillText(`(+${invVal}g cargo)`, pad, hudH*0.85);
+  }
+
+  ctx.textAlign='right';
+  ctx.font=`bold ${Math.min(W*0.05,20)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.7)';
+  ctx.fillText(`TURN ${turn}/${TOTAL_TURNS}`, W-pad, hudH*0.45);
+  ctx.font=`${Math.min(W*0.032,13)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.35)';
+  ctx.fillText(`BEST: ${best}g`, W-pad, hudH*0.82);
+
+  // ── Dice ─────────────────────────────────────────────────
+  const diceY=hudH+H*0.13;
+  const sz=Math.min(W*0.2,76);
+  const diceGlow=gs==='idle';
+
+  if(gs==='rolling'){
+    // shake offset
+    const shake=(1-rollT/900)*5;
+    drawDie(W*0.32+((Math.random()-0.5)*shake*2),diceY+((Math.random()-0.5)*shake),sz,dAnim[0],false);
+    drawDie(W*0.68+((Math.random()-0.5)*shake*2),diceY+((Math.random()-0.5)*shake),sz,dAnim[1],false);
+  } else {
+    drawDie(W*0.32,diceY,sz,d1,diceGlow&&Math.floor(now/500)%2===0);
+    drawDie(W*0.68,diceY,sz,d2,diceGlow&&Math.floor(now/500)%2===1);
+  }
+
+  // Dice labels below dice
+  if(gs==='idle'){
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font=`${Math.min(W*0.04,15)}px Arial`;
+    ctx.fillStyle=`rgba(255,215,0,${0.5+0.4*Math.sin(now*0.004)})`;
+    ctx.fillText('TAP TO ROLL', W/2, diceY+sz*0.68);
+  } else if(gs==='trade'&&events.length>0){
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    events.forEach((ev,i)=>{
+      const g=GOODS[ev.idx];
+      const label=ev.type==='demand'?`${g.icon} HIGH DEMAND`:ev.type==='surplus'?`${g.icon} SURPLUS`:`${g.icon} VOLATILE`;
+      const col=ev.type==='demand'?'#f44336':ev.type==='surplus'?'#4caf50':'#ffd740';
+      ctx.font=`bold ${Math.min(W*0.038,14)}px Arial`;
+      ctx.fillStyle=col;
+      ctx.fillText(label, W/2+(i===1?W*0.2:i===0&&events.length>1?-W*0.2:0), diceY+sz*0.68+(i*(H*0.04)));
+    });
+  }
+
+  // ── Goods 2×2 grid ───────────────────────────────────────
+  const gapX=W*0.025, gapY=H*0.018;
+  const gridY=hudH+H*0.3;
+  const gridH=H*0.54;
+  const panelW=(W-pad*2-gapX)/2;
+  const panelH=(gridH-gapY)/2;
+
+  buyBtns=[]; sellBtns=[];
+  for(let i=0;i<4;i++){
+    const col=i%2, row=Math.floor(i/2);
+    const px=pad+col*(panelW+gapX);
+    const py=gridY+row*(panelH+gapY);
+    drawGoodPanel(px,py,panelW,panelH,i);
+  }
+
+  // Popups
+  popups.forEach(p=>{
+    const rect=p.idx<2?buyBtns[p.idx]:sellBtns[p.idx];
+    const col2=Math.floor(p.idx%2), row=Math.floor(p.idx/2);
+    const px=pad+col2*(panelW+gapX)+panelW/2;
+    const py=gridY+row*(panelH+gapY)+panelH*0.5-p.t*30;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font=`bold ${Math.min(W*0.055,22)}px Arial`;
+    ctx.globalAlpha=Math.max(0,1-p.t/0.8);
+    ctx.fillStyle=p.col; ctx.fillText(p.text,px,py);
+    ctx.globalAlpha=1;
+  });
+
+  // ── Action button ─────────────────────────────────────────
+  const btnW=Math.min(W*0.55,220), btnH=Math.min(H*0.07,50);
+  const btnX=(W-btnW)/2, btnY=H*0.9;
+  rr(btnX,btnY,btnW,btnH,btnH/2);
+
+  const isIdle=gs==='idle', isTrade=gs==='trade';
+  ctx.fillStyle = isIdle?'#3e2600':isTrade?'#0d3320':'#1a1000';
+  ctx.fill();
+  ctx.strokeStyle = isIdle?'#ffd740':isTrade?'#4caf50':'rgba(255,255,255,0.1)';
+  ctx.lineWidth=2.5; ctx.stroke();
+
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(W*0.06,24)}px Arial`;
+  ctx.fillStyle = isIdle?'#ffd740':isTrade?'#4caf50':'rgba(255,255,255,0.3)';
+  ctx.fillText(isIdle?'ROLL DICE':isTrade?`NEXT TURN →`:'…', W/2, btnY+btnH/2);
+  actionBtn={x:btnX,y:btnY,w:btnW,h:btnH};
+}
+
+function drawOver(now) {
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  const grade=gold>=200?'MERCHANT KING':gold>=140?'GREAT TRADER':gold>=100?'GOOD TRADER':'APPRENTICE';
+  ctx.font=`bold ${Math.min(W*0.09,36)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#ffd740'; ctx.fillText(grade,W/2,H*0.22);
+
+  ctx.font=`bold ${Math.min(W*0.22,90)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#fff'; ctx.fillText(`${gold}g`,W/2,H*0.4);
+  ctx.font=`${Math.min(W*0.045,18)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.5)'; ctx.fillText('FINAL GOLD',W/2,H*0.5);
+
+  if(best>0){
+    ctx.font=`bold ${Math.min(W*0.048,19)}px Arial`;
+    ctx.fillStyle='#ffd740'; ctx.fillText(`BEST: ${best}g`,W/2,H*0.59);
+  }
+  const p=0.65+0.35*Math.sin(now*0.003);
+  ctx.fillStyle=`rgba(255,255,255,${p})`;
+  ctx.font=`bold ${Math.min(W*0.055,22)}px Arial`;
+  ctx.fillText('TAP TO PLAY AGAIN',W/2,H*0.82);
+}
+
+// ── Main loop ─────────────────────────────────────────────
+function draw(ts=0) {
+  requestAnimationFrame(draw);
+  const dt=Math.min(ts-lastTs,50)/1000; lastTs=ts;
+  const now=ts;
+
+  // Update popups
+  popups.forEach(p=>p.t+=dt);
+  popups=popups.filter(p=>p.t<0.9);
+
+  // Update dice roll animation
+  if(gs==='rolling'){
+    rollT+=dt*1000;
+    const interval=50+(rollT/900)*160;
+    if(rollT-lastTickT>interval){
+      lastTickT=rollT;
+      dAnim=[Math.ceil(Math.random()*6),Math.ceil(Math.random()*6)];
+      sfx('tick');
+    }
+    if(rollT>=900){
+      dAnim=[d1,d2];
+      applyDice();
+      gs='trade';
+      sfx('land');
+    }
+  }
+
+  ctx.clearRect(0,0,W,H);
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#1a1000'); bg.addColorStop(1,'#0e0a00');
+  ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+
+  if      (gs==='start')               drawStart(now);
+  else if (gs==='over')                drawOver(now);
+  else                                 drawGame(now,dt);
+}
+
+// ── Input ─────────────────────────────────────────────────
+function tap(x,y) {
+  if(AC.state==='suspended') AC.resume();
+  if(gs==='start'){ initGame(); return; }
+  if(gs==='over') { initGame(); return; }
+
+  // Action button
+  if(actionBtn&&x>=actionBtn.x&&x<=actionBtn.x+actionBtn.w&&y>=actionBtn.y&&y<=actionBtn.y+actionBtn.h){
+    if(gs==='idle') rollDice();
+    else if(gs==='trade') nextTurn();
+    return;
+  }
+
+  // Good panels (buy/sell)
+  for(let i=0;i<4;i++){
+    if(buyBtns[i]&&x>=buyBtns[i].x&&x<=buyBtns[i].x+buyBtns[i].w&&y>=buyBtns[i].y&&y<=buyBtns[i].y+buyBtns[i].h){
+      tryBuy(i); return;
+    }
+    if(sellBtns[i]&&x>=sellBtns[i].x&&x<=sellBtns[i].x+sellBtns[i].w&&y>=sellBtns[i].y&&y<=sellBtns[i].y+sellBtns[i].h){
+      trySell(i); return;
+    }
+  }
+
+  // Tap dice area to roll (when idle)
+  if(gs==='idle') rollDice();
+}
+
+cv.addEventListener('click',      e=>tap(e.clientX,e.clientY));
+cv.addEventListener('touchstart', e=>{e.preventDefault();tap(e.touches[0].clientX,e.touches[0].clientY);},{passive:false});
+
+draw();
+</script>
+</body>
+</html>

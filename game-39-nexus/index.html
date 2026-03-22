@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>NEXUS</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:#02020f;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+let W,H;
+function resize(){W=cv.width=window.innerWidth;H=cv.height=window.innerHeight;}
+resize();
+window.addEventListener('resize',resize);
+
+// ── roundRect polyfill ──────────────────────────────────────────
+if(!CanvasRenderingContext2D.prototype.roundRect){
+  CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h,r){
+    r=Math.min(typeof r==='number'?r:r[0],Math.abs(w)/2,Math.abs(h)/2);
+    this.moveTo(x+r,y);this.lineTo(x+w-r,y);this.arcTo(x+w,y,x+w,y+r,r);
+    this.lineTo(x+w,y+h-r);this.arcTo(x+w,y+h,x+w-r,y+h,r);
+    this.lineTo(x+r,y+h);this.arcTo(x,y+h,x,y+h-r,r);
+    this.lineTo(x,y+r);this.arcTo(x,y,x+r,y,r);this.closePath();
+  };
+}
+
+// ── Audio ───────────────────────────────────────────────────────
+const AC=new (window.AudioContext||window.webkitAudioContext)();
+function sfx(type){
+  const t=AC.currentTime;
+  const tone=(f,dur,wave='sine',gain=0.18,delay=0)=>{
+    const o=AC.createOscillator(),g=AC.createGain();
+    o.connect(g);g.connect(AC.destination);
+    o.type=wave;o.frequency.value=f;
+    g.gain.setValueAtTime(gain,t+delay);
+    g.gain.linearRampToValueAtTime(0,t+delay+dur);
+    o.start(t+delay);o.stop(t+delay+dur+0.05);
+  };
+  if(type==='key')    tone(500+Math.random()*300,0.04,'sine',0.1);
+  if(type==='del')    tone(350,0.05,'sine',0.1);
+  if(type==='correct')[523,659,784].forEach((f,i)=>tone(f,0.12,'sine',0.22,i*0.09));
+  if(type==='streak') [440,550,660,880].forEach((f,i)=>tone(f,0.1,'sine',0.2,i*0.07));
+  if(type==='wrong')  {tone(220,0.18,'sawtooth',0.2);tone(165,0.18,'sawtooth',0.16,0.1);}
+  if(type==='tick')   tone(900,0.02,'square',0.08);
+  if(type==='timeout'){tone(280,0.14,'sawtooth',0.22);tone(220,0.18,'sawtooth',0.18,0.1);}
+  if(type==='over')   [330,262,196,147].forEach((f,i)=>tone(f,0.2,'sawtooth',0.2,i*0.18));
+  if(type==='start')  [400,500,600].forEach((f,i)=>tone(f,0.1,'sine',0.18,i*0.08));
+}
+
+// ── Sequences ───────────────────────────────────────────────────
+const PRIMES=(()=>{
+  const p=[];let n=2;
+  while(p.length<35){let ok=true;for(let i=2;i*i<=n;i++)if(n%i===0){ok=false;break;}if(ok)p.push(n);n++;}
+  return p;
+})();
+
+const TYPES={
+  arith:  'ARITHMETIC',
+  geo:    'GEOMETRIC',
+  fib:    'FIBONACCI',
+  square: 'PERFECT SQUARES',
+  tri:    'TRIANGULAR NUMBERS',
+  cube:   'PERFECT CUBES',
+  prime:  'PRIME NUMBERS',
+  alt:    'ALTERNATING GAPS',
+  pow2:   'POWERS OF TWO',
+  neg:    'COUNTDOWN',
+};
+
+function genSeq(level){
+  let pool;
+  if     (level<=2)  pool=['arith','arith'];
+  else if(level<=5)  pool=['arith','arith','geo','fib'];
+  else if(level<=9)  pool=['arith','geo','fib','square','tri','neg'];
+  else if(level<=14) pool=['arith','geo','fib','square','tri','prime','alt','neg'];
+  else               pool=['arith','geo','fib','square','tri','prime','alt','cube','pow2','neg'];
+
+  // avoid repeating same type twice in a row
+  let type;
+  do { type=pool[Math.floor(Math.random()*pool.length)]; }
+  while(type===lastType && pool.length>1);
+  lastType=type;
+
+  let terms=[],answer;
+
+  if(type==='arith'){
+    const a=Math.floor(Math.random()*12)+1;
+    const d=Math.floor(Math.random()*(2+Math.min(level,10)))+2;
+    for(let i=0;i<4;i++) terms.push(a+d*i);
+    answer=a+d*4;
+  } else if(type==='geo'){
+    const r=[2,3][Math.floor(Math.random()*2)];
+    const a=Math.floor(Math.random()*4)+1;
+    for(let i=0;i<4;i++) terms.push(a*Math.pow(r,i));
+    answer=a*Math.pow(r,4);
+  } else if(type==='fib'){
+    const a=Math.floor(Math.random()*5)+1,b=a+Math.floor(Math.random()*5)+1;
+    terms=[a,b];
+    for(let i=2;i<4;i++) terms.push(terms[i-1]+terms[i-2]);
+    answer=terms[3]+terms[2];
+  } else if(type==='square'){
+    const s=Math.floor(Math.random()*5)+1;
+    for(let i=s;i<s+4;i++) terms.push(i*i);
+    answer=(s+4)*(s+4);
+  } else if(type==='tri'){
+    const s=Math.floor(Math.random()*4)+1;
+    for(let i=s;i<s+4;i++) terms.push(i*(i+1)/2);
+    answer=(s+4)*(s+5)/2;
+  } else if(type==='cube'){
+    const s=Math.floor(Math.random()*3)+1;
+    for(let i=s;i<s+4;i++) terms.push(i*i*i);
+    answer=(s+4)*(s+4)*(s+4);
+  } else if(type==='prime'){
+    const s=Math.floor(Math.random()*12);
+    for(let i=s;i<s+4;i++) terms.push(PRIMES[i]);
+    answer=PRIMES[s+4];
+  } else if(type==='alt'){
+    const a=Math.floor(Math.random()*8)+2;
+    const d1=Math.floor(Math.random()*4)+2,d2=Math.floor(Math.random()*4)+3;
+    terms=[a,a+d1,a+d1+d2,a+d1+d2+d1];
+    answer=a+d1+d2+d1+d2;
+  } else if(type==='pow2'){
+    const s=Math.floor(Math.random()*5);
+    for(let i=s;i<s+4;i++) terms.push(Math.pow(2,i));
+    answer=Math.pow(2,s+4);
+  } else if(type==='neg'){
+    const a=Math.floor(Math.random()*30)+25;
+    const d=Math.floor(Math.random()*6)+3;
+    for(let i=0;i<4;i++) terms.push(a-d*i);
+    answer=a-d*4;
+  }
+  return{terms,answer,name:TYPES[type]};
+}
+
+// ── Particles ───────────────────────────────────────────────────
+let particles=[];
+function burst(x,y,col,n=28){
+  for(let i=0;i<n;i++){
+    const a=Math.random()*Math.PI*2,s=2+Math.random()*6;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s-2,life:1,decay:0.018+Math.random()*0.022,r:2+Math.random()*5,col});
+  }
+}
+
+// ── State ────────────────────────────────────────────────────────
+let state='start',score=0,lives=3,level=0,streak=0;
+let inputVal='',seq=null,timer=0,TMAX=15,lastType='';
+let shakeX=0,shakeY=0,shakeDur=0;
+let correctFlash=0,wrongFlash=0;
+let popLabel='',popAlpha=0,popY=0;
+let answerReveal=false,revealTimer=0;
+let cardAnim=[];
+let keyRects=[],startBtn=null,restartBtn=null;
+let bgHue=220; // background hue shifts on events
+
+const KEYS=[['7','8','9'],['4','5','6'],['1','2','3'],['⌫','0','✓']];
+
+// ── Game logic ───────────────────────────────────────────────────
+function startGame(){
+  state='play';score=0;lives=3;level=0;streak=0;lastType='';
+  sfx('start');particles=[];
+  nextQ();
+}
+
+function nextQ(){
+  level++;
+  seq=genSeq(level);
+  inputVal='';
+  timer=Math.max(8,TMAX-Math.floor(level/4)); // gets harder
+  answerReveal=false;
+  cardAnim=[0,1,2,3,4].map((_,i)=>({t:-i*0.1}));
+}
+
+function mult(){
+  if(streak>=8) return 4;
+  if(streak>=5) return 3;
+  if(streak>=3) return 2;
+  return 1;
+}
+
+function submitAnswer(){
+  if(!inputVal||state!=='play'||answerReveal) return;
+  const val=parseInt(inputVal,10);
+  if(val===seq.answer){
+    streak++;
+    const m=mult();
+    const timeBonus=Math.floor((timer/(Math.max(8,TMAX-Math.floor(level/4))))*80);
+    score+=(100+timeBonus)*m;
+    sfx(streak>0&&streak%5===0?'streak':'correct');
+    correctFlash=0.5;
+    bgHue=140;
+    popLabel=seq.name+'!';popAlpha=1;popY=H*0.48;
+    burst(W/2,H*0.4,'#00ffcc',30);
+    if(m>=2) burst(W/2,H*0.4,'#ff00ff',15);
+    setTimeout(nextQ,850);
+  } else {
+    lives--;streak=0;
+    sfx('wrong');wrongFlash=0.5;shakeDur=0.3;bgHue=0;
+    inputVal='';
+    if(lives<=0){ setTimeout(()=>{state='over';sfx('over');},400); }
+    else{ answerReveal=true;revealTimer=1.8; }
+  }
+}
+
+function pressKey(k){
+  if(state!=='play'||answerReveal) return;
+  if(k==='⌫'){sfx('del');inputVal=inputVal.slice(0,-1);}
+  else if(k==='✓'){submitAnswer();}
+  else{if(inputVal.length>=6)return;sfx('key');inputVal+=k;}
+}
+
+// ── Input handling ───────────────────────────────────────────────
+function handleTap(px,py){
+  AC.resume();
+  if(state==='start'){if(startBtn&&inRect(px,py,startBtn))startGame();return;}
+  if(state==='over') {if(restartBtn&&inRect(px,py,restartBtn))startGame();return;}
+  for(const r of keyRects){if(inRect(px,py,r)){pressKey(r.k);return;}}
+}
+function inRect(px,py,r){return px>=r.x&&px<=r.x+r.w&&py>=r.y&&py<=r.y+r.h;}
+cv.addEventListener('pointerdown',e=>handleTap(e.clientX,e.clientY));
+document.addEventListener('keydown',e=>{
+  if(e.key>='0'&&e.key<='9') pressKey(e.key);
+  else if(e.key==='Backspace') pressKey('⌫');
+  else if(e.key==='Enter')    pressKey('✓');
+  else if(e.key===' '){if(state==='start')startGame();else if(state==='over')startGame();}
+});
+
+// ── Main loop ────────────────────────────────────────────────────
+let last=0;
+function loop(ts){
+  requestAnimationFrame(loop);
+  const dt=Math.min((ts-last)/1000,0.05);last=ts;
+
+  // Shake
+  if(shakeDur>0){
+    shakeDur-=dt;
+    const m=shakeDur/0.3;
+    shakeX=(Math.random()-.5)*14*m;shakeY=(Math.random()-.5)*14*m;
+    if(shakeDur<=0){shakeX=0;shakeY=0;}
+  }
+
+  // Particles
+  for(const p of particles){p.x+=p.vx;p.y+=p.vy;p.vy+=0.1;p.life-=p.decay;}
+  particles=particles.filter(p=>p.life>0);
+
+  // Flash decay
+  if(correctFlash>0) correctFlash-=dt;
+  if(wrongFlash>0)   wrongFlash-=dt;
+  if(popAlpha>0){popAlpha=Math.max(0,popAlpha-dt*0.7);popY-=dt*18;}
+
+  // bg hue lerp toward neutral 220
+  bgHue+=(220-bgHue)*dt*1.5;
+
+  // Card fly-in
+  for(const ca of cardAnim) ca.t+=dt;
+
+  // Timer & reveal
+  if(state==='play'){
+    if(answerReveal){
+      revealTimer-=dt;
+      if(revealTimer<=0){answerReveal=false;nextQ();}
+    } else {
+      const prev=timer;
+      timer-=dt;
+      if(Math.floor(timer)!==Math.floor(prev)&&timer<=5&&timer>0) sfx('tick');
+      if(timer<=0){
+        timer=0;lives--;streak=0;
+        sfx('timeout');wrongFlash=0.5;shakeDur=0.3;bgHue=0;
+        if(lives<=0){state='over';sfx('over');}
+        else{answerReveal=true;revealTimer=1.8;}
+      }
+    }
+  }
+
+  draw();
+}
+
+// ── Drawing helpers ──────────────────────────────────────────────
+function T(str,x,y,sz,col,align='center'){
+  ctx.fillStyle=col;ctx.font=`bold ${sz}px monospace`;
+  ctx.textAlign=align;ctx.textBaseline='middle';ctx.fillText(str,x,y);
+}
+function GT(str,x,y,sz,col,glow,align='center'){
+  ctx.save();ctx.shadowColor=glow||col;ctx.shadowBlur=18;
+  T(str,x,y,sz,col,align);ctx.shadowBlur=8;T(str,x,y,sz,col,align);
+  ctx.restore();
+}
+function pill(x,y,w,h,r,fill,stroke,glow){
+  ctx.save();
+  if(glow){ctx.shadowColor=glow;ctx.shadowBlur=14;}
+  ctx.fillStyle=fill;ctx.strokeStyle=stroke;ctx.lineWidth=2;
+  ctx.beginPath();ctx.roundRect(x,y,w,h,r);ctx.fill();if(stroke)ctx.stroke();
+  ctx.restore();
+}
+
+// ── Screens ──────────────────────────────────────────────────────
+function draw(){
+  ctx.fillStyle='#02020f';ctx.fillRect(0,0,W,H);
+
+  // Ambient radial glow
+  const grad=ctx.createRadialGradient(W/2,H*0.4,0,W/2,H*0.4,Math.max(W,H)*0.7);
+  grad.addColorStop(0,`hsla(${bgHue},80%,15%,0.2)`);
+  grad.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=grad;ctx.fillRect(0,0,W,H);
+
+  ctx.save();ctx.translate(shakeX,shakeY);
+  if(state==='start') drawStart();
+  else if(state==='play') drawPlay();
+  else if(state==='over') drawOver();
+  ctx.restore();
+
+  // Particles (above shake layer)
+  for(const p of particles){
+    ctx.globalAlpha=p.life;ctx.fillStyle=p.col;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  // Pop label (above particles)
+  if(popAlpha>0){
+    ctx.globalAlpha=popAlpha;
+    GT(popLabel,W/2,popY,Math.min(W*0.048,18),'#00ffcc','#00ffcc');
+    ctx.globalAlpha=1;
+  }
+}
+
+function drawStart(){
+  // Title
+  GT('NEXUS',W/2,H*0.18,Math.min(W*0.22,88),'#00ffcc','#00ffcc');
+  GT('SEQUENCE CRACKER',W/2,H*0.28,Math.min(W*0.046,17),'#44aaff','#44aaff');
+
+  // Demo sequence
+  const demo=[2,4,8,16,'?'];
+  const NCARDS=5,pad=20,gap=8;
+  const cw=Math.min((W-2*pad-(NCARDS-1)*gap)/NCARDS,64);
+  const ch=cw*0.9;
+  const sx=(W-(cw*NCARDS+gap*(NCARDS-1)))/2;
+  const cy=H*0.44;
+  for(let i=0;i<NCARDS;i++){
+    const x=sx+i*(cw+gap);
+    const isQ=i===4;
+    pill(x,cy-ch/2,cw,ch,8,isQ?'#082008':'#020c20',isQ?'#00ff88':'#00aaff',isQ?'#00ff88':'#00aaff');
+    GT(String(demo[i]),x+cw/2,cy,Math.min(cw*0.38,20),isQ?'#00ff88':'#00aaff');
+  }
+  GT('TAP A CARD\'S ? TO FIND THE NEXT NUMBER',W/2,H*0.55,Math.min(W*0.035,13),'#446',null);
+
+  // Instructions
+  const lines=['• 4 NUMBERS ARE SHOWN','• FIGURE OUT THE PATTERN','• TYPE THE MISSING NUMBER'];
+  lines.forEach((l,i)=>T(l,W/2,H*0.61+i*H*0.045,Math.min(W*0.038,13),'#448'));
+
+  // Start button
+  const bw=Math.min(W*0.55,210),bh=52,bx=W/2-bw/2,by=H*0.77;
+  startBtn={x:bx,y:by,w:bw,h:bh};
+  pill(bx,by,bw,bh,12,'#001a33','#00ffcc','#00ffcc');
+  GT('TAP TO START',W/2,by+bh/2,Math.min(W*0.052,20),'#00ffcc','#00ffcc');
+}
+
+function drawPlay(){
+  const pad=14;
+
+  // ── Header ──────────────────────────────────────────────────
+  const hY=H*0.065;
+  GT('SCORE',pad,hY-9,Math.min(W*0.034,12),'#445',null,'left');
+  GT(String(score),pad,hY+9,Math.min(W*0.054,20),'#fff','#00aaff','left');
+  GT('LVL '+level,W/2,hY,Math.min(W*0.044,16),'#00aaff','#00aaff');
+  // Hearts
+  const hS=Math.min(W*0.054,20);
+  ctx.font=`${hS}px monospace`;ctx.textAlign='right';ctx.textBaseline='middle';
+  for(let i=0;i<3;i++){
+    ctx.fillStyle=i<lives?'#ff4466':'#221122';
+    ctx.fillText('♥',W-pad-(2-i)*(hS+3),hY);
+  }
+
+  // ── Streak bar ───────────────────────────────────────────────
+  const m=mult();
+  if(streak>0){
+    const streakCol=m>=4?'#ff00ff':m>=3?'#ff8800':m>=2?'#ffdd00':'#00ffcc';
+    GT(`×${m} STREAK  ×${streak}`,W/2,H*0.13,Math.min(W*0.042,15),streakCol,streakCol);
+  }
+
+  // ── Timer bar ────────────────────────────────────────────────
+  const tMax=Math.max(8,TMAX-Math.floor(level/4));
+  const frac=timer/tMax;
+  const tbY=H*0.19,tbH=7,tbW=W-2*pad;
+  const barCol=frac>0.5?'#00cc66':frac>0.25?'#ffaa00':'#ff3344';
+  pill(pad,tbY,tbW,tbH,3,'#0a0a18',null);
+  if(frac>0){
+    ctx.save();ctx.shadowColor=barCol;ctx.shadowBlur=10;
+    pill(pad,tbY,tbW*frac,tbH,3,barCol,null);
+    ctx.restore();
+  }
+  GT(Math.ceil(timer)+'s',W-pad,tbY+tbH/2+1,Math.min(W*0.038,13),barCol,null,'right');
+
+  // ── Prompt ───────────────────────────────────────────────────
+  GT('WHAT COMES NEXT?',W/2,H*0.26,Math.min(W*0.042,15),'#334',null);
+
+  // ── Sequence cards ────────────────────────────────────────────
+  const NCARDS=5;
+  const gap=8;
+  const cw=Math.min((W-2*pad-(NCARDS-1)*gap)/NCARDS,68);
+  const ch=Math.min(cw*1.05,70);
+  const sx=(W-(cw*NCARDS+gap*(NCARDS-1)))/2;
+  const cy=H*0.365;
+  const qPulse=0.5+0.5*Math.sin(Date.now()*0.004); // pulsing glow on ?
+
+  keyRects=[];
+
+  for(let i=0;i<NCARDS;i++){
+    const isQ=i===4;
+    const ca=cardAnim[i]||{t:99};
+    const prog=Math.min(1,ca.t/0.25);
+    const ep=prog<0?0:prog*prog*(3-2*prog);
+    const offY=(1-ep)*50;
+
+    const x=sx+i*(cw+gap);
+    const cx2=x+cw/2;
+
+    ctx.save();ctx.globalAlpha=ep;ctx.translate(0,offY);
+
+    let bg,border,glow,textCol;
+    if(isQ&&answerReveal){bg='#051f0a';border='#00ff88';glow='#00ff88';textCol='#00ff88';}
+    else if(isQ){
+      const qi=0.15+0.35*qPulse;
+      bg=`rgba(0,${Math.floor(20+30*qPulse)},0,0.8)`;
+      border=`rgba(0,255,${Math.floor(100+155*qPulse)},${0.6+0.4*qPulse})`;
+      glow=`rgba(0,255,150,${qi+0.1})`;textCol='#00ff88';
+    } else if(correctFlash>0){bg='#021a0a';border='#00ff88';glow='#00ff88';textCol='#00ffcc';}
+      else if(wrongFlash>0){bg='#1a0202';border='#ff3344';glow='#ff3344';textCol='#ff3344';}
+      else{bg='#060c1e';border='#005588';glow='#0077bb';textCol='#44bbff';}
+
+    pill(x,cy-ch/2,cw,ch,10,bg,border,glow);
+
+    const val=isQ?(answerReveal?String(seq.answer):'?'):String(seq.terms[i]);
+    const fSz=Math.min(cw*(val.length>3?0.28:0.38),val.length>3?16:22);
+    GT(val,cx2,cy,fSz,textCol,glow);
+
+    ctx.restore();
+  }
+
+  // ── Input display ─────────────────────────────────────────────
+  const inpY=H*0.495,inpH=Math.min(H*0.075,52),inpW=Math.min(W-2*pad,280);
+  const inpX=(W-inpW)/2;
+  const inpBorder=answerReveal?'#00ff88':(inputVal?'#00aaff':'#112233');
+  pill(inpX,inpY-inpH/2,inpW,inpH,10,'#04080f',inpBorder,inputVal?inpBorder:null);
+
+  let dispStr,dispCol;
+  if(answerReveal){dispStr='= '+seq.answer;dispCol='#00ff88';}
+  else if(inputVal){dispStr=inputVal;dispCol='#00ffcc';}
+  else{dispStr='?';dispCol='#223344';}
+  GT(dispStr,W/2,inpY,Math.min(W*0.065,26),dispCol,dispCol);
+
+  // ── Keypad ────────────────────────────────────────────────────
+  const kTop=H*0.565,kBot=H*0.985;
+  const kH_total=kBot-kTop;
+  const kW_total=Math.min(W-2*pad,310);
+  const kx0=(W-kW_total)/2;
+  const kg=7,kRows=4,kCols=3;
+  const kw=(kW_total-(kCols-1)*kg)/kCols;
+  const kh=(kH_total-(kRows-1)*kg)/kRows;
+
+  for(let r=0;r<kRows;r++){
+    for(let c=0;c<kCols;c++){
+      const k=KEYS[r][c];
+      const kx=kx0+c*(kw+kg);
+      const ky=kTop+r*(kh+kg);
+      let bg,border,glow,tc;
+      if(k==='✓'){bg='#002a18';border='#00cc66';glow='#00cc66';tc='#00ff88';}
+      else if(k==='⌫'){bg='#1a0820';border='#8855ff';glow='#8855ff';tc='#aa88ff';}
+      else{bg='#040c1e';border='#0d2a44';glow=null;tc='#33aaff';}
+      pill(kx,ky,kw,kh,9,bg,border,glow);
+      GT(k,kx+kw/2,ky+kh/2,Math.min(kw*0.38,22),tc,glow||tc);
+      keyRects.push({x:kx,y:ky,w:kw,h:kh,k});
+    }
+  }
+}
+
+function drawOver(){
+  GT('GAME OVER',W/2,H*0.22,Math.min(W*0.12,52),'#ff3344','#ff3344');
+  GT('SCORE',W/2,H*0.38,Math.min(W*0.038,14),'#446',null);
+  GT(String(score),W/2,H*0.46,Math.min(W*0.16,65),'#fff','#00aaff');
+  GT('LEVEL REACHED: '+level,W/2,H*0.56,Math.min(W*0.046,17),'#aaa',null);
+
+  // High score hint
+  const bw=Math.min(W*0.58,220),bh=54,bx=W/2-bw/2,by=H*0.68;
+  restartBtn={x:bx,y:by,w:bw,h:bh};
+  pill(bx,by,bw,bh,12,'#001122','#00ffcc','#00ffcc');
+  GT('PLAY AGAIN',W/2,by+bh/2,Math.min(W*0.055,21),'#00ffcc','#00ffcc');
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

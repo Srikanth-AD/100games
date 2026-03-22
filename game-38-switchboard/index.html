@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>SWITCHBOARD</title><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style></head>
+<body><canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+let W,H,scl;
+function resize(){const vw=window.innerWidth,vh=window.innerHeight;scl=Math.min(vw/375,vh/600);W=Math.round(375*scl);H=Math.round(600*scl);cv.width=W;cv.height=H;}
+resize();window.addEventListener('resize',resize);
+
+const AC=new(window.AudioContext||window.webkitAudioContext)();
+function beep(type){
+  const t=AC.currentTime;
+  if(type==='ring'){
+    [440,550].forEach((f,i)=>{const o=AC.createOscillator(),g=AC.createGain();o.connect(g);g.connect(AC.destination);o.type='square';o.frequency.value=f;g.gain.setValueAtTime(0,t+i*0.05);g.gain.linearRampToValueAtTime(0.06,t+i*0.05+0.02);g.gain.linearRampToValueAtTime(0,t+i*0.05+0.14);o.start(t+i*0.05);o.stop(t+i*0.05+0.16);});
+  } else if(type==='connect'){
+    const o=AC.createOscillator(),g=AC.createGain();o.connect(g);g.connect(AC.destination);o.type='sine';o.frequency.setValueAtTime(600,t);o.frequency.linearRampToValueAtTime(900,t+0.12);g.gain.setValueAtTime(0.15,t);g.gain.linearRampToValueAtTime(0,t+0.18);o.start(t);o.stop(t+0.2);
+  } else if(type==='complete'){
+    [523,659,784,1047].forEach((f,i)=>{const o=AC.createOscillator(),g=AC.createGain();o.connect(g);g.connect(AC.destination);o.frequency.value=f;g.gain.setValueAtTime(0.12,t+i*0.07);g.gain.linearRampToValueAtTime(0,t+i*0.07+0.1);o.start(t+i*0.07);o.stop(t+i*0.07+0.12);});
+  } else if(type==='miss'){
+    const o=AC.createOscillator(),g=AC.createGain();o.connect(g);g.connect(AC.destination);o.type='sawtooth';o.frequency.setValueAtTime(220,t);o.frequency.linearRampToValueAtTime(80,t+0.35);g.gain.setValueAtTime(0.2,t);g.gain.linearRampToValueAtTime(0,t+0.38);o.start(t);o.stop(t+0.4);
+  } else if(type==='disconnect'){
+    const o=AC.createOscillator(),g=AC.createGain();o.connect(g);g.connect(AC.destination);o.type='sine';o.frequency.value=330;g.gain.setValueAtTime(0.1,t);g.gain.linearRampToValueAtTime(0,t+0.1);o.start(t);o.stop(t+0.12);
+  }
+}
+
+const COLS=['#e53935','#1e88e5','#43a047','#fb8c00','#8e24aa'];
+const DEPTS=['LOBBY','SALES','RECORDS','ACCTS','DIRECTOR'];
+const N=5;
+
+function LX(){return W*0.22;}
+function RX(){return W*0.78;}
+function jy(i){return H*(0.17+i*0.154);}
+function JR(){return 17*scl;}
+
+let gs='start',score=0,lives=3,level=1,answered=0;
+let calls=[]; // {id,col,ci,state,ringT,ringMax,callT,callMax,rightSlot,overT}
+let selected=null; // index into calls of selected left jack
+let popups=[];
+let ringPulse=0;
+let hiScore=+(localStorage.getItem('swb_hi')||0);
+let nextId=0;
+let spawnTimer=0;
+
+function levelCfg(lv){
+  return {
+    maxActive: Math.min(N, 1+Math.floor((lv-1)/2)),
+    ringMax:   Math.max(4500, 8000-(lv-1)*400),
+    callMax:   Math.max(4000, 7000-(lv-1)*350),
+    overMax:   2800,
+    spawnMin:  Math.max(800, 2800-(lv-1)*200),
+    spawnMax:  Math.max(1400, 5000-(lv-1)*350),
+  };
+}
+
+function spawnCall(){
+  const cfg=levelCfg(level);
+  const active=calls.filter(c=>c.state!=='done');
+  if(active.length>=cfg.maxActive)return;
+  // find free left slot
+  const usedLeft=new Set(calls.filter(c=>c.state!=='done').map(c=>c.ci));
+  const free=[];
+  for(let i=0;i<N;i++)if(!usedLeft.has(i))free.push(i);
+  if(!free.length)return;
+  const ci=free[Math.floor(Math.random()*free.length)];
+  const col=Math.floor(Math.random()*N);
+  calls.push({id:nextId++,ci,col,state:'ringing',ringT:0,ringMax:cfg.ringMax,callT:0,callMax:cfg.callMax,rightSlot:null,overT:0,overMax:cfg.overMax,ringBeepT:0});
+}
+
+function init(){score=0;lives=3;level=1;answered=0;calls=[];selected=null;popups=[];spawnTimer=0;nextId=0;}
+
+function startGame(){init();gs='play';}
+
+let last=0;
+function update(ts){
+  requestAnimationFrame(update);
+  const dt=Math.min(ts-last,50);last=ts;
+  ringPulse=(ringPulse+dt*0.004)%(Math.PI*2);
+  if(gs!=='play'){draw();return;}
+
+  spawnTimer-=dt;
+  if(spawnTimer<=0){
+    spawnCall();
+    const cfg=levelCfg(level);
+    spawnTimer=cfg.spawnMin+Math.random()*(cfg.spawnMax-cfg.spawnMin);
+  }
+
+  calls.forEach(c=>{
+    if(c.state==='ringing'){
+      c.ringT+=dt;
+      c.ringBeepT-=dt;
+      if(c.ringBeepT<=0){beep('ring');c.ringBeepT=900;}
+      if(c.ringT>=c.ringMax){
+        c.state='done';beep('miss');lives--;
+        popups.push({x:LX(),y:jy(c.ci)-30*scl,text:'MISSED!',life:2,col:'#ff5252'});
+        if(selected!==null&&calls[selected]===c)selected=null;
+        if(lives<=0)setTimeout(()=>gs='over',500);
+      }
+    } else if(c.state==='connected'){
+      c.callT+=dt;
+      if(c.callT>=c.callMax){
+        c.state='complete';beep('complete');
+        score+=10+level*5;
+        if(score>hiScore){hiScore=score;localStorage.setItem('swb_hi',hiScore);}
+        answered++;
+        if(answered>0&&answered%8===0){level++;popups.push({x:W/2,y:H*0.42,text:'LEVEL '+level+'!',life:2.2,col:'#ffd740'});}
+      }
+    } else if(c.state==='complete'){
+      c.overT+=dt;
+      if(c.overT>=c.overMax){
+        c.state='done';beep('miss');lives--;
+        popups.push({x:RX(),y:jy(c.ci)-30*scl,text:'HUNG UP!',life:2,col:'#ff5252'});
+        if(selected!==null&&calls[selected]===c)selected=null;
+        if(lives<=0)setTimeout(()=>gs='over',500);
+      }
+    }
+  });
+
+  // prune done calls
+  calls=calls.filter(c=>c.state!=='done');
+
+  popups.forEach(p=>p.life-=dt/1000);
+  popups=popups.filter(p=>p.life>0);
+
+  draw();
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  // Background
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#1a0a00');bg.addColorStop(1,'#0a0510');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+
+  // Panel decorations
+  ctx.fillStyle='#1a0f05';
+  ctx.fillRect(W*0.05,H*0.08,W*0.9,H*0.82);
+  ctx.strokeStyle='#5a3a10';ctx.lineWidth=2*scl;
+  ctx.strokeRect(W*0.05,H*0.08,W*0.9,H*0.82);
+
+  // Column labels
+  ctx.textAlign='center';ctx.font=`bold ${9*scl}px monospace`;
+  ctx.fillStyle='rgba(255,200,100,0.5)';
+  ctx.fillText('INCOMING',LX(),H*0.11);
+  ctx.fillText('EXTENSIONS',RX(),H*0.11);
+
+  // Connecting cables
+  if(gs==='play'||gs==='over'){
+    calls.forEach(c=>{
+      if(c.state==='connected'||c.state==='complete'){
+        const x1=LX()+JR(),y1=jy(c.ci);
+        const x2=RX()-JR(),y2=jy(c.rightSlot);
+        const t=c.callT/c.callMax;
+        const col=COLS[c.col];
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(x1,y1);
+        const mx=W/2,sag=(y2-y1)*0.3+30*scl;
+        ctx.bezierCurveTo(mx,y1+sag,mx,y2+sag,x2,y2);
+        ctx.strokeStyle=c.state==='complete'?'#69f0ae':col;
+        ctx.lineWidth=3*scl;
+        ctx.shadowColor=c.state==='complete'?'#69f0ae':col;
+        ctx.shadowBlur=8;
+        ctx.stroke();
+        ctx.restore();
+        // Progress bar along cable
+        if(c.state==='connected'){
+          const bx=W/2-30*scl,bby=Math.max(y1,y2)+20*scl;
+          ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(bx,bby,60*scl,5*scl);
+          ctx.fillStyle=col;ctx.fillRect(bx,bby,60*scl*t,5*scl);
+        }
+      }
+    });
+  }
+
+  // Jack rows
+  for(let i=0;i<N;i++){
+    const y=jy(i);
+    const lx=LX(),rx=RX(),r=JR();
+
+    // Left jack (incoming)
+    const call=calls.find(c=>c.ci===i&&c.state!=='done');
+    const isSel=selected!==null&&calls[selected]===call&&call;
+    const isConn=call&&(call.state==='connected'||call.state==='complete');
+
+    // jack socket
+    ctx.beginPath();ctx.arc(lx,y,r,0,Math.PI*2);
+    ctx.fillStyle='#0d0808';ctx.fill();
+    ctx.strokeStyle='#5a3010';ctx.lineWidth=2*scl;ctx.stroke();
+
+    if(call){
+      const col=COLS[call.col];
+      if(call.state==='ringing'){
+        const pulse=0.5+0.5*Math.sin(ringPulse*4+(i*0.8));
+        const rr=r*(1+pulse*0.35);
+        ctx.beginPath();ctx.arc(lx,y,rr,0,Math.PI*2);
+        ctx.fillStyle=col+'44';ctx.fill();
+        ctx.beginPath();ctx.arc(lx,y,r,0,Math.PI*2);
+        ctx.fillStyle=col;ctx.fill();
+        // ring timeout indicator
+        const ring_frac=1-call.ringT/call.ringMax;
+        ctx.beginPath();ctx.arc(lx,y,r+5*scl,-Math.PI/2,-Math.PI/2+ring_frac*Math.PI*2);
+        ctx.strokeStyle='rgba(255,255,255,0.4)';ctx.lineWidth=2.5*scl;ctx.stroke();
+      } else if(isSel){
+        ctx.beginPath();ctx.arc(lx,y,r,0,Math.PI*2);
+        ctx.fillStyle=col;ctx.fill();
+        ctx.strokeStyle='#fff';ctx.lineWidth=3*scl;ctx.stroke();
+      } else if(isConn){
+        ctx.beginPath();ctx.arc(lx,y,r,0,Math.PI*2);
+        ctx.fillStyle=call.state==='complete'?'#69f0ae':col;ctx.fill();
+      }
+      // department label
+      ctx.fillStyle=call.state==='complete'?'#000':'#fff';
+      ctx.textAlign='center';ctx.font=`bold ${8*scl}px monospace`;
+      ctx.fillText(DEPTS[call.col],lx,y+3*scl);
+    } else {
+      // empty dot
+      ctx.beginPath();ctx.arc(lx,y,5*scl,0,Math.PI*2);
+      ctx.fillStyle='#2a1a08';ctx.fill();
+    }
+    // slot number label
+    ctx.fillStyle='rgba(255,200,100,0.3)';ctx.textAlign='right';
+    ctx.font=`${8*scl}px monospace`;ctx.fillText(i+1,lx-r-4*scl,y+3*scl);
+
+    // Right jack (extensions)
+    const rightCall=calls.find(c=>c.rightSlot===i&&(c.state==='connected'||c.state==='complete'));
+    const rightFree=!rightCall;
+
+    ctx.beginPath();ctx.arc(rx,y,r,0,Math.PI*2);
+    ctx.fillStyle='#080d08';ctx.fill();
+    if(rightCall){
+      ctx.strokeStyle=rightCall.state==='complete'?'#69f0ae':COLS[rightCall.col];
+    } else if(isSel&&rightFree){
+      // show as a target
+      const c2=calls[selected];
+      const pulse=0.4+0.4*Math.sin(ringPulse*3);
+      ctx.strokeStyle=`rgba(${hexRgb(COLS[c2.col])},${pulse})`;
+    } else {
+      ctx.strokeStyle='#1a4a1a';
+    }
+    ctx.lineWidth=2*scl;ctx.stroke();
+
+    if(rightCall){
+      ctx.beginPath();ctx.arc(rx,y,r,0,Math.PI*2);
+      ctx.fillStyle=rightCall.state==='complete'?'#69f0ae':COLS[rightCall.col];ctx.fill();
+      ctx.fillStyle=rightCall.state==='complete'?'#000':'#fff';
+      ctx.textAlign='center';ctx.font=`bold ${8*scl}px monospace`;
+      ctx.fillText(DEPTS[rightCall.col],rx,y+3*scl);
+      if(rightCall.state==='complete'){
+        // flash "disconnect" prompt
+        const pulse=0.5+0.5*Math.sin(ringPulse*5);
+        ctx.globalAlpha=pulse;ctx.fillStyle='#000';
+        ctx.font=`bold ${7*scl}px monospace`;ctx.fillText('DISC',rx,y+3*scl);
+        ctx.globalAlpha=1;
+      }
+    } else {
+      ctx.beginPath();ctx.arc(rx,y,5*scl,0,Math.PI*2);
+      ctx.fillStyle='#0a1a0a';ctx.fill();
+      // dept color chip
+      ctx.beginPath();ctx.arc(rx,y,r*0.45,0,Math.PI*2);
+      ctx.fillStyle=COLS[i]+'55';ctx.fill();
+      ctx.textAlign='center';ctx.font=`bold ${7*scl}px monospace`;
+      ctx.fillStyle=COLS[i];ctx.fillText(DEPTS[i],rx,y+2*scl);
+    }
+    ctx.fillStyle='rgba(255,200,100,0.3)';ctx.textAlign='left';
+    ctx.font=`${8*scl}px monospace`;ctx.fillText(i+1,rx+r+4*scl,y+3*scl);
+  }
+
+  // Status bar at bottom of panel
+  const sbY=H*0.87;
+  ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(W*0.05,sbY,W*0.9,34*scl);
+  ctx.strokeStyle='#5a3010';ctx.lineWidth=1*scl;ctx.strokeRect(W*0.05,sbY,W*0.9,34*scl);
+  ctx.textAlign='center';
+  if(gs==='play'){
+    if(selected!==null&&calls[selected]){
+      const sc=calls[selected];
+      ctx.font=`bold ${10*scl}px monospace`;
+      ctx.fillStyle='#fff';ctx.fillText('CONNECT TO →',W/2,sbY+12*scl);
+      ctx.fillStyle=COLS[sc.col];ctx.shadowColor=COLS[sc.col];ctx.shadowBlur=8;
+      ctx.font=`bold ${12*scl}px monospace`;ctx.fillText(DEPTS[sc.col],W/2,sbY+26*scl);
+      ctx.shadowBlur=0;
+    } else {
+      ctx.font=`${9*scl}px monospace`;ctx.fillStyle='rgba(255,200,100,0.55)';
+      ctx.fillText('Answer calls: tap/1-5  →  Route to extension: tap/1-5',W/2,sbY+14*scl);
+      ctx.fillText('Tap flashing green to disconnect',W/2,sbY+27*scl);
+    }
+  }
+
+  // Popups
+  popups.forEach(p=>{
+    ctx.save();ctx.globalAlpha=Math.min(1,p.life);ctx.textAlign='center';
+    ctx.font=`bold ${13*scl}px monospace`;
+    ctx.fillStyle=p.col;ctx.shadowColor=p.col;ctx.shadowBlur=8;
+    ctx.fillText(p.text,p.x,p.y);ctx.restore();
+  });
+
+  // HUD
+  drawHUD();
+
+  // Overlays
+  if(gs==='start'){
+    ctx.fillStyle='rgba(0,0,0,0.78)';ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.font=`bold ${40*scl}px monospace`;
+    ctx.fillStyle='#fb8c00';ctx.shadowColor='#fb8c00';ctx.shadowBlur=22;
+    ctx.fillText('SWITCHBOARD',W/2,H*0.22);ctx.shadowBlur=0;
+    ctx.font=`${10*scl}px monospace`;ctx.fillStyle='rgba(255,200,100,0.8)';
+    ctx.fillText('Calls ring on the LEFT.',W/2,H*0.34);
+    ctx.fillText('Tap or press 1-5 to answer.',W/2,H*0.40);
+    ctx.fillText('Then tap or press 1-5 on the RIGHT',W/2,H*0.46);
+    ctx.fillText('to route to the matching department.',W/2,H*0.52);
+    ctx.fillText('Tap green jacks to disconnect.',W/2,H*0.58);
+    ctx.font=`bold ${13*scl}px monospace`;ctx.fillStyle='#fb8c00';
+    ctx.fillText('TAP  or  ANY KEY  to operate',W/2,H*0.70);
+    if(hiScore>0){ctx.font=`${9*scl}px monospace`;ctx.fillStyle='rgba(255,200,100,0.35)';ctx.fillText('BEST '+hiScore,W/2,H*0.78);}
+  }
+
+  if(gs==='over'){
+    ctx.fillStyle='rgba(0,0,0,0.82)';ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.font=`bold ${32*scl}px monospace`;
+    ctx.fillStyle='#ff5252';ctx.shadowColor='#ff0030';ctx.shadowBlur=16;
+    ctx.fillText('SWITCHBOARD DOWN',W/2,H*0.34);ctx.shadowBlur=0;
+    ctx.font=`bold ${20*scl}px monospace`;ctx.fillStyle='#fff';
+    ctx.fillText('Score: '+score,W/2,H*0.44);
+    if(score>0&&score>=hiScore){ctx.font=`${10*scl}px monospace`;ctx.fillStyle='#ffd740';ctx.fillText('\u2736 NEW BEST! \u2736',W/2,H*0.52);}
+    ctx.font=`${11*scl}px monospace`;ctx.fillStyle='rgba(255,255,255,0.45)';
+    ctx.fillText('TAP  or  ANY KEY  to reconnect',W/2,H*0.62);
+  }
+}
+
+function hexRgb(hex){
+  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  return `${r},${g},${b}`;
+}
+
+function drawHUD(){
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(0,0,W,28*scl);
+  ctx.textAlign='left';ctx.font=`bold ${14*scl}px monospace`;
+  ctx.fillStyle='#fff';ctx.fillText(score,W*0.05,20*scl);
+  ctx.font=`${7*scl}px monospace`;ctx.fillStyle='rgba(255,255,255,0.32)';ctx.fillText('SCORE',W*0.05,10*scl);
+  ctx.textAlign='center';ctx.font=`bold ${10*scl}px monospace`;
+  ctx.fillStyle='#fb8c00';ctx.fillText('LV '+level,W/2,19*scl);
+  ctx.textAlign='right';ctx.font=`${13*scl}px monospace`;
+  for(let i=0;i<3;i++){ctx.globalAlpha=i<lives?1:0.15;ctx.fillText('\u2764\ufe0f',W*0.96-(i*17*scl),20*scl);}
+  ctx.globalAlpha=1;ctx.restore();
+}
+
+// Pointer input
+cv.addEventListener('pointerdown',e=>{
+  e.preventDefault();AC.resume();
+  if(gs==='start'){gs='play';startGame();return;}
+  if(gs==='over'){gs='start';return;}
+  const r=cv.getBoundingClientRect();
+  const px=(e.clientX-r.left)*(W/r.width);
+  const py=(e.clientY-r.top)*(H/r.height);
+  handleTap(px,py);
+});
+
+function handleTap(px,py){
+  const r=JR()*1.6;
+  // Check left jacks first
+  for(let i=0;i<N;i++){
+    const lx=LX(),ly=jy(i);
+    if(Math.hypot(px-lx,py-ly)<r){
+      tapLeft(i);return;
+    }
+  }
+  // Check right jacks
+  for(let i=0;i<N;i++){
+    const rx2=RX(),ry=jy(i);
+    if(Math.hypot(px-rx2,py-ry)<r){
+      tapRight(i);return;
+    }
+  }
+}
+
+function tapLeft(i){
+  const call=calls.find(c=>c.ci===i&&c.state!=='done');
+  if(!call)return;
+  if(call.state==='ringing'){
+    // answer the call
+    selected=calls.indexOf(call);
+    call.state='selected';
+    beep('connect');
+  } else if(call.state==='selected'){
+    // deselect
+    selected=null;call.state='ringing';
+  }
+}
+
+function tapRight(i){
+  if(selected===null)return;
+  const sc=calls[selected];
+  if(!sc)return;
+  // check right slot free
+  const occupied=calls.find(c=>c.rightSlot===i&&(c.state==='connected'||c.state==='complete'));
+  if(occupied){
+    // disconnect completed call
+    if(occupied.state==='complete'){
+      occupied.state='done';beep('disconnect');
+      popups.push({x:RX(),y:jy(i)-28*scl,text:'DONE +'+( 10+level*5),life:1.8,col:'#69f0ae'});
+    }
+    return;
+  }
+  // route call
+  sc.rightSlot=i;sc.state='connected';
+  selected=null;
+  beep('connect');
+  popups.push({x:W/2,y:H*0.48,text:DEPTS[sc.col]+'  \u2192  CONNECTED',life:1.6,col:COLS[sc.col]});
+}
+
+// Also allow tapping completed right jack without needing selection
+cv.addEventListener('pointerdown',e=>{},false); // duplicate removed below
+
+function handleTapComplete(px,py){
+  const r=JR()*1.6;
+  for(let i=0;i<N;i++){
+    const rx2=RX(),ry=jy(i);
+    if(Math.hypot(px-rx2,py-ry)<r){
+      const call=calls.find(c=>c.rightSlot===i&&c.state==='complete');
+      if(call){call.state='done';beep('disconnect');popups.push({x:RX(),y:jy(i)-28*scl,text:'DONE +'+( 10+level*5),life:1.8,col:'#69f0ae'});return true;}
+    }
+  }
+  return false;
+}
+
+// Re-wire pointer to check complete first
+cv.removeEventListener('pointerdown',cv._pd,false);
+cv.addEventListener('pointerdown',function pd(e){
+  e.preventDefault();AC.resume();
+  if(gs==='start'){gs='play';startGame();return;}
+  if(gs==='over'){gs='start';return;}
+  const r=cv.getBoundingClientRect();
+  const px=(e.clientX-r.left)*(W/r.width);
+  const py=(e.clientY-r.top)*(H/r.height);
+  if(handleTapComplete(px,py))return;
+  handleTap(px,py);
+},false);
+
+// Keyboard
+document.addEventListener('keydown',e=>{
+  if(gs==='start'){AC.resume();gs='play';startGame();return;}
+  if(gs==='over'){gs='start';return;}
+  const n=parseInt(e.key);
+  if(n>=1&&n<=5){
+    e.preventDefault();
+    if(selected===null){
+      tapLeft(n-1);
+    } else {
+      tapRight(n-1);
+    }
+  }
+  if(e.key==='Escape'){e.preventDefault();selected=null;calls.forEach(c=>{if(c.state==='selected')c.state='ringing';});}
+});
+
+requestAnimationFrame(update);
+</script>
+</body></html>

@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>100 GAMES</title>
+<link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Barlow+Condensed:wght@400;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Barlow+Condensed:wght@400;700&display=swap" rel="stylesheet"></noscript>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root { --carousel-h: 88px; }
+
+body {
+  background: #000;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Game iframe */
+#game-frame {
+  display: block;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  border: none;
+}
+
+/* ── CAROUSEL ─────────────────────────────────────── */
+#carousel {
+  flex-shrink: 0;
+  height: var(--carousel-h);
+  background: rgba(6,7,14,0.92);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-top: 1px solid rgba(255,255,255,0.07);
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  position: relative;
+}
+
+/* fade edges */
+#carousel::before,
+#carousel::after {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 32px;
+  z-index: 2;
+  pointer-events: none;
+}
+#carousel::before { left: 0;  background: linear-gradient(to right, rgba(6,7,14,0.9), transparent); }
+#carousel::after  { right: 0; background: linear-gradient(to left,  rgba(6,7,14,0.9), transparent); }
+
+#carousel-track {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 28px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  height: 100%;
+  width: 100%;
+  -webkit-overflow-scrolling: touch;
+}
+#carousel-track::-webkit-scrollbar { display: none; }
+
+.c-item {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  padding: 8px 6px;
+  border-radius: 12px;
+  border: 1.5px solid transparent;
+  transition: border-color 0.2s, background 0.2s, transform 0.2s;
+  -webkit-tap-highlight-color: transparent;
+  position: relative;
+}
+.c-item:hover {
+  background: rgba(255,255,255,0.05);
+  transform: translateY(-2px);
+}
+.c-item.active {
+  border-color: var(--color);
+  background: rgba(255,255,255,0.06);
+}
+.c-item.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 20px;
+  height: 2px;
+  background: var(--color);
+  border-radius: 2px;
+  box-shadow: 0 0 8px var(--color);
+}
+
+.c-thumb {
+  width: 46px;
+  height: 46px;
+  border-radius: 9px;
+  overflow: hidden;
+  background: #111;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Black Ops One', cursive;
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  color: rgba(255,255,255,0.9);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.c-name {
+  font-family: 'Black Ops One', cursive;
+  font-size: 0.55rem;
+  letter-spacing: 0.06em;
+  color: rgba(255,255,255,0.6);
+  text-align: center;
+  white-space: nowrap;
+  line-height: 1;
+  transition: color 0.2s;
+}
+.c-item.active .c-name { color: var(--color); }
+
+/* ── HOME BUTTON ──────────────────────────────────── */
+#home-btn {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 1000;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.12);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  font-size: 18px;
+  transition: background 0.2s, transform 0.2s;
+  -webkit-tap-highlight-color: transparent;
+  color: #fff;
+}
+#home-btn:hover { background: rgba(0,0,0,0.8); transform: scale(1.05); }
+
+/* ── HAMBURGER ────────────────────────────────────── */
+#menu-btn {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  z-index: 1000;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.12);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: background 0.2s, transform 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+#menu-btn:hover { background: rgba(0,0,0,0.8); transform: scale(1.05); }
+#menu-btn span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: #fff;
+  border-radius: 2px;
+  transition: transform 0.25s ease, opacity 0.2s;
+  transform-origin: center;
+}
+#menu-btn.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+#menu-btn.open span:nth-child(2) { opacity: 0; transform: scaleX(0); }
+#menu-btn.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+/* ── BACKDROP ─────────────────────────────────────── */
+#backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+#backdrop.open { opacity: 1; pointer-events: all; }
+
+/* ── SIDE PANEL ───────────────────────────────────── */
+#panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: min(320px, 88vw);
+  z-index: 950;
+  background: #0a0b14;
+  border-left: 1px solid rgba(255,255,255,0.08);
+  transform: translateX(100%);
+  transition: transform 0.35s cubic-bezier(0.22,1,0.36,1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#panel.open { transform: translateX(0); }
+
+.panel-header {
+  padding: 1.2rem 1.2rem 0.8rem;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.panel-header h2 {
+  font-family: 'Black Ops One', cursive;
+  font-size: 1.1rem;
+  letter-spacing: 0.1em;
+  color: rgba(255,255,255,0.9);
+}
+.home-link {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.35);
+  text-decoration: none;
+  transition: color 0.2s;
+}
+.home-link:hover { color: rgba(255,255,255,0.75); }
+
+.game-list {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.5rem 0;
+}
+.game-list::-webkit-scrollbar { width: 3px; }
+.game-list::-webkit-scrollbar-track { background: transparent; }
+.game-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+.game-item {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.7rem 1.2rem;
+  cursor: pointer;
+  transition: background 0.15s;
+  border-left: 3px solid transparent;
+  -webkit-tap-highlight-color: transparent;
+}
+.game-item:hover { background: rgba(255,255,255,0.04); }
+.game-item.active {
+  border-left-color: var(--color);
+  background: rgba(255,255,255,0.05);
+}
+.game-item .thumb {
+  width: 52px;
+  height: 52px;
+  border-radius: 10px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: #111;
+  border: 1px solid rgba(255,255,255,0.07);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Black Ops One', cursive;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+  color: rgba(255,255,255,0.9);
+}
+.game-item .meta { flex: 1; min-width: 0; }
+.game-item .meta .num {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--color);
+  opacity: 0.8;
+}
+.game-item .meta .title {
+  font-family: 'Black Ops One', cursive;
+  font-size: 0.95rem;
+  letter-spacing: 0.05em;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.game-item .meta .desc {
+  font-size: 0.72rem;
+  color: rgba(255,255,255,0.35);
+  letter-spacing: 0.02em;
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.now-playing {
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color);
+  margin-top: 2px;
+  font-weight: 700;
+}
+</style>
+</head>
+<body>
+
+<iframe id="game-frame" allowfullscreen></iframe>
+
+<div id="carousel">
+  <div id="carousel-track"></div>
+</div>
+
+<a id="home-btn" href="index.html" aria-label="Home" title="Home">⌂</a>
+
+<button id="menu-btn" aria-label="Game menu">
+  <span></span><span></span><span></span>
+</button>
+
+<div id="backdrop"></div>
+
+<div id="panel">
+  <div class="panel-header">
+    <h2>GAMES</h2>
+    <a class="home-link" href="index.html">&#8592; Home</a>
+  </div>
+  <div class="game-list" id="game-list"></div>
+</div>
+
+<script>
+const GAMES = [
+  { num:'01', name:'DRIFT',        folder:'game-01-drift',       file:'index.html', color:'#00e5ff', desc:'Descent into the deep' },
+  { num:'02', name:'FLICK',        folder:'game-02-flick',       file:'index.html', color:'#448aff', desc:'Flick to victory' },
+  { num:'03', name:'SPLAT',        folder:'game-03-splat',       file:'index.html', color:'#69f0ae', desc:'Water balloon mayhem' },
+  { num:'04', name:'PATINTERO',    folder:'game-04-patintero',   file:'index.html', color:'#ff6d00', desc:'Cross all lines' },
+  { num:'05', name:'BARRAGE',      folder:'game-05-barrack',     file:'index.html', color:'#ff1744', desc:'Incoming!' },
+  { num:'06', name:'SWARM',        folder:'game-06-swarm',       file:'index.html', color:'#76ff03', desc:'They\'re coming' },
+  { num:'07', name:'SORT IT',      folder:'game-07-sortit',      file:'index.html', color:'#e040fb', desc:'Planet sorting puzzle' },
+  { num:'08', name:'SLAP DECK',    folder:'game-08-slapdeck',    file:'index.html', color:'#7c4dff', desc:'Card battle' },
+  { num:'09', name:'CAST',         folder:'game-09-cast',        file:'index.html', color:'#ffd740', desc:'Gone fishing' },
+  { num:'10', name:'CHOPPER',      folder:'game-10-chopper',     file:'index.html', color:'#ff6e40', desc:'Stay airborne' },
+  { num:'11', name:'BASH',         folder:'game-11-bash',        file:'index.html', color:'#c1440e', desc:'Something\'s hiding...' },
+  { num:'12', name:'HUSTLE',       folder:'game-12-hustle',      file:'index.html', color:'#00c853', desc:'Follow the coin' },
+  { num:'13', name:'HARVEST',      folder:'game-13-harvest',     file:'index.html', color:'#ffc107', desc:'Grow, harvest, sell, shoo crows' },
+  { num:'14', name:'DIG',          folder:'game-14-dig',         file:'index.html', color:'#f4a261', desc:'Catch things surfacing from the sand' },
+  { num:'15', name:'PYRAMID',      folder:'game-15-pyramid',     file:'index.html', color:'#ff8f00', desc:'Build yours, topple theirs' },
+  { num:'16', name:'LUKSONG TINIK',folder:'game-16-tinik',       file:'index.html', color:'#ff6b35', desc:'Filipino jumping game' },
+  { num:'17', name:'ARCHER',       folder:'game-17-archer',      file:'index.html', color:'#e91e63', desc:'Aim true — mind the birds' },
+  { num:'18', name:'RING TOSS',    folder:'game-18-ringtoss',    file:'index.html', color:'#ffd700', desc:'Toss rings onto pegs' },
+  { num:'19', name:'DECODE',       folder:'game-19-decode',      file:'index.html', color:'#69f0ae', desc:'Spot the word in the matrix' },
+  { num:'20', name:'BOOMERANG',    folder:'game-20-boomerang',   file:'index.html', color:'#d4a030', desc:'Hit fruits before the birds steal them' },
+  { num:'21', name:'MINE',         folder:'game-21-mine',        file:'index.html', color:'#ffd740', desc:'Dig minerals, hide from bats' },
+  { num:'22', name:'MAZE',         folder:'game-22-maze',        file:'index.html', color:'#7c4dff', desc:'Find the exit, hide from pursuers' },
+  { num:'23', name:'FENCE',        folder:'game-23-fence',       file:'index.html', color:'#ff5252', desc:'Fencing duel against the AI' },
+  { num:'24', name:'REGATTA',      folder:'game-24-regatta',     file:'index.html', color:'#4fc3f7', desc:'Boat race — collect flags' },
+  { num:'25', name:'DUNES',        folder:'game-25-dunes',       file:'index.html', color:'#d4a030', desc:'Desert buggy race against AI' },
+  { num:'26', name:'SEE-SAW',      folder:'game-26-seesaw',      file:'index.html', color:'#ffd740', desc:'Balance the beam — tip it and lose a life' },
+  { num:'27', name:'PADDLE RACE',  folder:'game-27-paddlerace',  file:'index.html', color:'#00b4d8', desc:'Dodge rocks, collect buoys, beat the AI' },
+  { num:'28', name:'WELL CLIMB',   folder:'game-28-wellclimb',   file:'index.html', color:'#8b5cf6', desc:'Jump ledges to escape before the water rises' },
+  { num:'29', name:'PINBALL',      folder:'game-29-pinball',     file:'index.html', color:'#bf00ff', desc:'Classic arcade pinball' },
+  { num:'30', name:'SPELUNK',      folder:'game-30-spelunk',     file:'index.html', color:'#a0522d', desc:'Descend the cave, collect gems' },
+  { num:'31', name:'PIKO',         folder:'game-31-piko',        file:'index.html', color:'#ff69b4', desc:'Filipino hopscotch' },
+  { num:'32', name:'HILO',         folder:'game-32-hilo',        file:'index.html', color:'#00b0ff', desc:'Higher or lower — guess the next card' },
+  { num:'33', name:'ROPE CLIMB',   folder:'game-33-ropeclimb',   file:'index.html', color:'#c89a3a', desc:'Swing left & right to dodge falling obstacles' },
+  { num:'34', name:'PATTERN',      folder:'game-34-pattern',     file:'index.html', color:'#fdd835', desc:'Spot what comes next in the sequence' },
+  { num:'35', name:'FIVE',         folder:'game-35-five',        file:'index.html', color:'#ff4081', desc:'Five-card draw — hold your best hand' },
+  { num:'36', name:'SLOTS',        folder:'game-36-slots',       file:'index.html', color:'#ff9800', desc:'Pull the lever and match the reels' },
+  { num:'37', name:'BAZAAR',       folder:'game-37-bazaar',      file:'index.html', color:'#69f0ae', desc:'Roll dice, buy low, sell high' },
+  { num:'38', name:'SWITCHBOARD',  folder:'game-38-switchboard', file:'index.html', color:'#fb8c00', desc:'Route calls through the old switchboard' },
+  { num:'39', name:'NEXUS',        folder:'game-39-nexus',       file:'index.html', color:'#00e5ff', desc:'Connect the nodes' },
+  { num:'40', name:'LIGHTHOUSE',   folder:'game-40-lighthouse',  file:'index.html', color:'#ffd740', desc:'Rotate the beam — guide ships to safety' },
+  { num:'41', name:'CATAPULT',     folder:'game-41-catapult',    file:'index.html', color:'#ff6e40', desc:'Fling rocks, topple the tower' },
+  { num:'42', name:'PINWHEEL',     folder:'game-42-pinwheel',    file:'index.html', color:'#69f0ae', desc:'Swipe to spin — keep the power flowing' },
+  { num:'43', name:'SANDSTORM',    folder:'game-43-sandstorm',   file:'index.html', color:'#d4a030', desc:'Shelter from the storm, collect supplies' },
+  { num:'44', name:'FLOOD',        folder:'game-44-flood',       file:'index.html', color:'#3498db', desc:'Fill the board before moves run out' },
+  { num:'45', name:'LOUPE',        folder:'game-45-loupe',       file:'index.html', color:'#e040fb', desc:'Move the lens — find the odd one out' },
+  { num:'46', name:'TUG',          folder:'game-46-tug',         file:'index.html', color:'#ff5252', desc:'Tap fast — don\'t get pulled over the line' },
+  { num:'47', name:'FOSSIL',       folder:'game-47-fossil',      file:'index.html', color:'#c89a3a', desc:'Brush slowly — unearth ancient bones' },
+  { num:'48', name:'FUSE',         folder:'game-48-fuse',        file:'index.html', color:'#f39c12', desc:'Cut the right wire before the fuse burns out' },
+  { num:'49', name:'STACK',        folder:'game-49-stack',       file:'index.html', color:'#7c4dff', desc:'Drop the car — build the tallest tower' },
+  { num:'50', name:'KENO',         folder:'game-50-keno',        file:'index.html', color:'#ffd740', desc:'Pick your numbers — watch them get drawn' },
+  { num:'51', name:'ECHO',         folder:'game-51-echo',        file:'index.html', color:'#69f0ae', desc:'Watch the pattern — repeat it back' },
+  { num:'52', name:'CROSSFIRE',    folder:'game-52-crossfire',   file:'index.html', color:'#ff1744', desc:'Dodge bullets flying from all sides' },
+  { num:'53', name:'CURL',         folder:'game-53-curl',        file:'index.html', color:'#4fc3f7', desc:'Slide the stone — sweep to steer it' },
+  { num:'54', name:'PIPES',        folder:'game-54-pipes',       file:'index.html', color:'#00bcd4', desc:'Connect the pipes before the water flows' },
+  { num:'55', name:'JUGGLE',       folder:'game-55-juggle',      file:'index.html', color:'#ff6e40', desc:'Keep them all in the air' },
+  { num:'56', name:'KITE',         folder:'game-56-kite',        file:'index.html', color:'#69f0ae', desc:'Ride the wind — collect coins' },
+  { num:'57', name:'LASSO',        folder:'game-57-lasso',       file:'index.html', color:'#d4a030', desc:'Rope the targets before they escape' },
+  { num:'58', name:'PIVOT',        folder:'game-58-pivot',       file:'index.html', color:'#00b0ff', desc:'Rotate to hit the target angle' },
+  { num:'59', name:'UNDERTOW',     folder:'game-59-undertow',    file:'index.html', color:'#1e90ff', desc:'Swim against the current' },
+  { num:'60', name:'STAMPEDE',     folder:'game-60-stampede',    file:'index.html', color:'#c47a2a', desc:'Herd the buffalo through the gate' },
+  { num:'61', name:'SPINDLE',      folder:'game-61-spindle',     file:'index.html', color:'#c89a3a', desc:'Wind the thread onto the spool' },
+  { num:'62', name:'PLUCK',        folder:'game-62-pluck',       file:'index.html', color:'#66bb6a', desc:'Swipe up to pluck the weeds' },
+  { num:'63', name:'SWITCHWORD',   folder:'game-63-switchword',  file:'index.html', color:'#00e5ff', desc:'Change one letter at a time' },
+  { num:'64', name:'ANTONYM',      folder:'game-64-antonym',     file:'index.html', color:'#ffb300', desc:'Tap the antonym before time runs out' },
+];
+
+const frame    = document.getElementById('game-frame');
+const menuBtn  = document.getElementById('menu-btn');
+const backdrop = document.getElementById('backdrop');
+const panel    = document.getElementById('panel');
+const list     = document.getElementById('game-list');
+const track    = document.getElementById('carousel-track');
+
+const params = new URLSearchParams(location.search);
+let currentSrc = params.get('g') || GAMES[0].folder + '/' + GAMES[0].file;
+
+function srcFor(g) { return g.folder + '/' + g.file; }
+
+function loadGame(src) {
+  currentSrc = src;
+  frame.src = src;
+  const url = new URL(location.href);
+  url.searchParams.set('g', src);
+  history.replaceState(null, '', url);
+  updateActive(src);
+  closeMenu();
+  // scroll carousel to active item
+  const active = track.querySelector('.c-item.active');
+  if (active) active.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+}
+
+function updateActive(src) {
+  // carousel
+  track.querySelectorAll('.c-item').forEach(el =>
+    el.classList.toggle('active', el.dataset.src === src)
+  );
+  // side panel
+  list.querySelectorAll('.game-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.src === src);
+    el.querySelector('.now-playing').style.display =
+      el.dataset.src === src ? 'block' : 'none';
+  });
+}
+
+// Build carousel
+GAMES.forEach(g => {
+  const src = srcFor(g);
+  const item = document.createElement('div');
+  item.className = 'c-item' + (src === currentSrc ? ' active' : '');
+  item.dataset.src = src;
+  item.style.setProperty('--color', g.color);
+  item.innerHTML = `
+    <div class="c-thumb" style="background:${g.color}18;border-color:${g.color}33;color:${g.color}">${g.num}</div>
+    <div class="c-name">${g.name}</div>
+  `;
+  item.addEventListener('click', () => loadGame(src));
+  track.appendChild(item);
+});
+
+// Build side panel list
+GAMES.forEach(g => {
+  const src = srcFor(g);
+  const item = document.createElement('div');
+  item.className = 'game-item' + (src === currentSrc ? ' active' : '');
+  item.dataset.src = src;
+  item.style.setProperty('--color', g.color);
+  item.innerHTML = `
+    <div class="thumb" style="background:${g.color}18;border-color:${g.color}44;color:${g.color};font-family:'Black Ops One',cursive;font-size:0.85rem;display:flex;align-items:center;justify-content:center">${g.num}</div>
+    <div class="meta">
+      <div class="num">${g.num}</div>
+      <div class="title">${g.name}</div>
+      <div class="desc">${g.desc}</div>
+      <div class="now-playing" style="display:${src === currentSrc ? 'block' : 'none'}">Now playing</div>
+    </div>
+  `;
+  item.addEventListener('click', () => loadGame(src));
+  list.appendChild(item);
+});
+
+// Load initial game
+frame.src = currentSrc;
+
+// Menu toggle
+function openMenu() {
+  menuBtn.classList.add('open');
+  backdrop.classList.add('open');
+  panel.classList.add('open');
+}
+function closeMenu() {
+  menuBtn.classList.remove('open');
+  backdrop.classList.remove('open');
+  panel.classList.remove('open');
+}
+menuBtn.addEventListener('click', () =>
+  panel.classList.contains('open') ? closeMenu() : openMenu()
+);
+backdrop.addEventListener('click', closeMenu);
+document.addEventListener('keydown', e => e.key === 'Escape' && closeMenu());
+</script>
+</body>
+</html>

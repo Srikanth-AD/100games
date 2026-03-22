@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>PADDLE RACE</title><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style></head>
+<body><canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+let W,H,scl;
+function resize(){const vw=window.innerWidth,vh=window.innerHeight;scl=Math.min(vw/375,vh/600);W=Math.round(375*scl);H=Math.round(600*scl);cv.width=W;cv.height=H;}
+resize();window.addEventListener('resize',resize);
+
+const AC=new(window.AudioContext||window.webkitAudioContext)();
+function beep(type){
+  const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime;
+  o.connect(g);g.connect(AC.destination);
+  if(type==='paddle'){o.type='sine';o.frequency.setValueAtTime(220,t);o.frequency.linearRampToValueAtTime(330,t+0.06);g.gain.setValueAtTime(0.12,t);g.gain.linearRampToValueAtTime(0,t+0.1);}
+  else if(type==='crash'){o.type='sawtooth';o.frequency.setValueAtTime(150,t);o.frequency.linearRampToValueAtTime(60,t+0.2);g.gain.setValueAtTime(0.25,t);g.gain.linearRampToValueAtTime(0,t+0.25);}
+  else if(type==='buoy'){o.type='triangle';o.frequency.setValueAtTime(660,t);o.frequency.linearRampToValueAtTime(880,t+0.08);g.gain.setValueAtTime(0.18,t);g.gain.linearRampToValueAtTime(0,t+0.12);}
+  else if(type==='win'){[523,659,784,1047].forEach((f,i)=>{const o2=AC.createOscillator(),g2=AC.createGain();o2.connect(g2);g2.connect(AC.destination);o2.frequency.value=f;g2.gain.setValueAtTime(0.2,t+i*0.09);g2.gain.linearRampToValueAtTime(0,t+i*0.09+0.15);o2.start(t+i*0.09);o2.stop(t+i*0.09+0.2);});}
+  o.start(t);o.stop(t+0.3);
+}
+
+const RACE_DIST=1000;
+// gs: start | play | levelcomplete | retry | gameover
+let gs='start',score=0,lives=3,level=1,levelBonus=0;
+let hiScore=+(localStorage.getItem('paddle_hi')||0);
+let playerY,aiY,playerDist,aiDist,playerSpd,playerBaseSpd,aiSpd,scrollX,invuln;
+let obstacles=[],popups=[];
+let steerDir=0;
+let keys={up:false,down:false};
+
+function laneTop(){return H*0.18;}
+function laneBot(){return H*0.82;}
+function laneMid(){return(laneTop()+laneBot())/2;}
+
+// Per-level difficulty config
+function levelCfg(lv){
+  return {
+    playerBaseSpd: Math.min(5.5, 3.0+(lv-1)*0.22),
+    aiSpd:         Math.min(5.2, 2.4+(lv-1)*0.24),
+    minGap:        Math.max(48,  90-(lv-1)*8),
+    extraGap:      Math.max(18,  80-(lv-1)*8),
+    maxRocks:      Math.min(3,   1+Math.floor((lv-1)/2)),
+    buoyProb:      Math.max(0.35,1.0-(lv-1)*0.07),
+    rockR:         (13+Math.min(lv-1,4))*scl,
+  };
+}
+
+function genObstacles(){
+  const cfg=levelCfg(level);
+  obstacles=[];
+  const lh=laneBot()-laneTop();
+  for(let d=200;d<RACE_DIST;d+=cfg.minGap+Math.floor(Math.random()*cfg.extraGap)){
+    const n=1+Math.floor(Math.random()*cfg.maxRocks);
+    for(let i=0;i<n;i++){
+      obstacles.push({dist:d+i*40,y:laneTop()+22*scl+Math.random()*(lh-44*scl),type:'rock',r:cfg.rockR,active:true});
+    }
+    if(Math.random()<cfg.buoyProb){
+      obstacles.push({dist:d+45+Math.random()*25,y:laneTop()+22*scl+Math.random()*(lh-44*scl),type:'buoy',r:10*scl,active:true});
+    }
+  }
+}
+
+function startLevel(){
+  const cfg=levelCfg(level);
+  playerDist=0;aiDist=0;
+  playerBaseSpd=cfg.playerBaseSpd;
+  playerSpd=playerBaseSpd;
+  aiSpd=cfg.aiSpd;
+  scrollX=0;
+  playerY=laneMid()-30*scl;
+  aiY=laneMid()+30*scl;
+  invuln=0;steerDir=0;
+  popups=[];
+  genObstacles();
+}
+
+function init(){score=0;lives=3;level=1;startLevel();}
+
+let last=0;
+function update(ts){
+  requestAnimationFrame(update);
+  const dt=Math.min(ts-last,50);last=ts;
+  if(gs!=='play'){draw();return;}
+  const f=dt/16;
+  invuln=Math.max(0,invuln-f);
+  // Gradual speed recovery toward base
+  playerSpd=Math.min(playerBaseSpd,playerSpd+0.005*f);
+  const dir=steerDir!==0?steerDir:(keys.up?-1:keys.down?1:0);
+  playerY+=dir*4.5*scl*f;
+  playerY=Math.max(laneTop()+12*scl,Math.min(laneBot()-28*scl,playerY));
+  playerDist+=playerSpd*0.6*f;
+  aiDist+=aiSpd*0.6*f;
+  scrollX+=playerSpd*0.6*f;
+  aiY+=Math.sin(ts/900)*0.7*f;
+  aiY=Math.max(laneTop()+12*scl,Math.min(laneBot()-28*scl,aiY));
+  for(const o of obstacles){
+    if(!o.active)continue;
+    const ox=W*0.28+(o.dist-playerDist);
+    if(o.type==='rock'&&invuln<=0){
+      const dx=ox-(W*0.22+20*scl),dy=(o.y+10*scl)-(playerY+14*scl);
+      if(Math.abs(dx)<22*scl&&Math.abs(dy)<20*scl){
+        o.active=false;invuln=90;beep('crash');
+        // Real speed penalty — recovery handled above each frame
+        playerSpd=Math.max(1.0,playerSpd-0.55);
+        popups.push({x:W/2,y:H*0.44,text:'CRASH! SLOWING!',life:1.4,col:'#ff5252'});
+      }
+    }
+    if(o.type==='buoy'&&o.active){
+      const dx=ox-(W*0.22+20*scl),dy=(o.y+10*scl)-(playerY+14*scl);
+      if(Math.abs(dx)<24*scl&&Math.abs(dy)<24*scl){
+        o.active=false;score+=20;beep('buoy');
+        popups.push({x:W*0.22+20*scl,y:playerY-8*scl,text:'+20',life:1.2,col:'#ffd740'});
+        if(score>hiScore){hiScore=score;localStorage.setItem('paddle_hi',hiScore);}
+      }
+    }
+  }
+  // Player wins race
+  if(playerDist>=RACE_DIST){
+    beep('win');
+    levelBonus=80+(level-1)*20+lives*10;
+    score+=levelBonus;
+    if(score>hiScore){hiScore=score;localStorage.setItem('paddle_hi',hiScore);}
+    gs='levelcomplete';
+  }
+  // AI wins race
+  if(aiDist>=RACE_DIST&&gs==='play'){
+    lives--;beep('crash');
+    gs=lives<=0?'gameover':'retry';
+  }
+  popups.forEach(p=>p.life-=f*0.03);
+  popups=popups.filter(p=>p.life>0);
+  draw();
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#050f18');bg.addColorStop(1,'#041222');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+
+  if(gs==='play'||gs==='levelcomplete'||gs==='retry'||gs==='gameover'){
+    // Banks
+    ctx.fillStyle='#182820';ctx.fillRect(0,0,W,laneTop());
+    ctx.fillStyle='#182820';ctx.fillRect(0,laneBot(),W,H-laneBot());
+    ctx.fillStyle='#1e3226';
+    for(let x=(-scrollX*0.18)%28;x<W;x+=28){
+      ctx.fillRect(x,2,12,laneTop()-2);
+      ctx.fillRect(x,laneBot()+2,12,H-laneBot()-2);
+    }
+    // Water
+    const wg=ctx.createLinearGradient(0,laneTop(),0,laneBot());
+    wg.addColorStop(0,'#08385a');wg.addColorStop(1,'#052840');
+    ctx.fillStyle=wg;ctx.fillRect(0,laneTop(),W,laneBot()-laneTop());
+    ctx.strokeStyle='rgba(0,180,255,0.1)';ctx.lineWidth=1.5;
+    for(let y=laneTop()+14*scl;y<laneBot();y+=18*scl){
+      ctx.beginPath();
+      for(let x=0;x<=W;x+=40){ctx.lineTo(x,y+Math.sin((x+scrollX*0.5)/28)*2.5);}
+      ctx.stroke();
+    }
+    // Finish line
+    const fx=W*0.28+(RACE_DIST-playerDist);
+    if(fx>-10&&fx<W+60){
+      ctx.strokeStyle='#ffd740';ctx.lineWidth=3*scl;
+      ctx.setLineDash([9*scl,7*scl]);
+      ctx.beginPath();ctx.moveTo(fx,laneTop());ctx.lineTo(fx,laneBot());ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle='#ffd740';ctx.textAlign='center';ctx.font=`bold ${9*scl}px sans-serif`;
+      ctx.fillText('FINISH',fx,laneTop()-5*scl);
+    }
+    // Obstacles
+    for(const o of obstacles){
+      if(!o.active)continue;
+      const ox=W*0.28+(o.dist-playerDist);
+      if(ox<-40*scl||ox>W+40*scl)continue;
+      if(o.type==='rock'){
+        ctx.fillStyle='#6a6060';ctx.shadowColor='#333';ctx.shadowBlur=5;
+        ctx.beginPath();ctx.ellipse(ox,o.y,o.r*1.3,o.r,0,0,Math.PI*2);ctx.fill();
+        ctx.fillStyle='#8a8080';ctx.beginPath();ctx.ellipse(ox-3*scl,o.y-3*scl,o.r*0.7,o.r*0.5,0,0,Math.PI*2);ctx.fill();
+        ctx.shadowBlur=0;
+      } else {
+        ctx.fillStyle='#ffd740';ctx.shadowColor='#ffd740';ctx.shadowBlur=8;
+        ctx.beginPath();ctx.arc(ox,o.y,o.r,0,Math.PI*2);ctx.fill();
+        ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();ctx.shadowBlur=0;
+      }
+    }
+    // AI kayak
+    const aiSx=W*0.28+(aiDist-playerDist)+W*0.08;
+    if(aiSx>-60&&aiSx<W+60)drawKayak(aiSx,aiY,'#4ecdc4','#44a5a0');
+    // Player kayak
+    if(!(invuln>0&&Math.floor(invuln/6)%2===0))drawKayak(W*0.22,playerY,'#ff6b6b','#ff5252');
+    // Popups
+    popups.forEach(p=>{
+      ctx.save();ctx.globalAlpha=Math.min(1,p.life);ctx.textAlign='center';
+      ctx.font=`bold ${13*scl}px "Arial Black",sans-serif`;
+      ctx.fillStyle=p.col;ctx.shadowColor=p.col;ctx.shadowBlur=8;
+      ctx.fillText(p.text,p.x,p.y);ctx.restore();
+    });
+    // Steer buttons
+    const bY=H*0.84,bH=50*scl,bW=W*0.42;
+    ctx.fillStyle='rgba(255,255,255,0.07)';ctx.fillRect(W*0.04,bY,bW,bH);
+    ctx.fillStyle='rgba(255,255,255,0.5)';ctx.textAlign='center';
+    ctx.font=`bold ${15*scl}px sans-serif`;ctx.fillText('\u2191 STEER UP',W*0.04+bW/2,bY+bH*0.62);
+    ctx.fillStyle='rgba(255,255,255,0.07)';ctx.fillRect(W*0.54,bY,bW,bH);
+    ctx.fillStyle='rgba(255,255,255,0.5)';ctx.fillText('\u2193 STEER DOWN',W*0.54+bW/2,bY+bH*0.62);
+    drawHUD();
+
+    // End-of-race overlays
+    if(gs==='levelcomplete'||gs==='retry'||gs==='gameover'){
+      ctx.fillStyle='rgba(0,0,0,0.78)';ctx.fillRect(0,0,W,H);
+      ctx.textAlign='center';
+      if(gs==='levelcomplete'){
+        ctx.font=`bold ${38*scl}px "Arial Black",sans-serif`;
+        ctx.fillStyle='#ffd740';ctx.shadowColor='#ffd740';ctx.shadowBlur=18;
+        ctx.fillText('LEVEL '+level,W/2,H*0.29);
+        ctx.fillText('COMPLETE!',W/2,H*0.39);ctx.shadowBlur=0;
+        ctx.font=`bold ${16*scl}px sans-serif`;ctx.fillStyle='#69f0ae';
+        ctx.fillText('+'+levelBonus+' bonus  \u2022  Score: '+score,W/2,H*0.5);
+        if(score>=hiScore&&score>0){ctx.font=`${11*scl}px sans-serif`;ctx.fillStyle='#ffd740';ctx.fillText('\u2736 NEW BEST! \u2736',W/2,H*0.58);}
+        ctx.font=`${13*scl}px sans-serif`;ctx.fillStyle='rgba(255,255,255,0.48)';
+        ctx.fillText('TAP for Level '+(level+1),W/2,H*0.68);
+      } else if(gs==='retry'){
+        ctx.font=`bold ${34*scl}px "Arial Black",sans-serif`;
+        ctx.fillStyle='#4ecdc4';ctx.shadowColor='#4ecdc4';ctx.shadowBlur=14;
+        ctx.fillText('AI WINS!',W/2,H*0.34);ctx.shadowBlur=0;
+        ctx.font=`${15*scl}px sans-serif`;ctx.fillStyle='#fff';
+        ctx.fillText('Level '+level+' \u2022 Try again',W/2,H*0.46);
+        ctx.font=`${16*scl}px sans-serif`;
+        let hearts='';for(let i=0;i<lives;i++)hearts+='\u2764\ufe0f ';
+        ctx.fillText(hearts.trim(),W/2,H*0.56);
+        ctx.font=`${13*scl}px sans-serif`;ctx.fillStyle='rgba(255,255,255,0.48)';
+        ctx.fillText('TAP to retry',W/2,H*0.65);
+      } else {
+        ctx.font=`bold ${38*scl}px "Arial Black",sans-serif`;
+        ctx.fillStyle='#ff5252';ctx.shadowColor='#ff5252';ctx.shadowBlur=16;
+        ctx.fillText('GAME OVER',W/2,H*0.32);ctx.shadowBlur=0;
+        ctx.font=`bold ${16*scl}px sans-serif`;ctx.fillStyle='#fff';
+        ctx.fillText('Reached Level '+level,W/2,H*0.44);
+        ctx.fillText('Score: '+score,W/2,H*0.53);
+        if(score>=hiScore&&score>0){ctx.font=`${11*scl}px sans-serif`;ctx.fillStyle='#ffd740';ctx.fillText('\u2736 NEW BEST! \u2736',W/2,H*0.61);}
+        ctx.font=`${13*scl}px sans-serif`;ctx.fillStyle='rgba(255,255,255,0.48)';
+        ctx.fillText('TAP to start over',W/2,H*0.7);
+      }
+    }
+  }
+
+  if(gs==='start'){
+    ctx.fillStyle='rgba(0,0,0,0.65)';ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.font=`bold ${44*scl}px "Arial Black",sans-serif`;
+    ctx.fillStyle='#00b4d8';ctx.shadowColor='#00b4d8';ctx.shadowBlur=22;
+    ctx.fillText('PADDLE',W/2,H*0.27);ctx.fillText('RACE',W/2,H*0.36);ctx.shadowBlur=0;
+    ctx.font=`${12*scl}px sans-serif`;ctx.fillStyle='rgba(0,180,216,0.85)';
+    ctx.fillText('Tap TOP half to steer up',W/2,H*0.47);
+    ctx.fillText('Tap BOTTOM half to steer down',W/2,H*0.53);
+    ctx.fillText('Dodge rocks \u2022 Collect buoys \u2022 Beat AI!',W/2,H*0.59);
+    ctx.fillText('Clear each level to advance!',W/2,H*0.64);
+    ctx.font=`bold ${14*scl}px sans-serif`;ctx.fillStyle='#00b4d8';
+    ctx.fillText('TAP TO START',W/2,H*0.74);
+    if(hiScore>0){ctx.font=`${10*scl}px sans-serif`;ctx.fillStyle='rgba(0,180,216,0.38)';ctx.fillText('BEST '+hiScore,W/2,H*0.81);}
+  }
+}
+
+function drawKayak(x,y,c1,c2){
+  ctx.save();
+  ctx.fillStyle=c1;ctx.shadowColor=c1;ctx.shadowBlur=10;
+  ctx.beginPath();ctx.ellipse(x+20*scl,y+14*scl,26*scl,11*scl,0,0,Math.PI*2);ctx.fill();
+  ctx.shadowBlur=0;ctx.fillStyle=c2;
+  ctx.beginPath();ctx.ellipse(x+20*scl,y+12*scl,12*scl,5*scl,0,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+
+function drawHUD(){
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(0,0,W,36*scl);
+  // Score
+  ctx.textAlign='left';ctx.font=`bold ${14*scl}px "Arial Black",sans-serif`;
+  ctx.fillStyle='#fff';ctx.fillText(score,W*0.05,22*scl);
+  ctx.font=`${8*scl}px sans-serif`;ctx.fillStyle='rgba(255,255,255,0.35)';ctx.fillText('SCORE',W*0.05,11*scl);
+  // Progress bars
+  const pct=Math.min(1,playerDist/RACE_DIST);
+  const apct=Math.min(1,aiDist/RACE_DIST);
+  const bx=W*0.32,bw=W*0.38,bh=4*scl;
+  ctx.fillStyle='rgba(255,255,255,0.14)';ctx.fillRect(bx,10*scl,bw,bh);
+  ctx.fillStyle='#ff6b6b';ctx.fillRect(bx,10*scl,bw*pct,bh);
+  ctx.fillStyle='rgba(255,255,255,0.14)';ctx.fillRect(bx,17*scl,bw,bh);
+  ctx.fillStyle='#4ecdc4';ctx.fillRect(bx,17*scl,bw*apct,bh);
+  // Level label (below bars)
+  ctx.textAlign='center';ctx.font=`bold ${9*scl}px "Arial Black",sans-serif`;
+  ctx.fillStyle='rgba(0,180,216,0.75)';ctx.fillText('LEVEL '+level,W/2,31*scl);
+  // Hearts
+  ctx.textAlign='right';ctx.font=`${13*scl}px sans-serif`;
+  for(let i=0;i<3;i++){ctx.globalAlpha=i<lives?1:0.18;ctx.fillText('\u2764\ufe0f',W*0.96-(i*17*scl),22*scl);}
+  ctx.globalAlpha=1;ctx.restore();
+}
+
+// Touch input
+let ptrs={};
+cv.addEventListener('pointerdown',e=>{
+  e.preventDefault();AC.resume();
+  if(gs==='start'){gs='play';init();return;}
+  if(gs==='levelcomplete'){level++;startLevel();gs='play';return;}
+  if(gs==='retry'){startLevel();gs='play';return;}
+  if(gs==='gameover'){gs='start';return;}
+  ptrs[e.pointerId]=e;updateSteer();
+});
+cv.addEventListener('pointermove',e=>{if(ptrs[e.pointerId]){ptrs[e.pointerId]=e;updateSteer();}});
+cv.addEventListener('pointerup',e=>{delete ptrs[e.pointerId];updateSteer();});
+cv.addEventListener('pointercancel',e=>{delete ptrs[e.pointerId];updateSteer();});
+function updateSteer(){
+  const r=cv.getBoundingClientRect();
+  let up=false,down=false;
+  for(const p of Object.values(ptrs)){
+    const py=(p.clientY-r.top)*(H/r.height);
+    if(py<H/2)up=true; else down=true;
+  }
+  steerDir=up&&!down?-1:down&&!up?1:0;
+}
+document.addEventListener('keydown',e=>{
+  if(gs==='start'){AC.resume();gs='play';init();return;}
+  if(gs==='levelcomplete'){level++;startLevel();gs='play';return;}
+  if(gs==='retry'){startLevel();gs='play';return;}
+  if(gs==='gameover'){gs='start';return;}
+  if(e.key==='ArrowUp'||e.key==='w'||e.key==='W'){e.preventDefault();keys.up=true;}
+  if(e.key==='ArrowDown'||e.key==='s'||e.key==='S'){e.preventDefault();keys.down=true;}
+});
+document.addEventListener('keyup',e=>{
+  if(e.key==='ArrowUp'||e.key==='w'||e.key==='W')keys.up=false;
+  if(e.key==='ArrowDown'||e.key==='s'||e.key==='S')keys.down=false;
+});
+requestAnimationFrame(update);
+</script>
+</body></html>

@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>CROSSFIRE</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#050510;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script>
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let W, H;
+function resize() {
+  W = cv.width = window.innerWidth;
+  H = cv.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', () => { resize(); if (gs !== 'play') drawStatic(); });
+
+// Audio
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function sfx(type) {
+  try {
+    const o = AC.createOscillator();
+    const g = AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    if (type === 'shoot') {
+      o.type = 'square';
+      o.frequency.setValueAtTime(880, AC.currentTime);
+      o.frequency.exponentialRampToValueAtTime(440, AC.currentTime + 0.06);
+      g.gain.setValueAtTime(0.08, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.08);
+      o.start(); o.stop(AC.currentTime + 0.08);
+    } else if (type === 'hit') {
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(200, AC.currentTime);
+      o.frequency.exponentialRampToValueAtTime(60, AC.currentTime + 0.4);
+      g.gain.setValueAtTime(0.4, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.4);
+      o.start(); o.stop(AC.currentTime + 0.4);
+    } else if (type === 'wall') {
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(150, AC.currentTime);
+      o.frequency.exponentialRampToValueAtTime(50, AC.currentTime + 0.5);
+      g.gain.setValueAtTime(0.35, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.5);
+      o.start(); o.stop(AC.currentTime + 0.5);
+    } else if (type === 'levelup') {
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(523, AC.currentTime);
+      o.frequency.setValueAtTime(784, AC.currentTime + 0.1);
+      o.frequency.setValueAtTime(1047, AC.currentTime + 0.2);
+      g.gain.setValueAtTime(0.18, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.35);
+      o.start(); o.stop(AC.currentTime + 0.35);
+    } else if (type === 'start') {
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(440, AC.currentTime);
+      o.frequency.setValueAtTime(660, AC.currentTime + 0.12);
+      o.frequency.setValueAtTime(880, AC.currentTime + 0.24);
+      g.gain.setValueAtTime(0.2, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.4);
+      o.start(); o.stop(AC.currentTime + 0.4);
+    }
+  } catch(e) {}
+}
+
+// Game state
+let gs = 'start'; // 'start', 'play', 'over'
+
+// Arena (shrinks over time)
+let arenaL, arenaR, arenaT, arenaB;
+const WALL_SHRINK = 0.3; // px per frame
+const WALL_THICKNESS = 6;
+
+// Player
+let player = { x: 0, y: 0, r: 10, trail: [] };
+const TRAIL_LEN = 5;
+
+// Bullets
+let bullets = [];
+let lastShot = 0;
+let shotInterval = 1500; // ms
+const BULLET_SPEED = 5;
+const BULLET_R = 5;
+const BULLET_COLORS = {
+  top: '#ff4444',
+  bottom: '#ff8800',
+  left: '#ff44cc',
+  right: '#ffee00'
+};
+
+// Score
+let startTime = 0;
+let elapsed = 0;
+let best = 0;
+let level = 1;
+let lastLevel = 0;
+let levelBannerTimer = 0;
+
+// Dragging
+let isDragging = false;
+let dragTarget = { x: 0, y: 0 };
+
+function initArena() {
+  const margin = 40;
+  arenaL = margin;
+  arenaR = W - margin;
+  arenaT = margin;
+  arenaB = H - margin;
+}
+
+function startGame() {
+  sfx('start');
+  initArena();
+  player.x = W / 2;
+  player.y = H / 2;
+  player.trail = [];
+  bullets = [];
+  lastShot = performance.now();
+  shotInterval = 1500;
+  elapsed = 0;
+  level = 1;
+  lastLevel = 0;
+  levelBannerTimer = 0;
+  startTime = performance.now();
+  isDragging = false;
+  gs = 'play';
+  requestAnimationFrame(loop);
+}
+
+function endGame(reason) {
+  gs = 'over';
+  elapsed = (performance.now() - startTime) / 1000;
+  if (elapsed > best) best = elapsed;
+  if (reason === 'hit') sfx('hit');
+  else sfx('wall');
+}
+
+function spawnBullet(ts) {
+  const sides = ['top', 'bottom', 'left', 'right'];
+  sides.forEach(side => {
+    let bx, by, vx, vy;
+    if (side === 'top') {
+      bx = arenaL + Math.random() * (arenaR - arenaL);
+      by = arenaT + WALL_THICKNESS;
+      vx = 0; vy = BULLET_SPEED;
+    } else if (side === 'bottom') {
+      bx = arenaL + Math.random() * (arenaR - arenaL);
+      by = arenaB - WALL_THICKNESS;
+      vx = 0; vy = -BULLET_SPEED;
+    } else if (side === 'left') {
+      bx = arenaL + WALL_THICKNESS;
+      by = arenaT + Math.random() * (arenaB - arenaT);
+      vx = BULLET_SPEED; vy = 0;
+    } else {
+      bx = arenaR - WALL_THICKNESS;
+      by = arenaT + Math.random() * (arenaB - arenaT);
+      vx = -BULLET_SPEED; vy = 0;
+    }
+    bullets.push({ x: bx, y: by, vx, vy, side, r: BULLET_R });
+  });
+  sfx('shoot');
+}
+
+function drawArena() {
+  // Background glow at walls
+  ctx.save();
+  ctx.strokeStyle = '#ffee00';
+  ctx.lineWidth = WALL_THICKNESS;
+  ctx.shadowColor = '#ffee00';
+  ctx.shadowBlur = 18;
+  ctx.beginPath();
+  ctx.rect(arenaL, arenaT, arenaR - arenaL, arenaB - arenaT);
+  ctx.stroke();
+  // Inner glow pass
+  ctx.shadowBlur = 40;
+  ctx.globalAlpha = 0.4;
+  ctx.stroke();
+  ctx.restore();
+
+  // Danger zone fills (thin margin strips inside walls for visibility)
+  ctx.save();
+  ctx.globalAlpha = 0.07;
+  ctx.fillStyle = '#ffee00';
+  ctx.fillRect(arenaL, arenaT, arenaR - arenaL, WALL_THICKNESS * 2);
+  ctx.fillRect(arenaL, arenaB - WALL_THICKNESS * 2, arenaR - arenaL, WALL_THICKNESS * 2);
+  ctx.fillRect(arenaL, arenaT, WALL_THICKNESS * 2, arenaB - arenaT);
+  ctx.fillRect(arenaR - WALL_THICKNESS * 2, arenaT, WALL_THICKNESS * 2, arenaB - arenaT);
+  ctx.restore();
+}
+
+function drawPlayer() {
+  // Trail
+  for (let i = 0; i < player.trail.length; i++) {
+    const t = player.trail[i];
+    const alpha = (i / player.trail.length) * 0.35;
+    const rad = player.r * (i / player.trail.length) * 0.8;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, rad, 0, Math.PI * 2);
+    ctx.fillStyle = '#00ffff';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Player glow
+  ctx.save();
+  ctx.shadowColor = '#00ffff';
+  ctx.shadowBlur = 24;
+  ctx.beginPath();
+  ctx.arc(player.x, player.y, player.r, 0, Math.PI * 2);
+  ctx.fillStyle = '#00ffff';
+  ctx.fill();
+  ctx.shadowBlur = 50;
+  ctx.globalAlpha = 0.5;
+  ctx.fill();
+  ctx.restore();
+
+  // Inner bright dot
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(player.x, player.y, player.r * 0.45, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawBullets() {
+  bullets.forEach(b => {
+    const color = BULLET_COLORS[b.side];
+    ctx.save();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 14;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.shadowBlur = 28;
+    ctx.globalAlpha = 0.6;
+    ctx.fill();
+    ctx.restore();
+  });
+}
+
+function drawHUD(ts) {
+  const secs = (ts - startTime) / 1000;
+  const scoreStr = secs.toFixed(1) + 's';
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  const scoreSize = Math.min(W * 0.1, 52);
+  ctx.font = `bold ${scoreSize}px monospace`;
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = '#00ffff';
+  ctx.shadowBlur = 14;
+  ctx.fillText(scoreStr, W / 2, arenaT + scoreSize + 10);
+  ctx.shadowBlur = 0;
+
+  // Level indicator
+  ctx.font = `bold ${Math.round(scoreSize * 0.38)}px monospace`;
+  ctx.fillStyle = '#ffee00';
+  ctx.fillText('LVL ' + level, W / 2, arenaT + scoreSize + 10 + scoreSize * 0.5);
+
+  ctx.restore();
+
+  // Level up banner
+  if (levelBannerTimer > 0) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, levelBannerTimer / 0.5);
+    ctx.textAlign = 'center';
+    ctx.font = `bold ${Math.round(scoreSize * 0.7)}px monospace`;
+    ctx.fillStyle = '#ffee00';
+    ctx.shadowColor = '#ffaa00';
+    ctx.shadowBlur = 20;
+    ctx.fillText('LEVEL ' + level + '!', W / 2, H / 2 - 40);
+    ctx.restore();
+  }
+}
+
+function drawStartScreen() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid lines (decorative)
+  ctx.save();
+  ctx.globalAlpha = 0.06;
+  ctx.strokeStyle = '#00ffff';
+  ctx.lineWidth = 1;
+  const step = 50;
+  for (let x = 0; x < W; x += step) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = 0; y < H; y += step) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  ctx.restore();
+
+  // Arena outline preview
+  initArena();
+  drawArena();
+
+  // Player preview
+  ctx.save();
+  ctx.shadowColor = '#00ffff';
+  ctx.shadowBlur = 24;
+  ctx.beginPath();
+  ctx.arc(W / 2, H / 2, 10, 0, Math.PI * 2);
+  ctx.fillStyle = '#00ffff';
+  ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  const titleSize = Math.min(W * 0.16, H * 0.11, 80);
+  ctx.font = `bold ${titleSize}px monospace`;
+  ctx.fillStyle = '#ffee00';
+  ctx.shadowColor = '#ffaa00';
+  ctx.shadowBlur = 25;
+  ctx.fillText('CROSSFIRE', W / 2, H * 0.27);
+  ctx.shadowBlur = 0;
+
+  ctx.font = `bold ${Math.round(titleSize * 0.22)}px monospace`;
+  ctx.fillStyle = '#445566';
+  ctx.fillText('DODGE THE BULLETS. SURVIVE.', W / 2, H * 0.27 + titleSize * 0.55);
+
+  const instrSize = Math.min(W * 0.036, 15);
+  ctx.font = `${instrSize}px monospace`;
+  ctx.fillStyle = '#8899aa';
+  const lineH = instrSize * 1.9;
+  ctx.fillText('Drag / hold to move your dot', W / 2, H * 0.45);
+  ctx.fillStyle = '#ff4444';
+  ctx.fillText('Bullets fly from all sides', W / 2, H * 0.45 + lineH);
+  ctx.fillStyle = '#ffee00';
+  ctx.fillText('Walls close in over time', W / 2, H * 0.45 + lineH * 2);
+  ctx.fillStyle = '#aabbcc';
+  ctx.fillText('Score = seconds survived', W / 2, H * 0.45 + lineH * 3);
+
+  // Bullet color legend
+  const lgY = H * 0.62;
+  const lgSize = instrSize * 0.85;
+  ctx.font = `${lgSize}px monospace`;
+  const dirs = [
+    { label: '▲ TOP', color: '#ff4444' },
+    { label: '▼ BOT', color: '#ff8800' },
+    { label: '◄ LEFT', color: '#ff44cc' },
+    { label: '► RIGHT', color: '#ffee00' }
+  ];
+  const spacing = Math.min(W * 0.22, 110);
+  const startX = W / 2 - spacing * 1.5;
+  dirs.forEach((d, i) => {
+    ctx.fillStyle = d.color;
+    ctx.shadowColor = d.color;
+    ctx.shadowBlur = 8;
+    ctx.fillText(d.label, startX + i * spacing, lgY);
+  });
+  ctx.shadowBlur = 0;
+
+  // Start button
+  const btnW = Math.min(W * 0.5, 220);
+  const btnH = 52;
+  const btnX = W / 2 - btnW / 2;
+  const btnY = H * 0.76;
+  ctx.fillStyle = '#1122aa';
+  ctx.shadowColor = '#0044ff';
+  ctx.shadowBlur = 20;
+  ctx.beginPath();
+  ctx.roundRect(btnX, btnY, btnW, btnH, btnH / 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#00ffff';
+  ctx.font = `bold ${Math.round(btnH * 0.45)}px monospace`;
+  ctx.fillText('TAP TO START', W / 2, btnY + btnH * 0.65);
+  ctx.restore();
+}
+
+function drawOverScreen() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.85)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  const titleSize = Math.min(W * 0.13, 66);
+  ctx.font = `bold ${titleSize}px monospace`;
+  ctx.fillStyle = '#ff4444';
+  ctx.shadowColor = '#ff2200';
+  ctx.shadowBlur = 22;
+  ctx.fillText('ELIMINATED', W / 2, H * 0.28);
+  ctx.shadowBlur = 0;
+
+  ctx.font = `bold ${Math.round(titleSize * 0.5)}px monospace`;
+  ctx.fillStyle = '#8899aa';
+  ctx.fillText('SURVIVED', W / 2, H * 0.4);
+
+  ctx.font = `bold ${titleSize * 1.2}px monospace`;
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = '#00ffff';
+  ctx.shadowBlur = 12;
+  ctx.fillText(elapsed.toFixed(1) + 's', W / 2, H * 0.54);
+  ctx.shadowBlur = 0;
+
+  ctx.font = `bold ${Math.round(titleSize * 0.32)}px monospace`;
+  ctx.fillStyle = '#ffee00';
+  ctx.fillText('BEST: ' + best.toFixed(1) + 's', W / 2, H * 0.63);
+
+  // Replay button
+  const btnW = Math.min(W * 0.5, 220);
+  const btnH = 52;
+  const btnX = W / 2 - btnW / 2;
+  const btnY = H * 0.72;
+  ctx.fillStyle = '#1122aa';
+  ctx.shadowColor = '#0044ff';
+  ctx.shadowBlur = 20;
+  ctx.beginPath();
+  ctx.roundRect(btnX, btnY, btnW, btnH, btnH / 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#00ffff';
+  ctx.font = `bold ${Math.round(btnH * 0.45)}px monospace`;
+  ctx.fillText('PLAY AGAIN', W / 2, btnY + btnH * 0.65);
+  ctx.restore();
+}
+
+function drawStatic() {
+  if (gs === 'start') drawStartScreen();
+  else if (gs === 'over') drawOverScreen();
+}
+
+let lastFrame = 0;
+function loop(ts) {
+  if (gs !== 'play') return;
+  requestAnimationFrame(loop);
+
+  const dt = Math.min(ts - (lastFrame || ts), 80);
+  lastFrame = ts;
+
+  elapsed = (ts - startTime) / 1000;
+
+  // Shrink arena
+  arenaL += WALL_SHRINK;
+  arenaR -= WALL_SHRINK;
+  arenaT += WALL_SHRINK;
+  arenaB -= WALL_SHRINK;
+
+  // Level up every 10 seconds
+  const newLevel = Math.floor(elapsed / 10) + 1;
+  if (newLevel > level) {
+    level = newLevel;
+    shotInterval = Math.max(400, 1500 - (level - 1) * 100);
+    sfx('levelup');
+    levelBannerTimer = 1.5;
+  }
+  if (levelBannerTimer > 0) levelBannerTimer -= dt / 1000;
+
+  // Spawn bullets
+  if (ts - lastShot >= shotInterval) {
+    lastShot = ts;
+    spawnBullet(ts);
+  }
+
+  // Move player toward drag target
+  if (isDragging) {
+    const dx = dragTarget.x - player.x;
+    const dy = dragTarget.y - player.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist > 2) {
+      const spd = Math.min(dist, 8);
+      player.x += (dx / dist) * spd;
+      player.y += (dy / dist) * spd;
+    } else {
+      player.x = dragTarget.x;
+      player.y = dragTarget.y;
+    }
+  }
+
+  // Clamp player inside arena
+  player.x = Math.max(arenaL + WALL_THICKNESS + player.r, Math.min(arenaR - WALL_THICKNESS - player.r, player.x));
+  player.y = Math.max(arenaT + WALL_THICKNESS + player.r, Math.min(arenaB - WALL_THICKNESS - player.r, player.y));
+
+  // Update trail
+  player.trail.push({ x: player.x, y: player.y });
+  if (player.trail.length > TRAIL_LEN) player.trail.shift();
+
+  // Move bullets
+  bullets.forEach(b => {
+    b.x += b.vx;
+    b.y += b.vy;
+  });
+  // Remove bullets that exited arena
+  bullets = bullets.filter(b =>
+    b.x > arenaL - b.r && b.x < arenaR + b.r &&
+    b.y > arenaT - b.r && b.y < arenaB + b.r
+  );
+
+  // Check player-wall collision
+  if (player.x - player.r <= arenaL + WALL_THICKNESS ||
+      player.x + player.r >= arenaR - WALL_THICKNESS ||
+      player.y - player.r <= arenaT + WALL_THICKNESS ||
+      player.y + player.r >= arenaB - WALL_THICKNESS) {
+    endGame('wall');
+    drawOverScreen();
+    return;
+  }
+
+  // Check player-bullet collision
+  for (const b of bullets) {
+    const dx = b.x - player.x;
+    const dy = b.y - player.y;
+    const dist2 = dx * dx + dy * dy;
+    const minDist = b.r + player.r;
+    if (dist2 < minDist * minDist) {
+      endGame('hit');
+      drawOverScreen();
+      return;
+    }
+  }
+
+  // Draw
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle grid
+  ctx.save();
+  ctx.globalAlpha = 0.04;
+  ctx.strokeStyle = '#00ffff';
+  ctx.lineWidth = 1;
+  const step = 60;
+  for (let x = 0; x < W; x += step) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = 0; y < H; y += step) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  ctx.restore();
+
+  drawArena();
+  drawBullets();
+  drawPlayer();
+  drawHUD(ts);
+}
+
+// Input
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (AC.state === 'suspended') AC.resume();
+
+  if (gs === 'start') { startGame(); return; }
+  if (gs === 'over') { startGame(); return; }
+  if (gs !== 'play') return;
+
+  const rect = cv.getBoundingClientRect();
+  const sx = (e.clientX - rect.left) * (W / rect.width);
+  const sy = (e.clientY - rect.top) * (H / rect.height);
+  isDragging = true;
+  dragTarget.x = sx;
+  dragTarget.y = sy;
+  cv.setPointerCapture(e.pointerId);
+});
+
+cv.addEventListener('pointermove', e => {
+  e.preventDefault();
+  if (gs !== 'play' || !isDragging) return;
+  const rect = cv.getBoundingClientRect();
+  dragTarget.x = (e.clientX - rect.left) * (W / rect.width);
+  dragTarget.y = (e.clientY - rect.top) * (H / rect.height);
+});
+
+cv.addEventListener('pointerup', e => {
+  e.preventDefault();
+  isDragging = false;
+});
+
+cv.addEventListener('pointercancel', e => {
+  isDragging = false;
+});
+
+// Initial draw
+drawStartScreen();
+</script>
+</body>
+</html>

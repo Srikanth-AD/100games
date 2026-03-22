@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>PYRAMID</title>
+<link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&display=swap" rel="stylesheet">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#d4860b;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none; -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+if(!CanvasRenderingContext2D.prototype.roundRect){
+  CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h,r){
+    r=Math.min(typeof r==='number'?r:r[0], Math.abs(w)/2, Math.abs(h)/2);
+    this.moveTo(x+r,y);
+    this.lineTo(x+w-r,y);   this.arcTo(x+w,y,   x+w,y+r,   r);
+    this.lineTo(x+w,y+h-r); this.arcTo(x+w,y+h, x+w-r,y+h, r);
+    this.lineTo(x+r,y+h);   this.arcTo(x,y+h,   x,y+h-r,   r);
+    this.lineTo(x,y+r);     this.arcTo(x,y,      x+r,y,     r);
+    this.closePath();
+  };
+}
+
+
+let W, H;
+function resize(){ W=window.innerWidth; H=window.innerHeight; canvas.width=W; canvas.height=H; }
+resize();
+window.addEventListener('resize', resize);
+
+// ── Config ────────────────────────────────────────────────
+const ROWS = 4;           // pyramid rows: 4+3+2+1 = 10 stones
+const MAX  = ROWS*(ROWS+1)/2; // 10
+const WIN_ROUNDS = 2;     // first to win 2 rounds
+
+function sw(){ return Math.floor(Math.min(44, (W*0.38-3*3)/4)); }
+function sh(){ return Math.floor(sw()*0.60); }
+function sg(){ return 3; }
+
+function pyrCX(isPlayer){ return isPlayer ? W*0.26 : W*0.74; }
+function pyrBase(){ return H*0.80; }
+function stoneX(){ return W/2; }
+function stoneStartY(){ return H*0.10; }
+function stoneEndY(){ return H*0.46; }
+
+// ── State ─────────────────────────────────────────────────
+let gs     = 'start'; // start|play|roundover|over
+let pSt    = 0, aSt = 0;    // stone counts
+let round  = 1, pW = 0, aW = 0;
+let best   = +localStorage.getItem('pyr_best') || 0;
+let lastTs = 0, cdT = 0;
+
+let active   = null;   // {y, t, maxT, used}
+let launches = [];     // flying stones
+let debris   = [];     // knocked-off stone animations
+let parts    = [], popups = [];
+let shake    = 0;
+let aiTimer  = 0;
+let aiBuildFlash = 0; // ms to show AI build flash
+
+// ── Difficulty ────────────────────────────────────────────
+function aiInterval(){  return Math.max(900,  3200-(round-1)*280); }
+function stoneLife(){   return Math.max(1800, 3200-(round-1)*160); }
+function aiAtkChance(){ return Math.min(0.38, 0.10+(round-1)*0.07); }
+
+// ── Pyramid helpers ───────────────────────────────────────
+function rowCount(row){ return ROWS-row; }   // row 0=bottom: 4, row 3=top: 1
+function rowBase(row){                       // stones filled before this row (building bottom-up)
+  let s=0; for(let r=0;r<row;r++) s+=rowCount(r); return s;
+}
+// Given total stones N, stone index I is filled if I < N
+
+function stonePos(row, col){
+  // Returns {x, y} center of stone slot
+  const n  = rowCount(row);
+  const S  = sw(), Sh = sh(), G = sg();
+  const rw = n*S+(n-1)*G;
+  const x0 = -rw/2 + col*(S+G) + S/2;
+  const y  = pyrBase() - (row+1)*(Sh+G) - Sh/2;
+  return {x:x0, y};
+}
+
+// ── Game flow ─────────────────────────────────────────────
+function startGame(){
+  round=1; pW=0; aW=0; startRound();
+}
+function startRound(){
+  pSt=0; aSt=0;
+  launches=[]; debris=[]; parts=[]; popups=[];
+  aiTimer=0; aiBuildFlash=0; shake=0;
+  active=null;
+  setTimeout(spawnActive, 400);
+  gs='play';
+}
+
+function spawnActive(){
+  if(gs!=='play') return;
+  active={y:stoneStartY(), t:0, maxT:stoneLife(), used:false};
+}
+
+function playerBuild(){
+  if(!active||active.used) return;
+  if(pSt>=MAX) return;
+  active.used=true;
+  const from={x:stoneX(), y:active.y};
+  const to=topStonePos(true);
+  addLaunch(from, to, false, true);
+  setTimeout(()=>{
+    pSt++; shake=4; beep('place');
+    if(pSt>=MAX) endRound('player');
+  }, 350);
+  setTimeout(spawnActive, 700);
+}
+
+function playerAttack(){
+  if(!active||active.used) return;
+  if(aSt<=0){ beep('empty'); return; }
+  active.used=true;
+  const from={x:stoneX(), y:active.y};
+  const to=topStonePos(false);
+  addLaunch(from, to, true, true);
+  setTimeout(()=>{
+    if(aSt<=0) return;
+    aSt--; shake=12;
+    beep('impact');
+    spawnDebris(pyrCX(false)+topStonePos(false).x, topStonePos(false).y);
+    popups.push({x:pyrCX(false),y:pyrBase()-70,txt:'−1',col:'#ff5252',life:1});
+    if(aSt<=0) endRound('player');
+  }, 360);
+  setTimeout(spawnActive, 700);
+}
+
+function aiAct(){
+  if(gs!=='play') return;
+  if(Math.random()<aiAtkChance() && pSt>0){
+    // AI attacks player
+    const from={x:pyrCX(false), y:pyrBase()-50};
+    const to={x:topStonePos(true).x, y:topStonePos(true).y};
+    addLaunch({x:pyrCX(false)+from.x, y:from.y}, {x:pyrCX(true)+to.x, y:to.y}, true, false);
+    setTimeout(()=>{
+      if(pSt<=0||gs!=='play') return;
+      pSt--; shake=14; beep('attacked');
+      spawnDebris(pyrCX(true)+topStonePos(true).x, topStonePos(true).y);
+      popups.push({x:pyrCX(true),y:pyrBase()-70,txt:'ATTACK!',col:'#ff3300',life:1.2});
+      if(pSt<=0) endRound('ai');
+    }, 400);
+  } else {
+    // AI builds
+    if(aSt<MAX){
+      aSt++; aiBuildFlash=350;
+      beep('ai_place');
+      if(aSt>=MAX) endRound('ai');
+    }
+  }
+}
+
+function topStonePos(isPlayer){
+  // Returns the position of the next stone to be placed/removed (relative to pyramid center)
+  const count = isPlayer ? pSt : aSt;
+  // Find top filled stone
+  const idx = Math.max(0, count-1);
+  for(let row=ROWS-1; row>=0; row--){
+    const base=rowBase(row);
+    const end=base+rowCount(row);
+    if(idx>=base && idx<end){
+      const col=idx-base;
+      return stonePos(row,col);
+    }
+  }
+  return stonePos(0,0);
+}
+
+function endRound(winner){
+  if(gs!=='play') return;
+  gs='roundover'; cdT=2400; active=null;
+  if(winner==='player'){
+    pW++;
+    popups.push({x:W/2, y:H*0.28, txt:'ROUND WIN!', col:'#69f0ae', life:2.5, big:true});
+    beep('win');
+  } else {
+    aW++;
+    popups.push({x:W/2, y:H*0.28, txt:'ROUND LOST', col:'#ff5252', life:2.5, big:true});
+    beep('lose');
+  }
+}
+
+// ── Launches ──────────────────────────────────────────────
+function addLaunch(from, to, isAttack, fromPlayer){
+  // to is relative to a pyramid center; from is absolute
+  const toAbs = {
+    x: (isAttack ? (fromPlayer?pyrCX(false):pyrCX(true)) : (fromPlayer?pyrCX(true):pyrCX(false))) + to.x,
+    y: to.y
+  };
+  const cpY = Math.min(from.y, toAbs.y) - 60 - Math.random()*40;
+  launches.push({fx:from.x, fy:from.y, tx:toAbs.x, ty:toAbs.y,
+    cpx:(from.x+toAbs.x)/2, cpy:cpY,
+    t:0, dur:360+Math.random()*80, isAttack, done:false});
+}
+
+function spawnDebris(cx, cy){
+  for(let i=0;i<8;i++){
+    const a=Math.random()*Math.PI*2, sp=2+Math.random()*4;
+    const S=sw(), Sh=sh();
+    debris.push({x:cx-S/2+Math.random()*S, y:cy,
+      vx:Math.cos(a)*sp, vy:Math.sin(a)*sp-3,
+      w:4+Math.random()*10, h:3+Math.random()*7,
+      col:'#90a4ae', life:1, dec:0.018+Math.random()*0.016, grav:0.22});
+  }
+}
+
+// ── Update ────────────────────────────────────────────────
+function update(dt){
+  if(gs==='roundover'){
+    cdT-=dt;
+    if(cdT<=0){
+      if(pW>=WIN_ROUNDS||aW>=WIN_ROUNDS){
+        best=Math.max(best,round);
+        localStorage.setItem('pyr_best',best);
+        gs='over';
+      } else { round++; startRound(); }
+    }
+    return;
+  }
+  if(gs!=='play') return;
+
+  shake*=0.78; if(shake<0.1) shake=0;
+  aiBuildFlash = Math.max(0, aiBuildFlash-dt);
+
+  // Active stone
+  if(active&&!active.used){
+    active.t+=dt;
+    active.y=lerp(stoneStartY(), stoneEndY(), Math.min(active.t/active.maxT,1));
+    if(active.t>=active.maxT){
+      active.used=true;
+      setTimeout(spawnActive,500);
+    }
+  }
+
+  // AI timer
+  aiTimer+=dt;
+  if(aiTimer>=aiInterval()){ aiTimer=0; aiAct(); }
+
+  // Launches (bezier)
+  launches.forEach(l=>{
+    l.t+=dt;
+    const p=Math.min(l.t/l.dur,1);
+    const e=p<0.5?2*p*p:-1+(4-2*p)*p;
+    const q=1-e;
+    l.cx=q*q*l.fx+2*q*e*l.cpx+e*e*l.tx;
+    l.cy=q*q*l.fy+2*q*e*l.cpy+e*e*l.ty;
+    if(p>=1) l.done=true;
+  });
+  launches=launches.filter(l=>!l.done);
+
+  debris=debris.filter(d=>d.life>0);
+  debris.forEach(d=>{ d.x+=d.vx; d.y+=d.vy; d.vy+=d.grav; d.vx*=0.96; d.life-=d.dec; });
+
+  parts=parts.filter(p=>p.life>0);
+  parts.forEach(p=>{ p.x+=p.vx; p.y+=p.vy; p.vy+=0.2; p.vx*=0.97; p.life-=p.dec; });
+
+  popups=popups.filter(p=>p.life>0);
+  popups.forEach(p=>{ p.y-=0.8; p.life-=0.016; });
+}
+
+// ── Draw ──────────────────────────────────────────────────
+function draw(){
+  drawBg();
+  if(gs==='start'){ drawStart(); return; }
+
+  const ox=shake?(Math.random()-0.5)*shake:0;
+  const oy=shake?(Math.random()-0.5)*shake:0;
+
+  // Zone overlays
+  if(gs==='play' && active&&!active.used){
+    ctx.fillStyle='rgba(66,165,245,0.06)';
+    ctx.fillRect(0,0,W/2,H);
+    ctx.fillStyle='rgba(239,83,80,0.06)';
+    ctx.fillRect(W/2,0,W/2,H);
+  }
+
+  ctx.save(); ctx.translate(ox,oy);
+
+  // Pyramids
+  ctx.save(); ctx.translate(pyrCX(true),0);
+  drawPyramid(pSt, true, false);
+  ctx.restore();
+  ctx.save(); ctx.translate(pyrCX(false),0);
+  drawPyramid(aSt, false, aiBuildFlash>0);
+  ctx.restore();
+
+  // Divider
+  ctx.strokeStyle='rgba(0,0,0,0.12)'; ctx.lineWidth=1;
+  ctx.setLineDash([5,7]);
+  ctx.beginPath(); ctx.moveTo(W/2,55); ctx.lineTo(W/2,H*0.87); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Zone labels
+  ctx.font=`bold ${Math.min(12,W*0.032)}px "Black Ops One"`;
+  ctx.textAlign='center'; ctx.fillStyle='rgba(66,165,245,0.6)';
+  ctx.fillText('▲ BUILD',W*0.26,H*0.9);
+  ctx.fillStyle='rgba(239,83,80,0.6)';
+  ctx.fillText('⚡ ATTACK',W*0.74,H*0.9);
+
+  // Progress bars
+  drawBar(pyrCX(true), pSt, '#42a5f5');
+  drawBar(pyrCX(false), aSt, '#ef5350');
+
+  // Active stone
+  if(active&&!active.used){
+    const prog=active.t/active.maxT;
+    ctx.save();
+    ctx.globalAlpha=prog>0.78?1-(prog-0.78)/0.22:1;
+    drawStone(stoneX()-sw()/2, active.y-sh()/2, '#b0bec5');
+    // Timer arc
+    ctx.strokeStyle=`hsl(${120*(1-prog)},90%,48%)`;
+    ctx.lineWidth=3.5;
+    ctx.beginPath();
+    ctx.arc(stoneX(), active.y, sw()*0.85, -Math.PI/2, -Math.PI/2+(1-prog)*Math.PI*2);
+    ctx.stroke();
+    ctx.restore();
+    // Labels flanking the stone
+    ctx.font=`bold ${Math.min(11,W*0.029)}px "Black Ops One"`;
+    ctx.fillStyle='rgba(66,165,245,0.85)';
+    ctx.textAlign='right';
+    ctx.fillText('◀ BUILD', stoneX()-sw()*0.95, active.y+5);
+    ctx.fillStyle='rgba(239,83,80,0.85)';
+    ctx.textAlign='left';
+    ctx.fillText('ATTACK ▶', stoneX()+sw()*0.95, active.y+5);
+  }
+
+  // Launches
+  launches.forEach(l=>{
+    ctx.save();
+    drawStone(l.cx-sw()/2, l.cy-sh()/2, l.isAttack?'#ef5350':'#b0bec5');
+    ctx.restore();
+  });
+
+  ctx.restore();
+
+  // Debris
+  debris.forEach(d=>{
+    ctx.save(); ctx.globalAlpha=Math.max(0,d.life);
+    ctx.fillStyle=d.col; ctx.fillRect(d.x,d.y,d.w,d.h);
+    ctx.restore();
+  });
+
+  // Particles
+  parts.forEach(p=>{
+    ctx.save(); ctx.globalAlpha=Math.max(0,p.life);
+    ctx.fillStyle=p.col; ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  });
+
+  // Popups
+  popups.forEach(p=>{
+    ctx.save(); ctx.globalAlpha=Math.min(1,p.life*1.5);
+    ctx.font=`bold ${p.big?Math.min(34,W*0.09):Math.min(18,W*0.048)}px "Black Ops One"`;
+    ctx.textAlign='center'; ctx.fillStyle=p.col;
+    ctx.shadowColor=p.col; ctx.shadowBlur=12;
+    ctx.fillText(p.txt,p.x,p.y); ctx.shadowBlur=0; ctx.restore();
+  });
+
+  drawHUD();
+  if(gs==='over') drawOver();
+}
+
+// ── Draw pyramid ──────────────────────────────────────────
+function drawPyramid(count, isPlayer, flash){
+  const S=sw(), Sh=sh(), G=sg();
+  for(let row=0;row<ROWS;row++){
+    const n=rowCount(row);
+    const base=rowBase(row);
+    const rw=n*S+(n-1)*G;
+    const x0=-rw/2;
+    const y=pyrBase()-(row+1)*(Sh+G);
+    for(let i=0;i<n;i++){
+      const idx=base+i;
+      const filled=idx<count;
+      const sx=x0+i*(S+G);
+      if(!filled){
+        ctx.fillStyle='rgba(0,0,0,0.15)';
+        ctx.beginPath(); ctx.roundRect(sx,y,S,Sh,3); ctx.fill();
+      } else {
+        // Stone color
+        const baseCol=isPlayer?'#78909c':'#8d6e63';
+        drawStone(sx,y,baseCol);
+        // Glow on topmost stone
+        if(idx===count-1){
+          ctx.strokeStyle=flash?'rgba(255,200,0,0.8)':(isPlayer?'rgba(100,200,255,0.7)':'rgba(255,150,100,0.5)');
+          ctx.lineWidth=2; ctx.beginPath(); ctx.roundRect(sx-1,y-1,S+2,Sh+2,4); ctx.stroke();
+        }
+      }
+    }
+  }
+  // Crown on completed pyramid
+  if(count>=MAX){
+    const S=sw(),Sh=sh(),G=sg();
+    const topY=pyrBase()-ROWS*(Sh+G)-Sh;
+    ctx.save();
+    ctx.font=`${Math.min(22,S*0.9)}px sans-serif`;
+    ctx.textAlign='center';
+    ctx.fillText('👑',0,topY-4);
+    ctx.restore();
+  }
+}
+
+function drawStone(x,y,col){
+  const S=sw(), Sh=sh();
+  const g=ctx.createLinearGradient(x,y,x,y+Sh);
+  g.addColorStop(0,lighten(col,0.18)); g.addColorStop(0.45,col); g.addColorStop(1,darken(col,0.22));
+  ctx.fillStyle=g;
+  ctx.beginPath(); ctx.roundRect(x,y,S,Sh,3); ctx.fill();
+  // Highlight
+  ctx.fillStyle='rgba(255,255,255,0.16)';
+  ctx.beginPath(); ctx.roundRect(x+1,y+1,S-2,Sh*0.33,2); ctx.fill();
+  // Crack
+  ctx.strokeStyle='rgba(0,0,0,0.1)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(x+S*0.35,y+2); ctx.lineTo(x+S*0.55,y+Sh-2); ctx.stroke();
+  // Border
+  ctx.strokeStyle='rgba(0,0,0,0.18)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.roundRect(x,y,S,Sh,3); ctx.stroke();
+}
+
+function drawBar(cx, count, col){
+  const bw=Math.min(90,W*0.2), bh=6;
+  const x=cx-bw/2, y=pyrBase()+8;
+  ctx.fillStyle='rgba(0,0,0,0.18)'; ctx.beginPath(); ctx.roundRect(x,y,bw,bh,3); ctx.fill();
+  ctx.fillStyle=col; ctx.beginPath(); ctx.roundRect(x,y,bw*(count/MAX),bh,3); ctx.fill();
+  ctx.font=`bold ${Math.min(9,W*0.024)}px "Black Ops One"`;
+  ctx.textAlign='center'; ctx.fillStyle='rgba(0,0,0,0.4)';
+  ctx.fillText(`${count}/${MAX}`, cx, y+bh+10);
+}
+
+// ── HUD ───────────────────────────────────────────────────
+function drawHUD(){
+  ctx.fillStyle='rgba(0,0,0,0.32)'; ctx.fillRect(0,0,W,52);
+  ctx.textAlign='center';
+  // Round
+  ctx.font=`bold ${Math.min(11,W*0.029)}px "Black Ops One"`;
+  ctx.fillStyle='rgba(255,255,255,0.45)'; ctx.fillText('ROUND',W/2,15);
+  ctx.font=`bold ${Math.min(22,W*0.058)}px "Black Ops One"`;
+  ctx.fillStyle='#fff'; ctx.fillText(round,W/2,40);
+
+  // Win pips — player left, AI right
+  const dotY=26, dotR=5;
+  ctx.font=`bold ${Math.min(9,W*0.024)}px "Black Ops One"`;
+  ctx.fillStyle='rgba(255,255,255,0.35)';
+  ctx.fillText('YOU',W*0.26,14);
+  ctx.fillText('AI',W*0.74,14);
+  for(let i=0;i<WIN_ROUNDS;i++){
+    ctx.fillStyle=i<pW?'#42a5f5':'rgba(255,255,255,0.15)';
+    ctx.beginPath(); ctx.arc(W*0.26+(i-0.5)*14,dotY,dotR,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle=i<aW?'#ef5350':'rgba(255,255,255,0.15)';
+    ctx.beginPath(); ctx.arc(W*0.74+(i-0.5)*14,dotY,dotR,0,Math.PI*2); ctx.fill();
+  }
+  ctx.textAlign='left';
+}
+
+// ── Background ────────────────────────────────────────────
+function drawBg(){
+  const sky=ctx.createLinearGradient(0,0,0,H);
+  sky.addColorStop(0,'#c46200'); sky.addColorStop(0.35,'#e8880a');
+  sky.addColorStop(0.65,'#f5b942'); sky.addColorStop(1,'#c8a050');
+  ctx.fillStyle=sky; ctx.fillRect(0,0,W,H);
+  // Desert floor
+  const floor=ctx.createLinearGradient(0,H*0.84,0,H);
+  floor.addColorStop(0,'#c8a050'); floor.addColorStop(1,'#a07830');
+  ctx.fillStyle=floor; ctx.fillRect(0,H*0.84,W,H*0.16);
+  ctx.fillStyle='rgba(0,0,0,0.12)'; ctx.fillRect(0,H*0.84,W,2);
+  // Sun
+  ctx.save();
+  ctx.fillStyle='rgba(255,220,80,0.7)'; ctx.shadowColor='#ffcc00'; ctx.shadowBlur=35;
+  ctx.beginPath(); ctx.arc(W*0.5,H*0.06,Math.min(20,W*0.052),0,Math.PI*2); ctx.fill();
+  ctx.shadowBlur=0; ctx.restore();
+  // Distant pyramids (silhouette)
+  ctx.fillStyle='rgba(180,100,10,0.18)';
+  [[W*0.12,H*0.72,50],[W*0.88,H*0.72,42],[W*0.5,H*0.76,28]].forEach(([px,py,s])=>{
+    ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(px-s,py+s*0.7); ctx.lineTo(px+s,py+s*0.7); ctx.closePath(); ctx.fill();
+  });
+}
+
+// ── Screens ───────────────────────────────────────────────
+function drawStart(){
+  ctx.textAlign='center';
+  ctx.font=`bold ${Math.min(58,W*0.154)}px "Black Ops One"`;
+  ctx.shadowColor='#ff8c00'; ctx.shadowBlur=28;
+  ctx.fillStyle='#fff'; ctx.fillText('PYRAMID',W/2,H*0.32);
+  ctx.shadowBlur=0;
+  ctx.font=`${Math.min(14,W*0.037)}px "Black Ops One"`;
+  ctx.fillStyle='rgba(255,230,160,0.75)';
+  ctx.fillText('build yours  ·  topple theirs',W/2,H*0.32+Math.min(58,W*0.154)*0.62);
+
+  // Instructions
+  ctx.font=`${Math.min(12,W*0.032)}px "Black Ops One"`;
+  ctx.fillStyle='rgba(0,0,0,0.35)';
+  const iy=H*0.54;
+  ctx.fillText('tap LEFT HALF  →  add stone to your pyramid',W/2,iy);
+  ctx.fillText('tap RIGHT HALF  →  throw stone at AI pyramid',W/2,iy+20);
+  ctx.fillText(`first to ${WIN_ROUNDS} round wins!`,W/2,iy+42);
+
+  const pulse=0.6+Math.sin(Date.now()/520)*0.4;
+  ctx.globalAlpha=pulse;
+  ctx.font=`bold ${Math.min(21,W*0.056)}px "Black Ops One"`;
+  ctx.fillStyle='#fff'; ctx.fillText('TAP TO PLAY',W/2,H*0.75);
+  ctx.globalAlpha=1;
+  if(best>0){
+    ctx.font=`${Math.min(12,W*0.032)}px "Black Ops One"`;
+    ctx.fillStyle='rgba(255,215,0,0.5)';
+    ctx.fillText(`BEST  ROUND ${best}`,W/2,H*0.75+Math.min(21,W*0.056)+14);
+  }
+  ctx.textAlign='left';
+}
+
+function drawOver(){
+  ctx.fillStyle='rgba(0,0,0,0.72)'; ctx.fillRect(0,0,W,H);
+  const won=pW>aW;
+  ctx.textAlign='center';
+  ctx.font=`bold ${Math.min(52,W*0.138)}px "Black Ops One"`;
+  ctx.shadowColor=won?'#ffd740':'#ff2200'; ctx.shadowBlur=22;
+  ctx.fillStyle=won?'#ffd740':'#ff5252';
+  ctx.fillText(won?'BUILT IT!':'TOPPLED!',W/2,H*0.35);
+  ctx.shadowBlur=0;
+  ctx.font=`bold ${Math.min(16,W*0.043)}px "Black Ops One"`;
+  ctx.fillStyle='#fff';
+  ctx.fillText(`YOU ${pW} – ${aW} AI`,W/2,H*0.48);
+  ctx.fillStyle='rgba(255,215,0,0.55)';
+  ctx.fillText(`BEST ROUND ${best}`,W/2,H*0.55);
+  const pulse=0.6+Math.sin(Date.now()/520)*0.4;
+  ctx.globalAlpha=pulse;
+  ctx.font=`bold ${Math.min(20,W*0.053)}px "Black Ops One"`;
+  ctx.fillStyle='#fff'; ctx.fillText('TAP TO RETRY',W/2,H*0.70);
+  ctx.globalAlpha=1; ctx.textAlign='left';
+}
+
+// ── Helpers ───────────────────────────────────────────────
+function lerp(a,b,t){ return a+(b-a)*t; }
+function lighten(col,a){
+  const c=parseColor(col);
+  return `rgb(${Math.min(255,c[0]+a*255|0)},${Math.min(255,c[1]+a*255|0)},${Math.min(255,c[2]+a*255|0)})`;
+}
+function darken(col,a){
+  const c=parseColor(col);
+  return `rgb(${Math.max(0,c[0]-a*255|0)},${Math.max(0,c[1]-a*255|0)},${Math.max(0,c[2]-a*255|0)})`;
+}
+function parseColor(col){
+  const el=document.createElement('canvas'); el.width=el.height=1;
+  const c=el.getContext('2d'); c.fillStyle=col; c.fillRect(0,0,1,1);
+  const d=c.getImageData(0,0,1,1).data; return [d[0],d[1],d[2]];
+}
+
+// ── Audio ─────────────────────────────────────────────────
+let ac;
+function initAC(){ if(!ac) ac=new(window.AudioContext||window.webkitAudioContext)(); }
+function beep(type){
+  if(!ac) return;
+  const o=ac.createOscillator(), g=ac.createGain();
+  o.connect(g); g.connect(ac.destination);
+  const t=ac.currentTime;
+  switch(type){
+    case 'place':
+      o.frequency.setValueAtTime(260,t); o.frequency.setValueAtTime(380,t+0.06);
+      g.gain.setValueAtTime(0.18,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.18);
+      o.start(t); o.stop(t+0.18); break;
+    case 'ai_place':
+      o.frequency.setValueAtTime(200,t);
+      g.gain.setValueAtTime(0.08,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.12);
+      o.start(t); o.stop(t+0.12); break;
+    case 'impact':
+      o.type='sawtooth';
+      o.frequency.setValueAtTime(200,t); o.frequency.exponentialRampToValueAtTime(80,t+0.22);
+      g.gain.setValueAtTime(0.25,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.22);
+      o.start(t); o.stop(t+0.22); break;
+    case 'attacked':
+      o.type='sawtooth';
+      o.frequency.setValueAtTime(120,t); o.frequency.exponentialRampToValueAtTime(55,t+0.32);
+      g.gain.setValueAtTime(0.3,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.32);
+      o.start(t); o.stop(t+0.32); break;
+    case 'win':
+      o.frequency.setValueAtTime(440,t); o.frequency.setValueAtTime(554,t+0.1); o.frequency.setValueAtTime(660,t+0.2);
+      g.gain.setValueAtTime(0.2,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.42);
+      o.start(t); o.stop(t+0.42); break;
+    case 'lose':
+      o.type='sawtooth';
+      o.frequency.setValueAtTime(220,t); o.frequency.exponentialRampToValueAtTime(100,t+0.4);
+      g.gain.setValueAtTime(0.2,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.4);
+      o.start(t); o.stop(t+0.4); break;
+    case 'empty':
+      o.frequency.setValueAtTime(150,t);
+      g.gain.setValueAtTime(0.1,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.08);
+      o.start(t); o.stop(t+0.08); break;
+  }
+}
+
+// ── Input ─────────────────────────────────────────────────
+canvas.addEventListener('pointerdown', e=>{
+  initAC();
+  const r=canvas.getBoundingClientRect();
+  const x=(e.clientX-r.left)*(W/r.width);
+  if(gs==='start'||gs==='over'){ startGame(); return; }
+  if(gs==='play'){
+    if(x<W/2) playerBuild();
+    else       playerAttack();
+  }
+},{passive:true});
+
+// ── Loop ──────────────────────────────────────────────────
+function loop(ts){
+  const dt=Math.min(ts-lastTs,50); lastTs=ts;
+  update(dt); draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

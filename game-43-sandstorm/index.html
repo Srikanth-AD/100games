@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>SANDSTORM</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;touch-action:none;}
+html,body{width:100%;height:100%;overflow:hidden;background:#1a0f00;}
+body{display:flex;align-items:center;justify-content:center;}
+#wrap{
+  position:relative;
+  width:min(100vw,calc(100dvh*.625));
+  height:min(100dvh,calc(100vw/0.625));
+  max-width:375px;max-height:600px;
+  overflow:hidden;
+}
+canvas{display:block;width:100%;height:100%;}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c"></canvas></div>
+<script>
+// ── CANVAS SETUP ──────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const LW = 375, LH = 600;
+canvas.width = LW; canvas.height = LH;
+
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+    r = Math.min(typeof r === 'number' ? r : r[0], Math.abs(w) / 2, Math.abs(h) / 2);
+    this.moveTo(x + r, y);
+    this.lineTo(x + w - r, y);   this.arcTo(x + w, y,   x + w, y + r,   r);
+    this.lineTo(x + w, y + h - r); this.arcTo(x + w, y + h, x + w - r, y + h, r);
+    this.lineTo(x + r, y + h);   this.arcTo(x, y + h,   x, y + h - r,   r);
+    this.lineTo(x, y + r);       this.arcTo(x, y,        x + r, y,       r);
+    this.closePath();
+  };
+}
+
+let vw = canvas.offsetWidth, vh = canvas.offsetHeight;
+let scl = Math.min(vw / LW, vh / LH);
+
+const wrap = document.getElementById('wrap');
+function onResize() {
+  vw = wrap.clientWidth; vh = wrap.clientHeight;
+  scl = Math.min(vw / LW, vh / LH);
+}
+window.addEventListener('resize', onResize);
+onResize();
+
+// ── AUDIO ─────────────────────────────────────────────────────────────────────
+let audioCtx = null;
+function getAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+function playWarning() {
+  const ac = getAudio();
+  const osc = ac.createOscillator();
+  const gain = ac.createGain();
+  osc.connect(gain); gain.connect(ac.destination);
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(60, ac.currentTime);
+  osc.frequency.linearRampToValueAtTime(90, ac.currentTime + 2.5);
+  gain.gain.setValueAtTime(0, ac.currentTime);
+  gain.gain.linearRampToValueAtTime(0.18, ac.currentTime + 1.5);
+  gain.gain.linearRampToValueAtTime(0.12, ac.currentTime + 3);
+  osc.start(); osc.stop(ac.currentTime + 3);
+}
+
+function playStormHit() {
+  const ac = getAudio();
+  const buf = ac.createBuffer(1, ac.sampleRate * 0.4, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+  const src = ac.createBufferSource();
+  const gain = ac.createGain();
+  const filter = ac.createBiquadFilter();
+  filter.type = 'bandpass'; filter.frequency.value = 400; filter.Q.value = 0.5;
+  src.buffer = buf;
+  src.connect(filter); filter.connect(gain); gain.connect(ac.destination);
+  gain.gain.setValueAtTime(0.35, ac.currentTime);
+  src.start();
+}
+
+function playCollect() {
+  const ac = getAudio();
+  const osc = ac.createOscillator();
+  const gain = ac.createGain();
+  osc.connect(gain); gain.connect(ac.destination);
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(660, ac.currentTime);
+  osc.frequency.linearRampToValueAtTime(880, ac.currentTime + 0.12);
+  gain.gain.setValueAtTime(0.22, ac.currentTime);
+  gain.gain.linearRampToValueAtTime(0, ac.currentTime + 0.25);
+  osc.start(); osc.stop(ac.currentTime + 0.25);
+}
+
+function playShelter() {
+  const ac = getAudio();
+  const osc = ac.createOscillator();
+  const gain = ac.createGain();
+  osc.connect(gain); gain.connect(ac.destination);
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(440, ac.currentTime);
+  osc.frequency.linearRampToValueAtTime(220, ac.currentTime + 0.4);
+  gain.gain.setValueAtTime(0.18, ac.currentTime);
+  gain.gain.linearRampToValueAtTime(0, ac.currentTime + 0.45);
+  osc.start(); osc.stop(ac.currentTime + 0.5);
+}
+
+function playHurt() {
+  const ac = getAudio();
+  const osc = ac.createOscillator();
+  const gain = ac.createGain();
+  osc.connect(gain); gain.connect(ac.destination);
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(80, ac.currentTime);
+  osc.frequency.linearRampToValueAtTime(40, ac.currentTime + 0.2);
+  gain.gain.setValueAtTime(0.3, ac.currentTime);
+  gain.gain.linearRampToValueAtTime(0, ac.currentTime + 0.22);
+  osc.start(); osc.stop(ac.currentTime + 0.25);
+}
+
+// ── GAME STATE ────────────────────────────────────────────────────────────────
+let state = 'start'; // 'start' | 'play' | 'over'
+let score = 0;
+let health = 100;
+let stormsWeathered = 0;
+let level = 1;
+let best = parseInt(localStorage.getItem('sandstorm_best') || '0');
+
+// Phase management
+let phase = 'calm'; // 'calm' | 'warning' | 'storm' | 'clearing'
+let phaseTimer = 0;
+let calmDuration = 10;
+let stormDir = 'left'; // 'left'|'right'|'top'|'bottom'
+
+// Player
+let player = { x: LW / 2, y: LH / 2, tx: LW / 2, ty: LH / 2, r: 10, angle: 0, sheltered: false };
+
+// Boulders
+let boulders = [];
+
+// Items
+let items = [];
+let popups = [];
+
+// Storm particles
+let particles = [];
+let stormOverlay = 0; // 0..1
+
+// Warning flash
+let warnFlash = 0;
+let warnPulse = 0;
+
+// Rumble particles (warning phase pre-cursor)
+let rumbleParticles = [];
+
+// Edge flash timer
+let edgeFlashTimer = 0;
+
+// Was sheltered before storm? track moment shelter was taken
+let shelterSoundCooldown = 0;
+
+// Hurt flash
+let hurtFlash = 0;
+let lastHurtTime = 0;
+
+// Dune patterns (static background detail)
+let dunes = [];
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+function rng(min, max) { return min + Math.random() * (max - min); }
+function dist(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by); }
+
+function initDunes() {
+  dunes = [];
+  for (let i = 0; i < 18; i++) {
+    dunes.push({ x: rng(0, LW), y: rng(0, LH), rx: rng(40, 90), ry: rng(12, 28), angle: rng(-0.4, 0.4) });
+  }
+}
+
+function placeBoulders() {
+  boulders = [];
+  const attempts = 200;
+  const minDist = 110;
+  const margin = 60;
+  for (let b = 0; b < 5; b++) {
+    let placed = false;
+    for (let a = 0; a < attempts; a++) {
+      const x = rng(margin, LW - margin);
+      const y = rng(margin + 40, LH - margin);
+      let ok = true;
+      for (const ob of boulders) {
+        if (dist(x, y, ob.x, ob.y) < minDist) { ok = false; break; }
+      }
+      // Keep away from center start
+      if (dist(x, y, LW / 2, LH / 2) < 80) ok = false;
+      if (ok) {
+        const r1 = rng(22, 30), r2 = rng(16, 22), r3 = rng(12, 18);
+        const shelterR = r1 + 12;
+        boulders.push({
+          x, y,
+          rocks: [
+            { dx: 0, dy: 0, r: r1 },
+            { dx: rng(-14, 14), dy: rng(-14, 14), r: r2 },
+            { dx: rng(-10, 10), dy: rng(-10, 10), r: r3 },
+          ],
+          shelterR,
+          glowTimer: 0,
+          glowing: false
+        });
+        placed = true;
+        break;
+      }
+    }
+  }
+}
+
+function spawnItems() {
+  items = [];
+  const types = ['water', 'coin', 'food'];
+  const scores = { water: 15, coin: 25, food: 10 };
+  const count = 3 + level;
+  for (let i = 0; i < count; i++) {
+    let x, y, ok;
+    for (let a = 0; a < 100; a++) {
+      x = rng(30, LW - 30); y = rng(60, LH - 30);
+      ok = true;
+      // Not inside boulders
+      for (const b of boulders) {
+        if (dist(x, y, b.x, b.y) < b.shelterR) { ok = false; break; }
+      }
+      // Not too close to player
+      if (dist(x, y, player.x, player.y) < 60) ok = false;
+      // Not too close to other items
+      for (const it of items) {
+        if (dist(x, y, it.x, it.y) < 40) { ok = false; break; }
+      }
+      if (ok) break;
+    }
+    const type = types[Math.floor(Math.random() * types.length)];
+    items.push({ x, y, type, points: scores[type], pulse: Math.random() * Math.PI * 2, alive: true });
+  }
+}
+
+function spawnStormParticles() {
+  particles = [];
+  const baseSpeed = (4 + level * 0.6) * scl;
+  let count = 220;
+  for (let i = 0; i < count; i++) {
+    let px, py, vx, vy;
+    const speed = rng(baseSpeed * 0.7, baseSpeed * 1.4);
+    if (stormDir === 'left') {
+      px = rng(-40, 0); py = rng(-20, LH + 20);
+      vx = speed; vy = rng(-0.5, 0.5) * scl;
+    } else if (stormDir === 'right') {
+      px = rng(LW, LW + 40); py = rng(-20, LH + 20);
+      vx = -speed; vy = rng(-0.5, 0.5) * scl;
+    } else if (stormDir === 'top') {
+      px = rng(-20, LW + 20); py = rng(-40, 0);
+      vx = rng(-0.5, 0.5) * scl; vy = speed;
+    } else {
+      px = rng(-20, LW + 20); py = rng(LH, LH + 40);
+      vx = rng(-0.5, 0.5) * scl; vy = -speed;
+    }
+    particles.push({
+      x: px, y: py, vx, vy,
+      rx: rng(2, 5) * scl, ry: rng(1, 2.5) * scl,
+      angle: Math.atan2(vy, vx),
+      color: Math.random() < 0.5 ? '#c8924a' : '#e0aa60',
+      alpha: rng(0.6, 1.0),
+      life: 1
+    });
+  }
+}
+
+function spawnRumbleParticles() {
+  rumbleParticles = [];
+  const count = 30;
+  for (let i = 0; i < count; i++) {
+    let px, py;
+    if (stormDir === 'left') { px = rng(0, 15); py = rng(0, LH); }
+    else if (stormDir === 'right') { px = rng(LW - 15, LW); py = rng(0, LH); }
+    else if (stormDir === 'top') { px = rng(0, LW); py = rng(0, 15); }
+    else { px = rng(0, LW); py = rng(LH - 15, LH); }
+    rumbleParticles.push({ x: px, y: py, life: rng(0.4, 1), alpha: rng(0.4, 0.8) });
+  }
+}
+
+function startGame() {
+  score = 0; health = 100; stormsWeathered = 0; level = 1;
+  player.x = LW / 2; player.y = LH / 2;
+  player.tx = LW / 2; player.ty = LH / 2;
+  player.angle = 0; player.sheltered = false;
+  particles = []; rumbleParticles = []; popups = [];
+  stormOverlay = 0; warnFlash = 0; warnPulse = 0; hurtFlash = 0;
+  phase = 'calm';
+  calmDuration = rng(8, 12);
+  phaseTimer = calmDuration;
+  stormDir = ['left', 'right', 'top', 'bottom'][Math.floor(Math.random() * 4)];
+  initDunes();
+  placeBoulders();
+  spawnItems();
+  state = 'play';
+  lastHurtTime = 0;
+}
+
+// ── POINTER INPUT ─────────────────────────────────────────────────────────────
+let pointer = { down: false };
+
+function getCanvasPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  const cw = rect.width, ch = rect.height;
+  const cx = (e.clientX - rect.left) / cw * LW;
+  const cy = (e.clientY - rect.top) / ch * LH;
+  return { x: cx, y: cy };
+}
+
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  pointer.down = true;
+  const pos = getCanvasPos(e);
+  if (state === 'start') {
+    startGame(); return;
+  }
+  if (state === 'over') {
+    startGame(); return;
+  }
+  if (state === 'play') {
+    player.tx = pos.x; player.ty = pos.y;
+  }
+});
+canvas.addEventListener('pointermove', e => {
+  e.preventDefault();
+  if (state === 'play' && pointer.down) {
+    const pos = getCanvasPos(e);
+    player.tx = pos.x; player.ty = pos.y;
+  }
+});
+canvas.addEventListener('pointerup', e => { e.preventDefault(); pointer.down = false; });
+canvas.addEventListener('pointercancel', e => { e.preventDefault(); pointer.down = false; });
+
+// ── UPDATE ────────────────────────────────────────────────────────────────────
+let lastTime = 0;
+
+function update(now) {
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+
+  if (state !== 'play') return;
+
+  // ── Move player ──
+  const speed = 120 * scl;
+  const dx = player.tx - player.x;
+  const dy = player.ty - player.y;
+  const d = Math.hypot(dx, dy);
+  if (d > 2) {
+    const step = Math.min(speed * dt, d);
+    player.x += (dx / d) * step;
+    player.y += (dy / d) * step;
+    player.angle = Math.atan2(dy, dx);
+  }
+  // Clamp to screen
+  player.x = Math.max(player.r, Math.min(LW - player.r, player.x));
+  player.y = Math.max(player.r + 40, Math.min(LH - player.r, player.y));
+
+  // ── Check shelter ──
+  let wasSheltered = player.sheltered;
+  player.sheltered = false;
+  for (const b of boulders) {
+    if (dist(player.x, player.y, b.x, b.y) < b.shelterR) {
+      player.sheltered = true;
+      if (!wasSheltered && phase === 'storm') {
+        b.glowTimer = 1.2;
+        b.glowing = true;
+        playShelter();
+      } else if (!wasSheltered && phase === 'warning') {
+        b.glowTimer = 0.6;
+        b.glowing = true;
+      }
+    }
+    if (b.glowTimer > 0) {
+      b.glowTimer -= dt;
+      if (b.glowTimer <= 0) { b.glowTimer = 0; b.glowing = false; }
+    }
+  }
+
+  // ── Collect items ──
+  for (const it of items) {
+    if (!it.alive) continue;
+    if (dist(player.x, player.y, it.x, it.y) < 22 * scl) {
+      it.alive = false;
+      score += it.points;
+      playCollect();
+      popups.push({ x: it.x, y: it.y - 10, text: '+' + it.points, life: 1.2, color: '#ffe066' });
+    }
+    it.pulse += dt * 3;
+  }
+
+  // ── Update popups ──
+  for (const p of popups) { p.life -= dt; p.y -= dt * 22; }
+  popups = popups.filter(p => p.life > 0);
+
+  // ── Phase management ──
+  phaseTimer -= dt;
+
+  if (phase === 'calm') {
+    stormOverlay = 0;
+    if (phaseTimer <= 0) {
+      phase = 'warning';
+      phaseTimer = 3;
+      stormDir = ['left', 'right', 'top', 'bottom'][Math.floor(Math.random() * 4)];
+      spawnRumbleParticles();
+      playWarning();
+    }
+  } else if (phase === 'warning') {
+    warnPulse += dt * 5;
+    edgeFlashTimer += dt;
+    // Update rumble particles
+    for (const rp of rumbleParticles) {
+      rp.life -= dt * 0.5;
+      rp.x += rng(-1.5, 1.5);
+      rp.y += rng(-1.5, 1.5);
+    }
+    rumbleParticles = rumbleParticles.filter(r => r.life > 0);
+    if (phaseTimer <= 0) {
+      phase = 'storm';
+      phaseTimer = 4 + level * 0.3;
+      spawnStormParticles();
+      playStormHit();
+      items = []; // items disappear during storm
+    }
+  } else if (phase === 'storm') {
+    // Move storm particles
+    for (const p of particles) {
+      p.x += p.vx;
+      p.y += p.vy;
+    }
+    // Fade in overlay
+    stormOverlay = Math.min(1, stormOverlay + dt * 1.2);
+
+    // Health drain if not sheltered
+    if (!player.sheltered) {
+      const drainRate = 25 * dt;
+      if (now - lastHurtTime > 300) {
+        playHurt();
+        lastHurtTime = now;
+      }
+      hurtFlash = 0.4;
+      health = Math.max(0, health - drainRate);
+      if (health <= 0) {
+        health = 0;
+        state = 'over';
+        if (score > best) { best = score; localStorage.setItem('sandstorm_best', best); }
+        return;
+      }
+    }
+
+    if (phaseTimer <= 0) {
+      phase = 'clearing';
+      phaseTimer = 1.5;
+      stormsWeathered++;
+      if (stormsWeathered % 3 === 0) {
+        level++;
+        popups.push({ x: LW / 2, y: LH / 2 - 30, text: 'LEVEL ' + level + '!', life: 2, color: '#ffaa00' });
+      }
+    }
+  } else if (phase === 'clearing') {
+    // Fade out overlay
+    stormOverlay = Math.max(0, stormOverlay - dt * 1.5);
+    // Move leftover particles off screen
+    for (const p of particles) { p.x += p.vx; p.y += p.vy; p.alpha -= dt * 1.2; }
+    particles = particles.filter(p => p.alpha > 0);
+    hurtFlash = Math.max(0, hurtFlash - dt * 2);
+    if (phaseTimer <= 0) {
+      phase = 'calm';
+      calmDuration = rng(8, 12);
+      phaseTimer = calmDuration;
+      stormOverlay = 0;
+      particles = [];
+      spawnItems();
+    }
+  }
+
+  hurtFlash = Math.max(0, hurtFlash - dt * 2);
+  shelterSoundCooldown = Math.max(0, shelterSoundCooldown - dt);
+}
+
+// ── DRAW ──────────────────────────────────────────────────────────────────────
+function drawBackground() {
+  // Base sandy ground
+  ctx.fillStyle = '#d4aa6a';
+  ctx.fillRect(0, 0, LW, LH);
+
+  // Subtle dune patterns
+  for (const d of dunes) {
+    ctx.save();
+    ctx.translate(d.x, d.y);
+    ctx.rotate(d.angle);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, d.rx, d.ry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(180,140,70,0.25)';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Subtle grid texture suggestion
+  for (let gy = 0; gy < LH; gy += 40) {
+    ctx.beginPath();
+    ctx.moveTo(0, gy); ctx.lineTo(LW, gy);
+    ctx.strokeStyle = 'rgba(160,120,55,0.08)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+}
+
+function drawBoulders() {
+  for (const b of boulders) {
+    // Shelter radius highlight (when glowing)
+    if (b.glowing) {
+      const alpha = Math.min(1, b.glowTimer / 0.5) * 0.35;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.shelterR, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(100,220,100,${alpha})`;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.shelterR, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(80,255,80,${alpha * 2})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    // Shelter ring (subtle always-visible guide)
+    if (player.sheltered && boulders.some(bb => bb === b && dist(player.x, player.y, b.x, b.y) < b.shelterR)) {
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.shelterR, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(100,220,80,0.5)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 5]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Draw rock circles (back to front by size)
+    const sorted = [...b.rocks].sort((a, c) => c.r - a.r);
+    for (const rock of sorted) {
+      const rx = b.x + rock.dx, ry = b.y + rock.dy;
+      // Shadow
+      ctx.beginPath();
+      ctx.ellipse(rx + 3, ry + 4, rock.r, rock.r * 0.85, 0.15, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(80,55,20,0.28)';
+      ctx.fill();
+      // Rock body
+      ctx.beginPath();
+      ctx.arc(rx, ry, rock.r, 0, Math.PI * 2);
+      const grad = ctx.createRadialGradient(rx - rock.r * 0.3, ry - rock.r * 0.3, rock.r * 0.1, rx, ry, rock.r);
+      grad.addColorStop(0, '#b0a090');
+      grad.addColorStop(1, '#6a5a4a');
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(rx, ry, rock.r, 0, Math.PI * 2);
+      ctx.strokeStyle = '#4a3a2a';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+}
+
+function drawItems() {
+  for (const it of items) {
+    if (!it.alive) continue;
+    const pulse = Math.sin(it.pulse) * 2;
+    ctx.save();
+    ctx.translate(it.x, it.y);
+
+    if (it.type === 'water') {
+      // Blue teardrop
+      const s = 1 + pulse * 0.05;
+      ctx.scale(s, s);
+      ctx.beginPath();
+      ctx.moveTo(0, -12);
+      ctx.bezierCurveTo(8, -4, 8, 6, 0, 10);
+      ctx.bezierCurveTo(-8, 6, -8, -4, 0, -12);
+      ctx.fillStyle = '#4ab0e8';
+      ctx.fill();
+      ctx.strokeStyle = '#2080c0';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      // Glint
+      ctx.beginPath();
+      ctx.ellipse(-2, -5, 2, 4, -0.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.fill();
+    } else if (it.type === 'coin') {
+      // Gold circle
+      const r = 9 + pulse * 0.3;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      const grad = ctx.createRadialGradient(-3, -3, 1, 0, 0, r);
+      grad.addColorStop(0, '#fff0a0');
+      grad.addColorStop(0.5, '#f0c030');
+      grad.addColorStop(1, '#c09000');
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.strokeStyle = '#8a6400';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      // Center mark
+      ctx.font = 'bold 9px sans-serif';
+      ctx.fillStyle = '#8a6400';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('$', 0, 0.5);
+    } else {
+      // Food/dates - brown oval
+      const s = 1 + pulse * 0.04;
+      ctx.scale(s, s);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 7, 10, 0, 0, Math.PI * 2);
+      ctx.fillStyle = '#8b4513';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 7, 10, 0, 0, Math.PI * 2);
+      ctx.strokeStyle = '#5a2a00';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      // Texture line
+      ctx.beginPath();
+      ctx.moveTo(0, -7); ctx.lineTo(0, 7);
+      ctx.strokeStyle = 'rgba(90,40,0,0.4)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+function drawPlayer() {
+  const { x, y, angle, sheltered, r } = player;
+
+  // Health-based color
+  let fillColor;
+  if (health > 60) fillColor = '#4a9e6a';
+  else if (health > 30) fillColor = '#d4a020';
+  else fillColor = '#c83030';
+
+  // Shelter ring
+  if (sheltered) {
+    const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 200);
+    ctx.beginPath();
+    ctx.arc(x, y, r + 6 + pulse * 3, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(80,220,80,${0.6 + pulse * 0.3})`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  // Player body shadow
+  ctx.beginPath();
+  ctx.ellipse(x + 2, y + 3, r, r * 0.8, 0.2, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(80,50,10,0.3)';
+  ctx.fill();
+
+  // Player body
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  const grad = ctx.createRadialGradient(x - 3, y - 3, 1, x, y, r);
+  grad.addColorStop(0, lighten(fillColor, 40));
+  grad.addColorStop(1, fillColor);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Direction arrow
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.beginPath();
+  ctx.moveTo(r + 4, 0);
+  ctx.lineTo(r - 2, -4);
+  ctx.lineTo(r - 2, 4);
+  ctx.closePath();
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.restore();
+}
+
+function lighten(hex, amt) {
+  let r = parseInt(hex.slice(1, 3), 16) + amt;
+  let g = parseInt(hex.slice(3, 5), 16) + amt;
+  let b = parseInt(hex.slice(5, 7), 16) + amt;
+  r = Math.min(255, r); g = Math.min(255, g); b = Math.min(255, b);
+  return '#' + r.toString(16).padStart(2, '0') + g.toString(16).padStart(2, '0') + b.toString(16).padStart(2, '0');
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.angle);
+    ctx.globalAlpha = p.alpha;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, p.rx, p.ry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = p.color;
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawRumbleParticles() {
+  for (const rp of rumbleParticles) {
+    ctx.globalAlpha = rp.alpha * rp.life;
+    ctx.beginPath();
+    ctx.arc(rp.x, rp.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = '#e07020';
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawStormOverlay() {
+  if (stormOverlay <= 0) return;
+  ctx.fillStyle = `rgba(160,90,20,${stormOverlay * 0.45})`;
+  ctx.fillRect(0, 0, LW, LH);
+
+  // Visibility reduction: add noise-like vertical streaks
+  if (stormOverlay > 0.3) {
+    ctx.globalAlpha = stormOverlay * 0.2;
+    for (let i = 0; i < 8; i++) {
+      const sx = (Date.now() / 40 + i * 47) % LW;
+      ctx.fillStyle = '#c87030';
+      ctx.fillRect(sx, 0, 3, LH);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawWarningEdges() {
+  if (phase !== 'warning') return;
+  const alpha = 0.4 + 0.4 * Math.abs(Math.sin(warnPulse));
+
+  const edgeW = 18;
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = '#ff6600';
+
+  if (stormDir === 'left') {
+    ctx.fillRect(0, 0, edgeW, LH);
+  } else if (stormDir === 'right') {
+    ctx.fillRect(LW - edgeW, 0, edgeW, LH);
+  } else if (stormDir === 'top') {
+    ctx.fillRect(0, 0, LW, edgeW);
+  } else {
+    ctx.fillRect(0, LH - edgeW, LW, edgeW);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawHurtFlash() {
+  if (hurtFlash <= 0) return;
+  ctx.fillStyle = `rgba(200,40,20,${hurtFlash * 0.35})`;
+  ctx.fillRect(0, 0, LW, LH);
+}
+
+function drawPopups() {
+  for (const p of popups) {
+    ctx.globalAlpha = Math.min(1, p.life);
+    ctx.font = `bold ${18}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = p.color;
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 3;
+    ctx.strokeText(p.text, p.x, p.y);
+    ctx.fillText(p.text, p.x, p.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawHUD() {
+  // Score top-left
+  ctx.font = 'bold 22px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = '#ffe090';
+  ctx.strokeStyle = 'rgba(80,40,0,0.7)';
+  ctx.lineWidth = 3;
+  ctx.strokeText(score, 10, 10);
+  ctx.fillText(score, 10, 10);
+
+  // Storm warning top-center
+  if (phase === 'warning') {
+    const alpha = 0.6 + 0.4 * Math.abs(Math.sin(warnPulse));
+    ctx.globalAlpha = alpha;
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#ff6600';
+    ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+    ctx.lineWidth = 3;
+    ctx.strokeText('STORM INCOMING!', LW / 2, 8);
+    ctx.fillText('STORM INCOMING!', LW / 2, 8);
+
+    // Arrow indicating direction
+    const arrowSize = 12;
+    const ax = LW / 2, ay = 30;
+    ctx.fillStyle = '#ff6600';
+    ctx.beginPath();
+    if (stormDir === 'left') {
+      ctx.moveTo(ax - arrowSize, ay);
+      ctx.lineTo(ax + arrowSize, ay - arrowSize / 2);
+      ctx.lineTo(ax + arrowSize, ay + arrowSize / 2);
+    } else if (stormDir === 'right') {
+      ctx.moveTo(ax + arrowSize, ay);
+      ctx.lineTo(ax - arrowSize, ay - arrowSize / 2);
+      ctx.lineTo(ax - arrowSize, ay + arrowSize / 2);
+    } else if (stormDir === 'top') {
+      ctx.moveTo(ax, ay - arrowSize);
+      ctx.lineTo(ax - arrowSize / 2, ay + arrowSize);
+      ctx.lineTo(ax + arrowSize / 2, ay + arrowSize);
+    } else {
+      ctx.moveTo(ax, ay + arrowSize);
+      ctx.lineTo(ax - arrowSize / 2, ay - arrowSize);
+      ctx.lineTo(ax + arrowSize / 2, ay - arrowSize);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  } else if (phase === 'storm') {
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#ff8800';
+    ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+    ctx.lineWidth = 3;
+    const stormLabel = player.sheltered ? 'SHELTERED' : 'SANDSTORM!';
+    const stormColor = player.sheltered ? '#80ff80' : '#ff8800';
+    ctx.fillStyle = stormColor;
+    ctx.strokeText(stormLabel, LW / 2, 8);
+    ctx.fillText(stormLabel, LW / 2, 8);
+  } else if (phase === 'calm') {
+    const timeLeft = Math.ceil(phaseTimer);
+    if (timeLeft <= 5 && timeLeft > 0) {
+      ctx.font = '13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = 'rgba(200,150,50,0.7)';
+      ctx.fillText('CALM: ' + timeLeft + 's', LW / 2, 8);
+    } else {
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = 'rgba(180,130,40,0.5)';
+      ctx.fillText('LVL ' + level, LW / 2, 8);
+    }
+  }
+
+  // Health bar top-right
+  const barW = 90, barH = 12;
+  const barX = LW - barW - 10, barY = 10;
+  // Background
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.beginPath();
+  ctx.roundRect(barX - 1, barY - 1, barW + 2, barH + 2, 4);
+  ctx.fill();
+  // Health fill
+  const hPct = health / 100;
+  const hColor = health > 60 ? '#44cc66' : health > 30 ? '#ddaa22' : '#cc3333';
+  ctx.fillStyle = hColor;
+  ctx.beginPath();
+  ctx.roundRect(barX, barY, barW * hPct, barH, 3);
+  ctx.fill();
+  // Border
+  ctx.strokeStyle = 'rgba(255,220,100,0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(barX, barY, barW, barH, 3);
+  ctx.stroke();
+  // HP label
+  ctx.font = '9px sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(255,220,100,0.7)';
+  ctx.fillText('HP', LW - 10, 24);
+}
+
+function drawStartScreen() {
+  // Desert background
+  drawBackground();
+  drawBoulders();
+
+  // Dark overlay
+  ctx.fillStyle = 'rgba(30,15,0,0.72)';
+  ctx.fillRect(0, 0, LW, LH);
+
+  // Decorative sand particles
+  for (let i = 0; i < 40; i++) {
+    const px = ((Date.now() / 3 + i * 97) % (LW + 40)) - 20;
+    const py = (i * 79 + 30) % LH;
+    ctx.globalAlpha = 0.3;
+    ctx.beginPath();
+    ctx.ellipse(px, py, 4, 2, 0.3, 0, Math.PI * 2);
+    ctx.fillStyle = '#c88a40';
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Title
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // Shadow
+  ctx.font = 'bold 68px sans-serif';
+  ctx.fillStyle = 'rgba(80,40,0,0.6)';
+  ctx.fillText('SANDSTORM', LW / 2 + 3, LH / 2 - 80 + 3);
+
+  // Main title gradient
+  const tg = ctx.createLinearGradient(0, LH / 2 - 120, 0, LH / 2 - 40);
+  tg.addColorStop(0, '#ffe090');
+  tg.addColorStop(0.5, '#f0a030');
+  tg.addColorStop(1, '#c06010');
+  ctx.font = 'bold 68px sans-serif';
+  ctx.fillStyle = tg;
+  ctx.fillText('SANDSTORM', LW / 2, LH / 2 - 80);
+
+  // Outline
+  ctx.strokeStyle = '#5a2a00';
+  ctx.lineWidth = 2;
+  ctx.strokeText('SANDSTORM', LW / 2, LH / 2 - 80);
+
+  // Subtitle
+  ctx.font = '14px sans-serif';
+  ctx.fillStyle = '#c8904a';
+  ctx.letterSpacing = '4px';
+  ctx.fillText('DESERT SURVIVAL', LW / 2, LH / 2 - 30);
+
+  // Instructions
+  ctx.font = '13px sans-serif';
+  ctx.fillStyle = 'rgba(220,170,80,0.85)';
+  ctx.fillText('TAP to move  •  Seek shelter in boulders', LW / 2, LH / 2 + 20);
+  ctx.fillText('Collect items  •  Survive the storm!', LW / 2, LH / 2 + 42);
+
+  // Tap to start pulse
+  const tp = 0.7 + 0.3 * Math.sin(Date.now() / 400);
+  ctx.globalAlpha = tp;
+  ctx.font = 'bold 22px sans-serif';
+  ctx.fillStyle = '#ffcc44';
+  ctx.fillText('TAP TO START', LW / 2, LH / 2 + 110);
+  ctx.globalAlpha = 1;
+
+  // Best score
+  if (best > 0) {
+    ctx.font = '13px sans-serif';
+    ctx.fillStyle = 'rgba(200,150,60,0.6)';
+    ctx.fillText('BEST: ' + best, LW / 2, LH / 2 + 145);
+  }
+  ctx.restore();
+}
+
+function drawOverScreen() {
+  drawBackground();
+  drawBoulders();
+
+  ctx.fillStyle = 'rgba(20,10,0,0.80)';
+  ctx.fillRect(0, 0, LW, LH);
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // WIPED OUT
+  ctx.font = 'bold 52px sans-serif';
+  const wg = ctx.createLinearGradient(0, LH / 2 - 130, 0, LH / 2 - 80);
+  wg.addColorStop(0, '#ff8844');
+  wg.addColorStop(1, '#cc3300');
+  ctx.fillStyle = wg;
+  ctx.strokeStyle = '#5a1500';
+  ctx.lineWidth = 2;
+  ctx.strokeText('WIPED OUT', LW / 2, LH / 2 - 100);
+  ctx.fillText('WIPED OUT', LW / 2, LH / 2 - 100);
+
+  // Score
+  ctx.font = 'bold 72px sans-serif';
+  ctx.fillStyle = '#ffe090';
+  ctx.strokeStyle = 'rgba(80,40,0,0.5)';
+  ctx.lineWidth = 3;
+  ctx.strokeText(score, LW / 2, LH / 2 - 20);
+  ctx.fillText(score, LW / 2, LH / 2 - 20);
+
+  ctx.font = '13px sans-serif';
+  ctx.fillStyle = 'rgba(200,150,60,0.7)';
+  ctx.fillText('SCORE', LW / 2, LH / 2 + 28);
+
+  // Best
+  ctx.font = '14px sans-serif';
+  ctx.fillStyle = score >= best ? '#ffcc44' : 'rgba(180,130,50,0.6)';
+  ctx.fillText(score >= best ? 'NEW BEST!' : 'BEST: ' + best, LW / 2, LH / 2 + 58);
+
+  // Storms survived
+  ctx.font = '13px sans-serif';
+  ctx.fillStyle = 'rgba(180,120,40,0.7)';
+  ctx.fillText('Storms survived: ' + stormsWeathered, LW / 2, LH / 2 + 82);
+
+  // Tap to play again
+  const tp = 0.7 + 0.3 * Math.sin(Date.now() / 400);
+  ctx.globalAlpha = tp;
+  ctx.font = 'bold 22px sans-serif';
+  ctx.fillStyle = '#ffcc44';
+  ctx.fillText('TAP TO PLAY AGAIN', LW / 2, LH / 2 + 145);
+  ctx.globalAlpha = 1;
+
+  ctx.restore();
+}
+
+// ── MAIN LOOP ─────────────────────────────────────────────────────────────────
+function loop(now) {
+  requestAnimationFrame(loop);
+
+  update(now);
+
+  ctx.clearRect(0, 0, LW, LH);
+
+  if (state === 'start') {
+    drawStartScreen();
+    return;
+  }
+
+  if (state === 'over') {
+    drawOverScreen();
+    return;
+  }
+
+  // Play state
+  drawBackground();
+  drawRumbleParticles();
+  drawBoulders();
+  drawItems();
+  drawParticles();
+  drawPlayer();
+  drawStormOverlay();
+  drawWarningEdges();
+  drawHurtFlash();
+  drawPopups();
+  drawHUD();
+}
+
+// ── START ─────────────────────────────────────────────────────────────────────
+initDunes();
+placeBoulders();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

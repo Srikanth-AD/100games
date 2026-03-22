@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>PATTERN</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#10001f;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H;
+function resize() { W = cv.width = window.innerWidth; H = cv.height = window.innerHeight; }
+resize();
+window.addEventListener('resize', resize);
+
+// ── Audio ─────────────────────────────────────────────────
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function sfx(type) {
+  const t = AC.currentTime;
+  function tone(f, dur, wave, gain, delay=0) {
+    const o=AC.createOscillator(), g=AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    o.type=wave; o.frequency.value=f;
+    g.gain.setValueAtTime(gain, t+delay);
+    g.gain.linearRampToValueAtTime(0, t+delay+dur);
+    o.start(t+delay); o.stop(t+delay+dur+0.01);
+  }
+  if (type==='correct') { tone(600,0.07,'sine',0.22); tone(800,0.1,'sine',0.18,0.07); }
+  else if (type==='wrong') { tone(250,0.2,'sawtooth',0.2); }
+  else if (type==='timeout') { tone(300,0.15,'square',0.15); tone(200,0.2,'square',0.12,0.15); }
+  else if (type==='levelup') {
+    [523,659,784,1047].forEach((f,i)=>tone(f,0.1,'sine',0.18,i*0.09));
+  }
+}
+
+// ── Constants ─────────────────────────────────────────────
+// shapes: 0=circle, 1=tri, 2=square, 3=diamond, 4=star
+const COLORS = ['#e53935','#1e88e5','#43a047','#f9a825','#8e24aa'];
+const COLOR_NAMES = ['RED','BLUE','GREEN','YELLOW','PURPLE'];
+
+function shuffle(a) {
+  const b=[...a];
+  for(let i=b.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[b[i],b[j]]=[b[j],b[i]];}
+  return b;
+}
+
+// ── State ─────────────────────────────────────────────────
+let gs = 'start'; // start | play | feedback | levelup | over
+let score = 0, lives = 3, level = 1, correctInRow = 0;
+let best = +localStorage.getItem('pattern_best') || 0;
+let pattern, choiceRects = [];
+let feedbackIdx = -1, feedbackType = '', feedbackTimer = 0;
+let timer = 0, timerMax = 12000;
+let lastTs = 0;
+let levelupTimer = 0;
+
+// ── Pattern generation ────────────────────────────────────
+function complexity(lvl) {
+  if (lvl <= 2) return {cp:2, sp:1};
+  if (lvl <= 4) return {cp:3, sp:1};
+  if (lvl <= 6) return {cp:2, sp:2};
+  if (lvl <= 8) return {cp:3, sp:2};
+  return {cp:3, sp:3};
+}
+
+function makePattern(lvl) {
+  const {cp, sp} = complexity(lvl);
+  const colors = shuffle(COLORS).slice(0, cp);
+  const shapes = shuffle([0,1,2,3,4]).slice(0, sp);
+
+  // Build 6 items (show 5, answer is 6th)
+  const seq = Array.from({length:6}, (_,i) => ({
+    s: shapes[i % sp],
+    c: colors[i % cp]
+  }));
+  const correct = seq[5];
+
+  const used = new Set([`${correct.s},${correct.c}`]);
+  function unique(gen) {
+    let item, tries=0;
+    do { item=gen(); tries++; } while (used.has(`${item.s},${item.c}`) && tries<50);
+    used.add(`${item.s},${item.c}`);
+    return item;
+  }
+
+  const w1 = unique(() => {
+    const oc = COLORS.filter(c=>c!==correct.c);
+    return {s:correct.s, c:oc[Math.floor(Math.random()*oc.length)]};
+  });
+  const w2 = unique(() => {
+    const os = [0,1,2,3,4].filter(s=>s!==correct.s);
+    return {s:os[Math.floor(Math.random()*os.length)], c:correct.c};
+  });
+  const w3 = unique(() => ({
+    s:[0,1,2,3,4][Math.floor(Math.random()*5)],
+    c:COLORS[Math.floor(Math.random()*COLORS.length)]
+  }));
+
+  const choices = shuffle([correct, w1, w2, w3]);
+  const correctIdx = choices.findIndex(ch=>ch.s===correct.s&&ch.c===correct.c);
+  return {sequence:seq.slice(0,5), correct, choices, correctIdx};
+}
+
+function newRound() {
+  pattern = makePattern(level);
+  timerMax = Math.max(5000, 12000 - (level-1)*900);
+  timer = timerMax;
+  feedbackIdx = -1; feedbackType = ''; feedbackTimer = 0;
+  gs = 'play';
+}
+
+function init() {
+  score=0; lives=3; level=1; correctInRow=0;
+  newRound();
+}
+
+// ── Shape drawing ─────────────────────────────────────────
+function drawShape(cx, cy, size, shape, color, alpha=1) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = color;
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = Math.max(1.5, size*0.04);
+  ctx.beginPath();
+  const r = size * 0.44;
+  switch(shape) {
+    case 0: ctx.arc(cx,cy,r,0,Math.PI*2); break;
+    case 1:
+      ctx.moveTo(cx, cy-r);
+      ctx.lineTo(cx+r*0.9, cy+r*0.75);
+      ctx.lineTo(cx-r*0.9, cy+r*0.75);
+      ctx.closePath(); break;
+    case 2:
+      ctx.rect(cx-r*0.85, cy-r*0.85, r*1.7, r*1.7); break;
+    case 3:
+      ctx.moveTo(cx,cy-r); ctx.lineTo(cx+r,cy);
+      ctx.lineTo(cx,cy+r); ctx.lineTo(cx-r,cy);
+      ctx.closePath(); break;
+    case 4:
+      for(let i=0;i<5;i++){
+        const a=i*Math.PI*0.4-Math.PI/2, ai=a+Math.PI*0.2;
+        if(i===0) ctx.moveTo(cx+r*Math.cos(a),cy+r*Math.sin(a));
+        else       ctx.lineTo(cx+r*Math.cos(a),cy+r*Math.sin(a));
+        ctx.lineTo(cx+r*0.4*Math.cos(ai),cy+r*0.4*Math.sin(ai));
+      }
+      ctx.closePath(); break;
+  }
+  ctx.fill(); ctx.stroke();
+  // inner highlight
+  ctx.globalAlpha = alpha * 0.25;
+  const g = ctx.createRadialGradient(cx-r*0.2,cy-r*0.2,0,cx,cy,r);
+  g.addColorStop(0,'rgba(255,255,255,0.9)'); g.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.fillStyle = g; ctx.fill();
+  ctx.restore();
+}
+
+function rr(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.arcTo(x+w,y,x+w,y+r,r);
+  ctx.lineTo(x+w,y+h-r);ctx.arcTo(x+w,y+h,x+w-r,y+h,r);
+  ctx.lineTo(x+r,y+h);ctx.arcTo(x,y+h,x,y+h-r,r);
+  ctx.lineTo(x,y+r);ctx.arcTo(x,y,x+r,y,r);ctx.closePath();
+}
+
+// ── Screens ───────────────────────────────────────────────
+function drawStart() {
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(W*0.2,82)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#fff'; ctx.fillText('PATTERN',W/2,H*0.2);
+
+  ctx.font=`${Math.min(W*0.05,20)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.5)';
+  ctx.fillText('WHAT COMES NEXT?',W/2,H*0.295);
+
+  // demo sequence
+  const sz=Math.min(W*0.11,44), gap=sz*0.3;
+  const total = 5*(sz+gap)-gap;
+  const sx=(W-total)/2;
+  const demoSeq=[{s:0,c:COLORS[0]},{s:0,c:COLORS[1]},{s:0,c:COLORS[0]},{s:0,c:COLORS[1]},{s:0,c:COLORS[0]}];
+  demoSeq.forEach((it,i)=>drawShape(sx+i*(sz+gap)+sz/2, H*0.44, sz, it.s, it.c));
+  // arrow + answer
+  ctx.fillStyle='rgba(255,255,255,0.5)'; ctx.font=`${sz*0.7}px Arial`;
+  ctx.fillText('→', W/2+total/2+sz*0.2, H*0.44);
+  drawShape(W/2+total/2+sz*1.1, H*0.44, sz*1.15, 0, COLORS[1]);
+
+  const p=0.65+0.35*Math.sin(Date.now()*0.0032);
+  ctx.fillStyle=`rgba(255,255,255,${p})`;
+  ctx.font=`bold ${Math.min(W*0.055,22)}px Arial`;
+  ctx.fillText('TAP TO START',W/2,H*0.86);
+}
+
+function drawPlay(dt) {
+  if (gs==='play') timer = Math.max(0, timer - dt);
+
+  // Timer bar
+  const tRatio = timer / timerMax;
+  const barH = Math.max(6, H*0.018);
+  const barCol = tRatio>0.5 ? `hsl(${120*tRatio},85%,55%)` : `hsl(${120*tRatio},85%,55%)`;
+  ctx.fillStyle='rgba(255,255,255,0.1)';
+  ctx.fillRect(0,0,W,barH);
+  ctx.fillStyle=`hsl(${tRatio*120},80%,52%)`;
+  ctx.fillRect(0,0,W*tRatio,barH);
+
+  // HUD
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(W*0.11,44)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#fff'; ctx.fillText(score,W/2,H*0.1);
+  ctx.font=`${Math.min(W*0.035,14)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.45)'; ctx.fillText('SCORE',W/2,H*0.152);
+
+  // Level
+  ctx.textAlign='left'; ctx.font=`bold ${Math.min(W*0.04,16)}px Arial`;
+  ctx.fillStyle='#fdd835'; ctx.fillText(`LV ${level}`,W*0.05,H*0.1);
+
+  // Lives
+  const hs=Math.min(W*0.062,25), hsp=hs*1.3;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  const hx=W*0.72;
+  for(let i=0;i<3;i++){
+    ctx.font=`${hs}px Arial`;
+    ctx.fillStyle = i<lives?'#e53935':'rgba(255,255,255,0.18)';
+    ctx.fillText('♥',hx+i*hsp, H*0.1);
+  }
+
+  // Sequence row
+  const cellSz = Math.min((W-32)/7, H*0.1);
+  const gap = cellSz*0.18;
+  const rowW = 6*cellSz + 5*gap;
+  const rx = (W-rowW)/2;
+  const ry = H*0.32;
+
+  // connector line
+  ctx.strokeStyle='rgba(255,255,255,0.12)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(rx,ry); ctx.lineTo(rx+rowW,ry); ctx.stroke();
+
+  pattern.sequence.forEach((it,i)=>{
+    const cx=rx+i*(cellSz+gap)+cellSz/2;
+    drawShape(cx, ry, cellSz*0.85, it.s, it.c);
+  });
+
+  // arrow
+  const arrowX = rx+5*(cellSz+gap);
+  ctx.fillStyle='rgba(255,255,255,0.4)'; ctx.font=`${cellSz*0.55}px Arial`;
+  ctx.textAlign='center'; ctx.fillText('→', arrowX+cellSz*0.3, ry);
+
+  // ? cell
+  const qcx=rx+5*(cellSz+gap)+cellSz;
+  const qx=qcx-cellSz/2, qy=ry-cellSz/2;
+  rr(qx,qy,cellSz,cellSz,cellSz*0.14);
+  ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.3)'; ctx.lineWidth=2; ctx.stroke();
+  ctx.font=`bold ${cellSz*0.6}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.7)'; ctx.fillText('?',qcx,ry);
+
+  // Progress dots (correct in row toward next level)
+  const dotR = Math.min(W*0.02, 7);
+  const dotGap = dotR * 3.2;
+  const dotY = H*0.415;
+  const dotX0 = W/2 - 2*dotGap;
+  for(let i=0;i<5;i++){
+    const filled = i < correctInRow;
+    ctx.beginPath(); ctx.arc(dotX0+i*dotGap, dotY, dotR, 0, Math.PI*2);
+    ctx.fillStyle = filled ? '#fdd835' : 'rgba(255,255,255,0.15)';
+    if(filled){ ctx.shadowColor='#fdd835'; ctx.shadowBlur=8; }
+    ctx.fill(); ctx.shadowBlur=0;
+  }
+  // "to next level" label
+  ctx.font=`${Math.min(W*0.03,11)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.3)';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('TO NEXT LEVEL',W/2,dotY+dotR*2.4);
+
+  // Choice buttons (2×2 grid)
+  const cbSz = Math.min(W*0.41, H*0.19, 155);
+  const cbGap = W*0.022;
+  const cbX0 = (W - (2*cbSz+cbGap))/2;
+  const cbY0 = H*0.505;
+
+  choiceRects = [];
+  for(let i=0;i<4;i++){
+    const row=Math.floor(i/2), col=i%2;
+    const bx=cbX0+col*(cbSz+cbGap), by=cbY0+row*(cbSz+cbGap*0.7);
+    choiceRects.push({x:bx,y:by,w:cbSz,h:cbSz});
+
+    let borderCol='rgba(255,255,255,0.2)', fillCol='rgba(255,255,255,0.07)';
+    if (feedbackIdx===i) {
+      borderCol = feedbackType==='correct'&&i===pattern.correctIdx ? '#4caf50'
+                : feedbackType==='wrong'&&i===pattern.correctIdx  ? '#4caf50'
+                : feedbackType==='wrong'&&i===feedbackIdx          ? '#f44336'
+                : 'rgba(255,255,255,0.2)';
+      fillCol   = feedbackType==='correct'&&i===pattern.correctIdx ? 'rgba(76,175,80,0.25)'
+                : feedbackType==='wrong'&&i===feedbackIdx          ? 'rgba(244,67,54,0.25)'
+                : 'rgba(255,255,255,0.07)';
+    } else if (feedbackType==='wrong'&&i===pattern.correctIdx) {
+      borderCol='#4caf50'; fillCol='rgba(76,175,80,0.2)';
+    }
+
+    rr(bx,by,cbSz,cbSz,cbSz*0.1);
+    ctx.fillStyle=fillCol; ctx.fill();
+    ctx.strokeStyle=borderCol; ctx.lineWidth=2.5; ctx.stroke();
+
+    drawShape(bx+cbSz/2, by+cbSz/2, cbSz*0.48, pattern.choices[i].s, pattern.choices[i].c);
+  }
+
+  // Best
+  ctx.font=`${Math.min(W*0.032,13)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.28)';
+  ctx.textAlign='right'; ctx.textBaseline='middle';
+  ctx.fillText(`BEST: ${best}`,W*0.96,H*0.962);
+
+  // Handle feedback timer
+  if (feedbackTimer>0) {
+    feedbackTimer-=dt;
+    if (feedbackTimer<=0) {
+      if (lives<=0) { gs='over'; best=Math.max(score,best); localStorage.setItem('pattern_best',best); }
+      else if (timer<=0&&feedbackType==='timeout') { newRound(); }
+      else newRound();
+    }
+  }
+
+  // Timer expired
+  if (gs==='play'&&timer<=0) {
+    lives--;
+    sfx('timeout');
+    feedbackIdx=-1; feedbackType='timeout'; feedbackTimer=700;
+    gs='feedback';
+  }
+}
+
+function drawLevelUp(dt) {
+  levelupTimer -= dt;
+  if (levelupTimer <= 0) { newRound(); return; }
+
+  const {cp, sp} = complexity(level);
+  const desc = `${cp} COLORS  ·  ${sp} SHAPE${sp>1?'S':''}`;
+  const p = levelupTimer / 1800; // 1→0
+
+  // Pulsing scale on "LEVEL UP"
+  const sc = 1 + 0.12*Math.sin(p * Math.PI * 4);
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+
+  // Glow ring
+  const grd = ctx.createRadialGradient(W/2,H*0.42,0,W/2,H*0.42,Math.min(W,H)*0.5);
+  grd.addColorStop(0,`rgba(253,216,53,${0.18*(1-p)})`);
+  grd.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=grd; ctx.fillRect(0,0,W,H);
+
+  ctx.save();
+  ctx.translate(W/2, H*0.3);
+  ctx.scale(sc, sc);
+  ctx.font=`bold ${Math.min(W*0.15,58)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#fdd835';
+  ctx.shadowColor='#fdd835'; ctx.shadowBlur=30;
+  ctx.fillText('LEVEL UP!', 0, 0);
+  ctx.restore();
+  ctx.shadowBlur=0;
+
+  // Big level number
+  ctx.font=`bold ${Math.min(W*0.3,120)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#fff';
+  ctx.shadowColor='rgba(255,255,255,0.3)'; ctx.shadowBlur=20;
+  ctx.fillText(level, W/2, H*0.5);
+  ctx.shadowBlur=0;
+
+  // Complexity description
+  ctx.font=`bold ${Math.min(W*0.048,19)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.65)';
+  ctx.fillText(desc, W/2, H*0.64);
+
+  // Sample shapes for new complexity
+  const previewColors = ['#e53935','#1e88e5','#43a047','#f9a825','#8e24aa'].slice(0,cp);
+  const previewShapes = [0,1,2,3,4].slice(0,sp);
+  const psz = Math.min(W*0.1, 38);
+  const ptotal = cp*(psz*1.1);
+  const px0 = W/2 - ptotal/2 + psz*0.55;
+  for(let i=0;i<cp;i++){
+    drawShape(px0 + i*psz*1.1, H*0.74, psz, previewShapes[i%sp], previewColors[i]);
+  }
+
+  // Continue hint
+  const fade = Math.min(1,(1800-levelupTimer)/400);
+  ctx.font=`${Math.min(W*0.038,14)}px Arial`;
+  ctx.fillStyle=`rgba(255,255,255,${fade*0.45})`;
+  ctx.fillText('TAP TO CONTINUE', W/2, H*0.87);
+}
+
+function drawOver() {
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(W*0.13,54)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#f44336'; ctx.fillText('GAME OVER',W/2,H*0.28);
+  ctx.font=`bold ${Math.min(W*0.22,90)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#fff'; ctx.fillText(score,W/2,H*0.46);
+  ctx.font=`${Math.min(W*0.045,18)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.5)'; ctx.fillText('SCORE',W/2,H*0.555);
+  if(best>0){
+    ctx.font=`bold ${Math.min(W*0.048,19)}px Arial`;
+    ctx.fillStyle='#fdd835'; ctx.fillText(`BEST: ${best}`,W/2,H*0.63);
+  }
+  const p=0.65+0.35*Math.sin(Date.now()*0.003);
+  ctx.fillStyle=`rgba(255,255,255,${p})`;
+  ctx.font=`bold ${Math.min(W*0.056,22)}px Arial`;
+  ctx.fillText('TAP TO PLAY AGAIN',W/2,H*0.82);
+}
+
+// ── Main loop ─────────────────────────────────────────────
+function draw(ts=0) {
+  requestAnimationFrame(draw);
+  const dt=Math.min(ts-lastTs,50); lastTs=ts;
+  ctx.clearRect(0,0,W,H);
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#10001f'); bg.addColorStop(1,'#0a1530');
+  ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+
+  if      (gs==='start')                drawStart();
+  else if (gs==='play'||gs==='feedback') drawPlay(dt);
+  else if (gs==='levelup')               drawLevelUp(dt);
+  else if (gs==='over')                  drawOver();
+}
+
+// ── Input ─────────────────────────────────────────────────
+function tap(x, y) {
+  if (AC.state==='suspended') AC.resume();
+  if (gs==='start')   { init(); return; }
+  if (gs==='over')    { init(); return; }
+  if (gs==='levelup') { levelupTimer=0; return; }
+  if (gs!=='play')    return;
+
+  for(let i=0;i<choiceRects.length;i++){
+    const r=choiceRects[i];
+    if(x>=r.x&&x<=r.x+r.w&&y>=r.y&&y<=r.y+r.h){
+      const correct = i===pattern.correctIdx;
+      feedbackIdx=i; feedbackType=correct?'correct':'wrong'; feedbackTimer=550;
+      gs='feedback';
+      if(correct){
+        score++; correctInRow++;
+        sfx('correct');
+        if(correctInRow>=5){ correctInRow=0; level++; sfx('levelup'); gs='levelup'; levelupTimer=1800; return; }
+      } else {
+        correctInRow=0; lives--;
+        sfx('wrong');
+        best=Math.max(score,best); localStorage.setItem('pattern_best',best);
+      }
+      return;
+    }
+  }
+}
+
+cv.addEventListener('click',      e=>tap(e.clientX,e.clientY));
+cv.addEventListener('touchstart', e=>{e.preventDefault();tap(e.touches[0].clientX,e.touches[0].clientY);},{passive:false});
+
+draw();
+</script>
+</body>
+</html>

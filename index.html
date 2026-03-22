@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>100 GAMES</title>
+<link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Barlow+Condensed:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #07080f;
+  --card-bg: #0d0f1a;
+  --card-border: rgba(255,255,255,0.06);
+}
+
+body {
+  background: var(--bg);
+  color: #fff;
+  font-family: 'Barlow Condensed', sans-serif;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Stars background */
+.stars {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+.stars span {
+  position: absolute;
+  border-radius: 50%;
+  background: #fff;
+  animation: twinkle var(--d, 3s) ease-in-out infinite;
+  animation-delay: var(--delay, 0s);
+  opacity: 0;
+}
+@keyframes twinkle {
+  0%, 100% { opacity: 0; }
+  50% { opacity: var(--op, 0.5); }
+}
+
+/* Header */
+header {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  padding: 3.5rem 1rem 2rem;
+}
+header h1 {
+  font-family: 'Black Ops One', cursive;
+  font-size: clamp(2.8rem, 8vw, 5.5rem);
+  letter-spacing: 0.12em;
+  line-height: 1;
+  background: linear-gradient(135deg, #fff 30%, rgba(255,255,255,0.45));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+header p {
+  margin-top: 0.6rem;
+  font-size: 1rem;
+  letter-spacing: 0.35em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.3);
+  font-weight: 400;
+}
+
+/* Grid */
+.grid {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 2rem 1.6rem;
+  padding: 1.5rem 2.5rem 5rem;
+  max-width: 1300px;
+  margin: 0 auto;
+}
+
+/* Card */
+.card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  border-radius: 18px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  overflow: hidden;
+  position: relative;
+  animation: float var(--dur, 4s) ease-in-out infinite;
+  animation-delay: var(--delay, 0s);
+  transition: transform 0.35s cubic-bezier(0.22,1,0.36,1), box-shadow 0.35s ease, border-color 0.3s ease;
+  will-change: transform;
+  cursor: pointer;
+}
+.card:hover {
+  transform: translateY(-16px) scale(1.03) !important;
+  animation-play-state: paused;
+  border-color: var(--color);
+  box-shadow: 0 0 0 1px var(--color), 0 20px 60px -10px var(--glow);
+}
+.card:hover .play-btn {
+  opacity: 1;
+  transform: translateY(0);
+}
+.card:hover .preview-overlay {
+  opacity: 0;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px) rotate(var(--rot-a, -0.4deg)); }
+  50%       { transform: translateY(var(--lift, -10px)) rotate(var(--rot-b, 0.4deg)); }
+}
+
+/* Preview window */
+.preview {
+  width: 100%;
+  aspect-ratio: 9/15;
+  overflow: hidden;
+  position: relative;
+  background: #000;
+}
+.iframe-wrap {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.iframe-wrap iframe {
+  width: 375px;
+  height: 667px;
+  border: none;
+  transform-origin: top left;
+  transform: scale(var(--s));
+  pointer-events: none;
+  display: block;
+}
+/* Dim overlay that fades on hover */
+.preview-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to bottom, transparent 50%, var(--card-bg) 100%);
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+
+/* Play button */
+.play-btn {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.25s ease, transform 0.3s ease;
+  pointer-events: none;
+}
+.play-btn span {
+  font-family: 'Black Ops One', cursive;
+  font-size: 1.1rem;
+  letter-spacing: 0.15em;
+  background: var(--color);
+  color: #000;
+  padding: 0.45em 1.2em;
+  border-radius: 50px;
+  box-shadow: 0 4px 24px var(--glow);
+}
+
+/* Card footer */
+.info {
+  padding: 0.9rem 1rem 1rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.num {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--color);
+  opacity: 0.8;
+  line-height: 1;
+  padding-top: 0.1em;
+}
+.name {
+  font-family: 'Black Ops One', cursive;
+  font-size: 1.15rem;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  color: #fff;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .grid { padding: 1rem 1rem 4rem; gap: 1.2rem 0.8rem; }
+  header { padding: 2rem 1rem 1.5rem; }
+}
+</style>
+</head>
+<body>
+
+<div class="stars" id="stars"></div>
+
+<header>
+  <h1>100 GAMES</h1>
+  <p>Pick a game &amp; play</p>
+</header>
+
+<div class="grid" id="grid"></div>
+
+<script>
+const GAMES = [
+  { num:'01', name:'DRIFT',      folder:'game-01-drift',     file:'index.html',  color:'#00e5ff', desc:'Descent into the deep' },
+  { num:'02', name:'FLICK',      folder:'game-02-flick',     file:'index.html',  color:'#448aff', desc:'Flick to victory' },
+  { num:'03', name:'SPLAT',      folder:'game-03-splat',     file:'index.html',  color:'#69f0ae', desc:'Water Balloon Mayhem' },
+  { num:'04', name:'PATINTERO',  folder:'game-04-patintero', file:'index.html',  color:'#ff6d00', desc:'Cross all lines' },
+  { num:'05', name:'BARRAGE',    folder:'game-05-barrack',   file:'index.html',  color:'#ff1744', desc:'Incoming!' },
+  { num:'06', name:'SWARM',      folder:'game-06-swarm',     file:'index.html',  color:'#76ff03', desc:'They\'re coming' },
+  { num:'07', name:'SORT IT',    folder:'game-07-sortit',    file:'index.html',  color:'#e040fb', desc:'Planet sorting puzzle' },
+  { num:'08', name:'SLAP DECK',  folder:'game-08-slapdeck',  file:'index.html',  color:'#7c4dff', desc:'Card battle' },
+  { num:'09', name:'CAST',       folder:'game-09-cast',      file:'index.html',  color:'#ffd740', desc:'Gone fishing' },
+  { num:'10', name:'CHOPPER',    folder:'game-10-chopper',   file:'index.html',  color:'#ff6e40', desc:'Stay airborne' },
+  { num:'11', name:'BASH',       folder:'game-11-bash',      file:'index.html',  color:'#c1440e', desc:'Something\'s hiding...' },
+  { num:'12', name:'HUSTLE',     folder:'game-12-hustle',    file:'index.html',  color:'#00c853', desc:'Follow the coin' },
+  { num:'13', name:'HARVEST',    folder:'game-13-harvest',   file:'index.html',  color:'#ffc107', desc:'Grow, harvest, sell, shoo crows' },
+  { num:'14', name:'DIG',        folder:'game-14-dig',        file:'index.html',  color:'#f4a261', desc:'Catch things surfacing from the sand' },
+  { num:'15', name:'PYRAMID',    folder:'game-15-pyramid',    file:'index.html',  color:'#ff8f00', desc:'Build yours, topple theirs' },
+  { num:'16', name:'LUKSONG TINIK', folder:'game-16-tinik',  file:'index.html',  color:'#ff6b35', desc:'Filipino jumping game' },
+  { num:'17', name:'ARCHER',     folder:'game-17-archer',     file:'index.html',  color:'#e91e63', desc:'Aim true — mind the birds' },
+  { num:'18', name:'RING TOSS',  folder:'game-18-ringtoss',   file:'index.html',  color:'#ffd700', desc:'Toss rings onto pegs' },
+  { num:'19', name:'DECODE',     folder:'game-19-decode',     file:'index.html',  color:'#69f0ae', desc:'Spot the word in the matrix' },
+  { num:'20', name:'BOOMERANG', folder:'game-20-boomerang',  file:'index.html',  color:'#d4a030', desc:'Hit fruits before the birds steal them' },
+  { num:'21', name:'MINE',      folder:'game-21-mine',       file:'index.html',  color:'#ffd740', desc:'Dig minerals, hide from bats' },
+  { num:'22', name:'MAZE',      folder:'game-22-maze',       file:'index.html',  color:'#7c4dff', desc:'Find the exit, hide from pursuers' },
+  { num:'23', name:'FENCE',     folder:'game-23-fence',      file:'index.html',  color:'#ff5252', desc:'Fencing duel against the AI' },
+  { num:'24', name:'REGATTA',   folder:'game-24-regatta',    file:'index.html',  color:'#4fc3f7', desc:'Boat race — collect flags' },
+  { num:'25', name:'DUNES',     folder:'game-25-dunes',      file:'index.html',  color:'#d4a030', desc:'Desert buggy race against AI' },
+  { num:'26', name:'SEE-SAW',   folder:'game-26-seesaw',     file:'index.html',  color:'#ffd740', desc:'Balance the beam — tip it and lose a life' },
+  { num:'27', name:'PADDLE RACE', folder:'game-27-paddlerace', file:'index.html', color:'#00b4d8', desc:'Dodge rocks, collect buoys, beat the AI' },
+  { num:'28', name:'WELL CLIMB', folder:'game-28-wellclimb',  file:'index.html', color:'#8b5cf6', desc:'Jump ledges to escape before the water rises' },
+  { num:'29', name:'PINBALL',   folder:'game-29-pinball',    file:'index.html', color:'#bf00ff', desc:'Classic arcade pinball' },
+  { num:'30', name:'SPELUNK',   folder:'game-30-spelunk',    file:'index.html', color:'#a0522d', desc:'Descend the cave, collect gems' },
+  { num:'31', name:'PIKO',      folder:'game-31-piko',       file:'index.html', color:'#ff69b4', desc:'Filipino hopscotch' },
+  { num:'32', name:'HILO',      folder:'game-32-hilo',       file:'index.html', color:'#00b0ff', desc:'Higher or lower — guess the next card' },
+  { num:'33', name:'ROPE CLIMB', folder:'game-33-ropeclimb', file:'index.html', color:'#c89a3a', desc:'Swing left & right to dodge falling obstacles' },
+  { num:'34', name:'PATTERN',   folder:'game-34-pattern',    file:'index.html', color:'#fdd835', desc:'Spot what comes next in the sequence' },
+  { num:'35', name:'FIVE',      folder:'game-35-five',       file:'index.html', color:'#ff4081', desc:'Five-card draw — hold your best hand' },
+  { num:'36', name:'SLOTS',     folder:'game-36-slots',      file:'index.html', color:'#ff9800', desc:'Pull the lever and match the reels' },
+  { num:'37', name:'BAZAAR',    folder:'game-37-bazaar',     file:'index.html', color:'#69f0ae', desc:'Roll dice, buy low, sell high' },
+  { num:'38', name:'SWITCHBOARD', folder:'game-38-switchboard', file:'index.html', color:'#fb8c00', desc:'Route calls through the old switchboard' },
+  { num:'39', name:'NEXUS',      folder:'game-39-nexus',       file:'index.html', color:'#00e5ff', desc:'Connect the nodes' },
+  { num:'40', name:'LIGHTHOUSE', folder:'game-40-lighthouse',  file:'index.html', color:'#ffd740', desc:'Rotate the beam — guide ships to safety' },
+  { num:'41', name:'CATAPULT',   folder:'game-41-catapult',    file:'index.html', color:'#ff6e40', desc:'Fling rocks, topple the tower' },
+  { num:'42', name:'PINWHEEL',   folder:'game-42-pinwheel',    file:'index.html', color:'#69f0ae', desc:'Swipe to spin — keep the power flowing' },
+  { num:'43', name:'SANDSTORM',  folder:'game-43-sandstorm',   file:'index.html', color:'#d4a030', desc:'Shelter from the storm, collect supplies' },
+  { num:'44', name:'FLOOD',      folder:'game-44-flood',        file:'index.html', color:'#3498db', desc:'Fill the board before moves run out' },
+  { num:'45', name:'LOUPE',    folder:'game-45-loupe',  file:'index.html', color:'#e040fb', desc:'Move the lens — find the odd one out' },
+  { num:'46', name:'TUG',      folder:'game-46-tug',    file:'index.html', color:'#ff5252', desc:'Tap fast — don\'t get pulled over the line' },
+  { num:'47', name:'FOSSIL',   folder:'game-47-fossil', file:'index.html', color:'#c89a3a', desc:'Brush slowly — unearth ancient bones' },
+  { num:'48', name:'FUSE',     folder:'game-48-fuse',   file:'index.html', color:'#f39c12', desc:'Cut the right wire before the fuse burns out' },
+  { num:'49', name:'STACK',    folder:'game-49-stack',  file:'index.html', color:'#7c4dff', desc:'Drop the car — build the tallest tower' },
+  { num:'50', name:'KENO',     folder:'game-50-keno',   file:'index.html', color:'#ffd740', desc:'Pick your numbers — watch them get drawn' },
+  { num:'51', name:'ECHO',     folder:'game-51-echo',   file:'index.html', color:'#69f0ae', desc:'Watch the pattern — repeat it back' },
+  { num:'52', name:'CROSSFIRE',  folder:'game-52-crossfire',   file:'index.html', color:'#ff1744', desc:'Dodge bullets flying from all sides' },
+  { num:'53', name:'CURL',       folder:'game-53-curl',         file:'index.html', color:'#4fc3f7', desc:'Slide the stone — sweep to steer it' },
+  { num:'54', name:'PIPES',      folder:'game-54-pipes',        file:'index.html', color:'#00bcd4', desc:'Connect the pipes before the water flows' },
+  { num:'55', name:'JUGGLE',     folder:'game-55-juggle',       file:'index.html', color:'#ff6e40', desc:'Keep them all in the air' },
+  { num:'56', name:'KITE',       folder:'game-56-kite',         file:'index.html', color:'#69f0ae', desc:'Ride the wind — collect coins' },
+  { num:'57', name:'LASSO',      folder:'game-57-lasso',        file:'index.html', color:'#d4a030', desc:'Rope the targets before they escape' },
+  { num:'58', name:'PIVOT',      folder:'game-58-pivot',        file:'index.html', color:'#00b0ff', desc:'Rotate to hit the target angle' },
+  { num:'59', name:'UNDERTOW',   folder:'game-59-undertow',     file:'index.html', color:'#1e90ff', desc:'Swim against the current' },
+  { num:'60', name:'STAMPEDE',   folder:'game-60-stampede',     file:'index.html', color:'#c47a2a', desc:'Herd the buffalo through the gate' },
+  { num:'61', name:'SPINDLE',    folder:'game-61-spindle',      file:'index.html', color:'#c89a3a', desc:'Wind the thread onto the spool' },
+  { num:'62', name:'PLUCK',      folder:'game-62-pluck',        file:'index.html', color:'#66bb6a', desc:'Swipe up to pluck the weeds' },
+  { num:'63', name:'SWITCHWORD', folder:'game-63-switchword',   file:'index.html', color:'#00e5ff', desc:'Change one letter at a time' },
+  { num:'64', name:'ANTONYM',    folder:'game-64-antonym',      file:'index.html', color:'#ffb300', desc:'Tap the antonym before time runs out' },
+];
+
+// Hex color to rgba for glow
+function hexGlow(hex, a = 0.45) {
+  const r = parseInt(hex.slice(1,3),16);
+  const g = parseInt(hex.slice(3,5),16);
+  const b = parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+const grid = document.getElementById('grid');
+
+GAMES.forEach((g, i) => {
+  const dur = (3.8 + (i % 5) * 0.35).toFixed(2);
+  const delay = (i * 0.28).toFixed(2);
+  const lift = -(8 + (i % 4) * 3);
+  const rotA = (-0.6 + (i % 3) * 0.3).toFixed(1);
+  const rotB = (0.6 - (i % 3) * 0.3).toFixed(1);
+  const glow = hexGlow(g.color);
+
+  const card = document.createElement('a');
+  card.className = 'card';
+  card.href = `play.html?g=${g.folder}/${g.file}`;
+  card.style.cssText = `
+    --color: ${g.color};
+    --glow: ${glow};
+    --dur: ${dur}s;
+    --delay: ${delay}s;
+    --lift: ${lift}px;
+    --rot-a: ${rotA}deg;
+    --rot-b: ${rotB}deg;
+  `;
+
+  card.innerHTML = `
+    <div class="preview">
+      <div class="iframe-wrap" data-src="${g.folder}/${g.file}">
+        <iframe></iframe>
+      </div>
+      <div class="preview-overlay"></div>
+      <div class="play-btn"><span>PLAY</span></div>
+    </div>
+    <div class="info">
+      <span class="num">${g.num}</span>
+      <span class="name">${g.name}</span>
+    </div>
+  `;
+
+  grid.appendChild(card);
+});
+
+// Scale iframes to fit their container width
+function scaleIframes() {
+  document.querySelectorAll('.iframe-wrap').forEach(wrap => {
+    const w = wrap.offsetWidth;
+    const scale = w / 375;
+    const iframe = wrap.querySelector('iframe');
+    iframe.style.setProperty('--s', scale);
+    iframe.style.transform = `scale(${scale})`;
+    // Set container height to match scaled iframe
+    wrap.parentElement.style.height = (667 * scale) + 'px';
+  });
+}
+
+// Load iframes — stagger to avoid hammering simultaneously
+function loadIframes() {
+  const wraps = document.querySelectorAll('.iframe-wrap[data-src]');
+  wraps.forEach((wrap, i) => {
+    setTimeout(() => {
+      const src = wrap.getAttribute('data-src');
+      wrap.querySelector('iframe').src = src;
+    }, i * 300);
+  });
+}
+
+scaleIframes();
+window.addEventListener('resize', scaleIframes);
+// Small delay so layout is stable before loading
+setTimeout(loadIframes, 200);
+
+// Generate stars
+const starsEl = document.getElementById('stars');
+for (let i = 0; i < 120; i++) {
+  const s = document.createElement('span');
+  const size = Math.random() < 0.8 ? 1 : 2;
+  s.style.cssText = `
+    width:${size}px; height:${size}px;
+    left:${Math.random()*100}%;
+    top:${Math.random()*100}%;
+    --d:${(2 + Math.random()*4).toFixed(1)}s;
+    --delay:${(Math.random()*5).toFixed(1)}s;
+    --op:${(0.2 + Math.random()*0.6).toFixed(2)};
+  `;
+  starsEl.appendChild(s);
+}
+</script>
+</body>
+</html>

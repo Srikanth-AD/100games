@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>DECODE</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+let W,H,scl;
+
+let CELL,GCOLS,GROWS,GRID_TOP,GRID_LEFT;
+function resize(){
+  const vw=window.innerWidth,vh=window.innerHeight;
+  scl=Math.min(vw/375,vh/600);
+  W=Math.round(375*scl);H=Math.round(600*scl);
+  cv.width=W;cv.height=H;
+  CELL=Math.round(24*scl);
+  GRID_TOP=Math.round(80*scl);
+  GRID_LEFT=0;
+  GCOLS=Math.floor(W/CELL);
+  GROWS=Math.floor((H-GRID_TOP-70*scl)/CELL);
+}
+resize();
+window.addEventListener('resize',()=>{resize();if(gs==='play')buildGrid();});
+
+const AC=new (window.AudioContext||window.webkitAudioContext)();
+function beep(type){
+  const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime;
+  o.connect(g);g.connect(AC.destination);
+  if(type==='select'){o.type='sine';o.frequency.setValueAtTime(600,t);o.frequency.linearRampToValueAtTime(800,t+0.04);g.gain.setValueAtTime(0.12,t);g.gain.linearRampToValueAtTime(0,t+0.08);}
+  else if(type==='found'){o.type='triangle';[660,784,880].forEach((f,i)=>{const o2=AC.createOscillator(),g2=AC.createGain();o2.connect(g2);g2.connect(AC.destination);o2.frequency.value=f;g2.gain.setValueAtTime(0.2,t+i*0.07);g2.gain.linearRampToValueAtTime(0,t+i*0.07+0.12);o2.start(t+i*0.07);o2.stop(t+i*0.07+0.15);});}
+  else if(type==='miss'){o.type='sawtooth';o.frequency.setValueAtTime(200,t);o.frequency.linearRampToValueAtTime(80,t+0.15);g.gain.setValueAtTime(0.2,t);g.gain.linearRampToValueAtTime(0,t+0.2);}
+  else if(type==='level'){[523,659,784,1047].forEach((f,i)=>{const o2=AC.createOscillator(),g2=AC.createGain();o2.connect(g2);g2.connect(AC.destination);o2.type='triangle';o2.frequency.value=f;g2.gain.setValueAtTime(0.2,t+i*0.09);g2.gain.linearRampToValueAtTime(0,t+i*0.09+0.14);o2.start(t+i*0.09);o2.stop(t+i*0.09+0.18);});}
+  o.start(t);o.stop(t+0.25);
+}
+
+const WORD_POOL=['MATRIX','DECODE','CIPHER','BINARY','CRYPTO','REBOOT','ACCESS','BREACH','SHIELD','SYSTEM',
+  'SIGNAL','GLITCH','NEURAL','PROXY','VIRUS','TOKEN','NEXUS','PHASE','CLONE','GHOST',
+  'STACK','FETCH','PARSE','ROUTE','PATCH','FLUSH','CACHE','THREAD','KERNEL','SOCKET'];
+const LATIN='ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+function rchar(){return LATIN[Math.random()*26|0];}
+
+let gs='start',score=0,level=1,lives=3;
+let hiScore=+(localStorage.getItem('decode_hi')||0);
+let popups=[];
+
+// Grid
+let grid=[];       // grid[r][c] = char
+let words=[];      // [{text, cells:[{r,c}], found, foundT}]
+let wordsFound=0;
+let totalWords=0;
+
+// Timer per word
+let timeLeft=0,maxTime=0;
+let targetIdx=0;   // which word to find next
+
+// Selection (drag)
+let dragging=false;
+let selected=[];   // [{r,c}] in drag order
+let lastCell=null;
+let wrongFlash=0;
+
+// BG rain
+const RAIN_COLS=20;
+let rain=[];
+function buildRain(){
+  rain=[];
+  for(let i=0;i<RAIN_COLS;i++){
+    rain.push({x:(i+0.5)*W/RAIN_COLS,y:-Math.random()*H,spd:(0.4+Math.random()*0.6)*scl,chars:[],tick:0});
+    const len=6+Math.random()*8|0;
+    for(let j=0;j<len;j++) rain[i].chars.push(rchar());
+  }
+}
+
+function buildGrid(){
+  grid=[];
+  for(let r=0;r<GROWS;r++){grid[r]=[];for(let c=0;c<GCOLS;c++)grid[r][c]=rchar();}
+  words=[];
+  const n=Math.min(1+Math.floor(level/2),4);
+  const pool=[...WORD_POOL].sort(()=>Math.random()-0.5);
+  let placed=0;
+  for(let i=0;i<pool.length&&placed<n;i++){
+    if(placeWord(pool[i]))placed++;
+  }
+  totalWords=words.length;wordsFound=0;targetIdx=0;
+  resetWordTimer();
+}
+
+function placeWord(text){
+  const dirs=[{dr:0,dc:1},{dr:1,dc:0},{dr:0,dc:-1},{dr:-1,dc:0}];
+  for(let attempt=0;attempt<300;attempt++){
+    const dir=dirs[Math.floor(Math.random()*dirs.length)];
+    const r=Math.floor(Math.random()*GROWS);
+    const c=Math.floor(Math.random()*GCOLS);
+    let ok=true;const cells=[];
+    for(let i=0;i<text.length;i++){
+      const nr=r+dir.dr*i,nc=c+dir.dc*i;
+      if(nr<0||nr>=GROWS||nc<0||nc>=GCOLS){ok=false;break;}
+      // Don't overwrite cells belonging to other placed words
+      const occupied=words.some(w=>w.cells.some(cl=>cl.r===nr&&cl.c===nc));
+      if(occupied){ok=false;break;}
+      cells.push({r:nr,c:nc});
+    }
+    if(!ok)continue;
+    for(let i=0;i<text.length;i++)grid[cells[i].r][cells[i].c]=text[i];
+    words.push({text,cells,found:false,foundT:0});
+    return true;
+  }
+  return false;
+}
+
+function resetWordTimer(){
+  maxTime=Math.max(10,22-level*1.2);
+  timeLeft=maxTime;
+}
+
+function init(){
+  score=0;level=1;lives=3;popups=[];
+  buildRain();buildGrid();
+}
+
+function cellAt(x,y){
+  const c=Math.floor((x-GRID_LEFT)/CELL);
+  const r=Math.floor((y-GRID_TOP)/CELL);
+  if(r>=0&&r<GROWS&&c>=0&&c<GCOLS)return{r,c};
+  return null;
+}
+function cellXY(r,c){return{x:GRID_LEFT+c*CELL+CELL*0.5,y:GRID_TOP+r*CELL+CELL*0.75};}
+
+function onMove(x,y){
+  if(!dragging)return;
+  const cell=cellAt(x,y);
+  if(!cell)return;
+  if(!lastCell){lastCell=cell;selected=[cell];return;}
+  if(cell.r===lastCell.r&&cell.c===lastCell.c)return;
+  // Must be adjacent (including diagonals)
+  const dr=Math.abs(cell.r-lastCell.r),dc=Math.abs(cell.c-lastCell.c);
+  if(dr>1||dc>1)return;
+  // Don't revisit
+  if(selected.some(s=>s.r===cell.r&&s.c===cell.c))return;
+  selected.push(cell);
+  lastCell=cell;
+  beep('select');
+}
+
+function onRelease(){
+  if(!dragging)return;
+  dragging=false;
+  checkSelection();
+  selected=[];lastCell=null;
+}
+
+function checkSelection(){
+  if(selected.length<2)return;
+  const typed=selected.map(s=>grid[s.r][s.c]).join('');
+  const target=words[targetIdx];
+  if(!target||target.found)return;
+
+  if(typed===target.text||typed===target.text.split('').reverse().join('')){
+    // Check cells match (in either direction)
+    const fwd=cellsMatch(selected,target.cells);
+    const rev=cellsMatch(selected,[...target.cells].reverse());
+    if(fwd||rev){
+      target.found=true;target.foundT=1.5;
+      wordsFound++;score+=target.text.length*10*level;
+      if(score>hiScore){hiScore=score;localStorage.setItem('decode_hi',hiScore);}
+      beep('found');
+      const cx=target.cells.reduce((a,c)=>a+cellXY(c.r,c.c).x,0)/target.cells.length;
+      const cy=target.cells.reduce((a,c)=>a+cellXY(c.r,c.c).y,0)/target.cells.length;
+      popups.push({x:cx,y:cy-20*scl,text:'+'+target.text.length*10*level,life:1.4,col:'#69f0ae'});
+      // Advance to next unfound word
+      advanceTarget();
+      if(wordsFound>=totalWords){setTimeout(()=>{level++;beep('level');buildGrid();},800);}
+      return;
+    }
+  }
+  // Wrong
+  wrongFlash=0.6;
+  beep('miss');
+}
+
+function cellsMatch(sel,cells){
+  if(sel.length!==cells.length)return false;
+  return sel.every((s,i)=>s.r===cells[i].r&&s.c===cells[i].c);
+}
+
+function advanceTarget(){
+  for(let i=0;i<words.length;i++){
+    const idx=(targetIdx+1+i)%words.length;
+    if(!words[idx].found){targetIdx=idx;resetWordTimer();return;}
+  }
+}
+
+let last=0;
+function update(ts){
+  requestAnimationFrame(update);
+  const dt=Math.min(ts-last,50);last=ts;
+  if(gs!=='play'){draw();return;}
+
+  // Rain
+  rain.forEach(r=>{
+    r.y+=r.spd*dt/16;r.tick+=dt/16;
+    if(r.tick>12){r.tick=0;r.chars[Math.random()*r.chars.length|0]=rchar();}
+    if(r.y>H+80*scl){r.y=-Math.random()*H*0.3;}
+  });
+
+  // Timer
+  const cur=words[targetIdx];
+  if(cur&&!cur.found){
+    timeLeft-=dt/1000;
+    if(timeLeft<=0){
+      timeLeft=0;lives--;beep('miss');
+      popups.push({x:W/2,y:H*0.5,text:'TOO SLOW!',life:1.2,col:'#ff5252'});
+      if(lives<=0){setTimeout(()=>gs='over',600);}
+      else{advanceTarget();}
+    }
+  }
+
+  // Found word flash timers
+  words.forEach(w=>{if(w.foundT>0)w.foundT-=dt/1000;});
+
+  // Wrong flash
+  if(wrongFlash>0)wrongFlash-=dt/1000*2;
+
+  // Popups
+  popups.forEach(p=>{p.y-=0.5*scl*dt/16;p.life-=0.03*dt/16;});
+  popups=popups.filter(p=>p.life>0);
+
+  draw();
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);
+
+  // BG rain (faint)
+  ctx.font=`bold ${CELL*0.75}px monospace`;
+  rain.forEach(r=>{
+    for(let i=0;i<r.chars.length;i++){
+      const cy=r.y+i*CELL*0.9;
+      if(cy<GRID_TOP-CELL||cy>H)continue;
+      ctx.fillStyle=`rgba(0,180,40,${0.06+i/r.chars.length*0.06})`;
+      ctx.textAlign='center';ctx.fillText(r.chars[i],r.x,cy);
+    }
+  });
+
+  if(gs==='play'||gs==='over'){
+    // Grid background overlay
+    ctx.fillStyle='rgba(0,0,0,0.72)';
+    ctx.fillRect(GRID_LEFT,GRID_TOP,GCOLS*CELL,GROWS*CELL);
+
+    const cur=words[targetIdx];
+
+    // Highlight found word cells (fading)
+    words.forEach(w=>{
+      if(!w.found)return;
+      const alpha=Math.min(1,w.foundT/0.5)*0.35;
+      if(alpha<=0)return;
+      ctx.fillStyle=`rgba(105,240,174,${alpha})`;
+      w.cells.forEach(cl=>{ctx.fillRect(GRID_LEFT+cl.c*CELL+1,GRID_TOP+cl.r*CELL+1,CELL-2,CELL-2);});
+    });
+
+    // Highlight selected cells
+    if(selected.length>0){
+      const selCol=wrongFlash>0?`rgba(255,82,82,0.45)`:`rgba(0,200,255,0.35)`;
+      ctx.fillStyle=selCol;
+      selected.forEach(s=>{ctx.fillRect(GRID_LEFT+s.c*CELL+1,GRID_TOP+s.r*CELL+1,CELL-2,CELL-2);});
+      // Draw line through selected
+      if(selected.length>1){
+        ctx.strokeStyle=wrongFlash>0?'rgba(255,82,82,0.7)':'rgba(0,200,255,0.7)';
+        ctx.lineWidth=2*scl;ctx.lineJoin='round';ctx.lineCap='round';
+        ctx.beginPath();
+        selected.forEach((s,i)=>{
+          const p=cellXY(s.r,s.c);
+          i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y);
+        });ctx.stroke();
+      }
+    }
+
+    // Highlight current target word cells (subtle)
+    if(cur&&!cur.found){
+      ctx.fillStyle='rgba(255,215,0,0.06)';
+      cur.cells.forEach(cl=>{ctx.fillRect(GRID_LEFT+cl.c*CELL+1,GRID_TOP+cl.r*CELL+1,CELL-2,CELL-2);});
+    }
+
+    // Grid characters
+    ctx.font=`bold ${CELL*0.7}px monospace`;
+    for(let r=0;r<GROWS;r++){
+      for(let c=0;c<GCOLS;c++){
+        const ch=grid[r][c];
+        const pt=cellXY(r,c);
+        const isSel=selected.some(s=>s.r===r&&s.c===c);
+        const isFoundWord=words.some(w=>w.found&&w.cells.some(cl=>cl.r===r&&cl.c===c));
+        const isCurTarget=cur&&!cur.found&&cur.cells.some(cl=>cl.r===r&&cl.c===c);
+
+        if(isSel){
+          ctx.fillStyle=wrongFlash>0?'#ff5252':'#00e5ff';
+        } else if(isFoundWord){
+          ctx.fillStyle='rgba(105,240,174,0.5)';
+        } else if(isCurTarget){
+          ctx.fillStyle='rgba(0,255,60,0.55)';
+        } else {
+          ctx.fillStyle='rgba(0,180,40,0.35)';
+        }
+        ctx.textAlign='center';
+        ctx.fillText(ch,pt.x,pt.y);
+      }
+    }
+
+    // Popups
+    popups.forEach(p=>{
+      ctx.save();ctx.globalAlpha=p.life;ctx.textAlign='center';
+      ctx.font=`bold ${12*scl}px monospace`;
+      ctx.fillStyle=p.col;ctx.shadowColor=p.col;ctx.shadowBlur=8;
+      ctx.fillText(p.text,p.x,p.y);ctx.shadowBlur=0;ctx.restore();
+    });
+
+    drawHUD();
+  }
+
+  if(gs==='start'){
+    rain.forEach(r=>{
+      for(let i=0;i<r.chars.length;i++){
+        const cy=r.y*0.6+i*CELL*0.9;
+        if(cy<0||cy>H)continue;
+        ctx.fillStyle=`rgba(0,180,40,${0.05+i/r.chars.length*0.12})`;
+        ctx.textAlign='center';ctx.fillText(r.chars[i],r.x,cy);
+      }
+    });
+    ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.font=`bold ${46*scl}px "Arial Black",sans-serif`;
+    ctx.fillStyle='#fff';ctx.shadowColor='#00ff44';ctx.shadowBlur=24;
+    ctx.fillText('DECODE',W/2,H*0.3);ctx.shadowBlur=0;
+    ctx.font=`${12*scl}px monospace`;ctx.fillStyle='rgba(0,255,60,0.8)';
+    ctx.fillText('Find the hidden word in the matrix',W/2,H*0.42);
+    ctx.fillText('Circle the letters by dragging',W/2,H*0.49);
+    ctx.fillText('Forwards or backwards — both count!',W/2,H*0.56);
+    ctx.font=`bold ${14*scl}px "Arial Black",sans-serif`;ctx.fillStyle='#00ff44';
+    ctx.fillText('TAP TO START',W/2,H*0.68);
+    if(hiScore>0){ctx.font=`${10*scl}px monospace`;ctx.fillStyle='rgba(0,255,60,0.5)';ctx.fillText('BEST '+hiScore,W/2,H*0.77);}
+  }
+
+  if(gs==='over'){
+    ctx.fillStyle='rgba(0,0,0,0.82)';ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.font=`bold ${32*scl}px "Arial Black",sans-serif`;
+    ctx.fillStyle='#ff5252';ctx.shadowColor='#ff0000';ctx.shadowBlur=16;
+    ctx.fillText('SYSTEM',W/2,H*0.34);ctx.fillText('BREACH',W/2,H*0.44);ctx.shadowBlur=0;
+    ctx.font=`bold ${20*scl}px monospace`;ctx.fillStyle='#fff';
+    ctx.fillText('Score: '+score,W/2,H*0.54);
+    ctx.font=`${11*scl}px monospace`;ctx.fillStyle='rgba(0,255,60,0.7)';
+    ctx.fillText('BEST: '+hiScore,W/2,H*0.62);
+    ctx.fillStyle='rgba(255,255,255,0.5)';
+    ctx.fillText('TAP to reconnect',W/2,H*0.72);
+  }
+}
+
+function drawHUD(){
+  ctx.save();
+  // Top bar background
+  ctx.fillStyle='rgba(0,0,0,0.85)';ctx.fillRect(0,0,W,GRID_TOP);
+
+  // Current word target
+  const cur=words[targetIdx];
+  if(cur&&!cur.found){
+    ctx.textAlign='center';
+    ctx.font=`${9*scl}px monospace`;ctx.fillStyle='rgba(0,255,60,0.55)';
+    ctx.fillText('FIND:',W/2,14*scl);
+    ctx.font=`bold ${22*scl}px monospace`;ctx.fillStyle='#ffd700';
+    ctx.shadowColor='#ffd700';ctx.shadowBlur=10;
+    ctx.fillText(cur.text,W/2,40*scl);ctx.shadowBlur=0;
+
+    // Timer bar
+    const barW=W*0.5,barX=(W-barW)/2,barY=52*scl;
+    const frac=Math.max(0,timeLeft/maxTime);
+    ctx.fillStyle='rgba(255,255,255,0.1)';ctx.fillRect(barX,barY,barW,5*scl);
+    ctx.fillStyle=frac>0.4?'#69f0ae':frac>0.2?'#ffd740':'#ff5252';
+    ctx.fillRect(barX,barY,barW*frac,5*scl);
+  } else if(words.every(w=>w.found)){
+    ctx.textAlign='center';ctx.font=`bold ${16*scl}px monospace`;
+    ctx.fillStyle='#69f0ae';ctx.fillText('ALL FOUND!',W/2,40*scl);
+  }
+
+  // Score (left)
+  ctx.textAlign='left';ctx.font=`bold ${14*scl}px monospace`;
+  ctx.fillStyle='#69f0ae';ctx.fillText(score,W*0.04,26*scl);
+  ctx.font=`${8*scl}px monospace`;ctx.fillStyle='rgba(0,255,60,0.45)';ctx.fillText('SCORE',W*0.04,14*scl);
+
+  // Level + words (right)
+  ctx.textAlign='right';
+  ctx.font=`bold ${12*scl}px monospace`;ctx.fillStyle='rgba(0,255,60,0.7)';
+  ctx.fillText('LV '+level,W*0.96,26*scl);
+  ctx.font=`${8*scl}px monospace`;ctx.fillStyle='rgba(0,255,60,0.45)';
+  ctx.fillText(wordsFound+'/'+totalWords+' FOUND',W*0.96,14*scl);
+
+  // Lives
+  ctx.textAlign='right';ctx.font=`${14*scl}px sans-serif`;
+  for(let i=0;i<3;i++){ctx.globalAlpha=i<lives?1:0.2;ctx.fillText('❤️',W*0.96-(i*18*scl),65*scl);}
+  ctx.globalAlpha=1;
+
+  ctx.restore();
+}
+
+// Input
+cv.addEventListener('pointerdown',e=>{
+  e.preventDefault();AC.resume();
+  if(gs==='start'){gs='play';init();return;}
+  if(gs==='over'){gs='start';return;}
+  if(gs!=='play')return;
+  const r=cv.getBoundingClientRect();
+  const x=(e.clientX-r.left)*(W/r.width),y=(e.clientY-r.top)*(H/r.height);
+  const cell=cellAt(x,y);
+  if(cell){dragging=true;lastCell=cell;selected=[cell];}
+});
+cv.addEventListener('pointermove',e=>{
+  e.preventDefault();
+  if(!dragging)return;
+  const r=cv.getBoundingClientRect();
+  onMove((e.clientX-r.left)*(W/r.width),(e.clientY-r.top)*(H/r.height));
+});
+cv.addEventListener('pointerup',e=>{e.preventDefault();onRelease();});
+cv.addEventListener('pointercancel',e=>{dragging=false;selected=[];lastCell=null;});
+
+buildRain();
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

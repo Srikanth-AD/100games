@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Generate Hustle Preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&display=swap" rel="stylesheet">
+<style>body{margin:0;background:#222;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:14px;font-family:sans-serif;color:#fff;}button{padding:10px 28px;font-size:16px;background:#00c853;color:#fff;border:none;border-radius:8px;cursor:pointer;}</style>
+</head>
+<body>
+<canvas id="c" width="600" height="400"></canvas>
+<button onclick="dl()">Save hustle-preview.png</button>
+<script>
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const W=600,H=400;
+document.fonts.ready.then(draw);
+function draw(){
+  // Felt BG
+  const bg=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,350);
+  bg.addColorStop(0,'#0f200f');bg.addColorStop(1,'#060d06');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+
+  // Table line
+  const tableY=H*0.65;
+  ctx.fillStyle='rgba(120,90,40,0.4)';ctx.fillRect(0,tableY,W,H-tableY);
+  ctx.strokeStyle='rgba(180,140,60,0.4)';ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(0,tableY);ctx.lineTo(W,tableY);ctx.stroke();
+
+  // Title
+  ctx.textAlign='center';
+  ctx.font='bold 72px "Black Ops One",serif';
+  ctx.shadowColor='#00ff55';ctx.shadowBlur=28;
+  ctx.fillStyle='#fff';ctx.fillText('HUSTLE',W/2,80);
+  ctx.shadowBlur=0;
+  ctx.font='14px "Black Ops One",serif';
+  ctx.fillStyle='rgba(160,255,160,0.6)';
+  ctx.fillText('follow the coin',W/2,104);
+
+  // 3 Hands
+  const handPositions=[W*0.28, W*0.5, W*0.72];
+  const coinHand=1;
+  handPositions.forEach((hx,i)=>{
+    const lifted=i===coinHand;
+    const liftY=lifted?60:0;
+    // Coin
+    if(lifted){
+      drawCoin(ctx,hx,tableY+18);
+    }
+    drawHand(ctx,hx,tableY-liftY,lifted);
+  });
+
+  // HUD overlay
+  ctx.fillStyle='rgba(0,0,0,0.3)';ctx.fillRect(0,0,W,52);
+  ctx.textAlign='left';
+  ctx.font='bold 11px "Black Ops One",serif';
+  ctx.fillStyle='rgba(255,255,255,0.35)';ctx.fillText('SCORE',16,18);
+  ctx.font='bold 24px "Black Ops One",serif';
+  ctx.fillStyle='#fff';ctx.fillText('120',16,44);
+  ctx.textAlign='right';
+  ctx.font='bold 11px "Black Ops One",serif';
+  ctx.fillStyle='rgba(255,255,255,0.35)';ctx.fillText('LEVEL',W-16,18);
+  ctx.font='bold 24px "Black Ops One",serif';
+  ctx.fillText('3',W-16,44);
+
+  // Win dots
+  ctx.textAlign='center';
+  ctx.font='bold 10px "Black Ops One",serif';
+  ctx.fillStyle='rgba(255,215,0,0.45)';ctx.fillText('BEST 220',W/2,22);
+
+  // Lives
+  ctx.font='20px sans-serif';
+  for(let i=0;i<3;i++){ctx.globalAlpha=i<2?1:0.2;ctx.fillText('❤️',W/2+(i-1)*28,H-18);}
+  ctx.globalAlpha=1;
+
+  // "WHERE IS THE COIN?" label
+  ctx.font='bold 16px "Black Ops One",serif';
+  ctx.fillStyle='rgba(255,215,0,0.9)';
+  ctx.fillText('WHERE IS THE COIN?',W/2,H*0.13);
+}
+function drawHand(ctx,cx,cy,lifted){
+  const w=68,h=78;
+  ctx.save();ctx.translate(cx,cy);
+  ctx.fillStyle='rgba(0,0,0,0.3)';
+  ctx.beginPath();ctx.ellipse(2,h*0.72,w*0.4,h*0.1,0,0,Math.PI*2);ctx.fill();
+  const g=ctx.createLinearGradient(-w/2,0,w/2,h);
+  g.addColorStop(0,'#d49a5a');g.addColorStop(0.5,'#c8854a');g.addColorStop(1,'#b57040');
+  ctx.fillStyle=g;
+  ctx.beginPath();ctx.roundRect(-w*0.42,h*0.08,w*0.84,h*0.65,[w*0.18,w*0.18,w*0.1,w*0.1]);ctx.fill();
+  const kw=w*0.84/4;
+  for(let i=0;i<4;i++){
+    const kx=-w*0.42+kw*i+kw*0.5;
+    ctx.fillStyle='#c07848';
+    ctx.beginPath();ctx.ellipse(kx,h*0.1,kw*0.36,h*0.1,0,0,Math.PI*2);ctx.fill();
+  }
+  ctx.fillStyle='rgba(255,255,255,0.12)';
+  ctx.beginPath();ctx.roundRect(-w*0.36,h*0.11,w*0.72,h*0.2,w*0.09);ctx.fill();
+  if(lifted){
+    ctx.strokeStyle='rgba(255,215,0,0.7)';ctx.lineWidth=2;
+    ctx.beginPath();ctx.roundRect(-w*0.42,h*0.08,w*0.84,h*0.65,[w*0.18,w*0.18,w*0.1,w*0.1]);ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawCoin(ctx,cx,cy){
+  const r=16;
+  const g=ctx.createRadialGradient(cx-r*0.28,cy-r*0.28,r*0.08,cx,cy,r);
+  g.addColorStop(0,'#fff9cc');g.addColorStop(0.4,'#ffd740');g.addColorStop(1,'#b8860b');
+  ctx.fillStyle=g;
+  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='rgba(180,130,10,0.4)';ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.arc(cx,cy,r*0.65,0,Math.PI*2);ctx.stroke();
+}
+function dl(){const a=document.createElement('a');a.download='hustle-preview.png';a.href=cv.toDataURL('image/png');a.click();}
+</script>
+</body>
+</html>

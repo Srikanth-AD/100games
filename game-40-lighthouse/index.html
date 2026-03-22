@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>LIGHTHOUSE</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;touch-action:none;}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;}
+body{display:flex;align-items:center;justify-content:center;}
+canvas{display:block;image-rendering:pixelated;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+'use strict';
+
+// ── CANVAS SETUP ──────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+const LW = 375, LH = 600; // logical size
+let vw, vh, scl;
+
+function resize() {
+  vw = window.innerWidth;
+  vh = window.innerHeight;
+  scl = Math.min(vw / LW, vh / LH);
+  canvas.width  = Math.floor(LW * scl);
+  canvas.height = Math.floor(LH * scl);
+  canvas.style.width  = canvas.width  + 'px';
+  canvas.style.height = canvas.height + 'px';
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── AUDIO ─────────────────────────────────────────────────────────────────────
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+
+function playWarn() {
+  AC.resume();
+  const o = AC.createOscillator();
+  const g = AC.createGain();
+  o.connect(g); g.connect(AC.destination);
+  o.type = 'sine';
+  o.frequency.setValueAtTime(440, AC.currentTime);
+  o.frequency.linearRampToValueAtTime(880, AC.currentTime + 0.25);
+  g.gain.setValueAtTime(0.18, AC.currentTime);
+  g.gain.linearRampToValueAtTime(0, AC.currentTime + 0.3);
+  o.start(); o.stop(AC.currentTime + 0.3);
+}
+
+function playCrash() {
+  AC.resume();
+  const buf = AC.createBuffer(1, AC.sampleRate * 0.4, AC.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (AC.sampleRate * 0.08));
+  const src = AC.createBufferSource();
+  src.buffer = buf;
+  const g = AC.createGain();
+  g.gain.value = 0.4;
+  src.connect(g); g.connect(AC.destination);
+  src.start();
+}
+
+function playLevelUp() {
+  AC.resume();
+  const notes = [523, 659, 784, 1047];
+  notes.forEach((freq, i) => {
+    const o = AC.createOscillator();
+    const g = AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    o.type = 'sine';
+    o.frequency.value = freq;
+    const t = AC.currentTime + i * 0.12;
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.15, t + 0.04);
+    g.gain.linearRampToValueAtTime(0, t + 0.18);
+    o.start(t); o.stop(t + 0.2);
+  });
+}
+
+// ── CONSTANTS ─────────────────────────────────────────────────────────────────
+const W = LW, H = LH;
+const ISLAND_X = W / 2;
+const ISLAND_Y = H * 0.78;
+const ISLAND_RX = 38, ISLAND_RY = 14;
+const LH_BASE_X = ISLAND_X;
+const LH_BASE_Y = ISLAND_Y - ISLAND_RY;
+const LH_TOP_X  = LH_BASE_X;
+const LH_TOP_Y  = LH_BASE_Y - 60; // lighthouse lantern center
+const BEAM_LEN  = W * 0.75;
+const ROCK_RING_R = 72;
+const NUM_ROCKS = 8;
+const OCEAN_Y = H * 0.55;
+const MAX_LIVES = 3;
+const WARN_TIME = 0.8; // seconds ship must be in beam
+
+// ── STATE ─────────────────────────────────────────────────────────────────────
+let state = 'start';
+let score = 0, lives = 3, level = 1;
+let bestScore = parseInt(localStorage.getItem('lh_best') || '0');
+let beamAngle = -Math.PI / 2; // pointing up initially
+let pointerX = W / 2, pointerY = 0;
+let ships = [];
+let explosions = [];
+let popups = [];
+let spawnTimer = 0;
+let spawnInterval = 2.8;
+let shipsSaved = 0;
+let combo = 0, comboTimer = 0;
+let t = 0; // global time for waves
+let last = 0;
+let raf;
+
+// Rock positions (static)
+const ROCKS = [];
+for (let i = 0; i < NUM_ROCKS; i++) {
+  const a = (i / NUM_ROCKS) * Math.PI * 2;
+  ROCKS.push({
+    x: ISLAND_X + Math.cos(a) * ROCK_RING_R,
+    y: ISLAND_Y + Math.sin(a) * ROCK_RING_R * 0.45,
+    r: 7 + Math.random() * 5
+  });
+}
+
+// Stars (static)
+const STARS = [];
+for (let i = 0; i < 40; i++) {
+  STARS.push({
+    x: Math.random() * W,
+    y: Math.random() * OCEAN_Y * 0.9,
+    r: Math.random() * 1.4 + 0.3,
+    blink: Math.random() * Math.PI * 2
+  });
+}
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+function dist(ax, ay, bx, by) {
+  const dx = ax - bx, dy = ay - by;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function angleInArc(angle, center, half) {
+  let diff = angle - center;
+  while (diff >  Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  return Math.abs(diff) <= half;
+}
+
+function spawnShip() {
+  const fromLeft = Math.random() < 0.5;
+  const sx = fromLeft ? -30 : W + 30;
+  const sy = OCEAN_Y + 20 + Math.random() * (ISLAND_Y - OCEAN_Y - 30);
+  // target: island center
+  const tx = ISLAND_X + (Math.random() - 0.5) * 30;
+  const ty = ISLAND_Y;
+  const speed = 28 + level * 3 + Math.random() * 10;
+  const dx = tx - sx, dy = ty - sy;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  ships.push({
+    x: sx, y: sy,
+    vx: (dx / len) * speed,
+    vy: (dy / len) * speed,
+    angle: Math.atan2(dy, dx),
+    warnTime: 0,
+    warned: false,
+    leaving: false,
+    leaveVx: 0, leaveVy: 0,
+    warnFlash: 0,
+    wakePoints: [],
+    dead: false
+  });
+}
+
+function addExplosion(x, y) {
+  const count = 22;
+  const parts = [];
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 30 + Math.random() * 60;
+    parts.push({
+      x, y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp,
+      life: 1,
+      decay: 0.6 + Math.random() * 0.5,
+      r: 3 + Math.random() * 4,
+      col: Math.random() < 0.5 ? '#ff6600' : '#ffcc00'
+    });
+  }
+  explosions.push({ parts });
+}
+
+function addPopup(x, y, text, col) {
+  popups.push({ x, y, text, col: col || '#ffff00', life: 1, vy: -40 });
+}
+
+function reset() {
+  score = 0; lives = MAX_LIVES; level = 1;
+  ships = []; explosions = []; popups = [];
+  spawnTimer = 0; spawnInterval = 2.8;
+  shipsSaved = 0; combo = 0; comboTimer = 0;
+  beamAngle = -Math.PI / 2;
+  t = 0;
+}
+
+// ── UPDATE ────────────────────────────────────────────────────────────────────
+function update(dt) {
+  t += dt;
+  if (comboTimer > 0) {
+    comboTimer -= dt;
+    if (comboTimer <= 0) combo = 0;
+  }
+
+  // Rotate beam toward pointer
+  const targetAngle = Math.atan2(pointerY - LH_TOP_Y, pointerX - LH_TOP_X);
+  let da = targetAngle - beamAngle;
+  while (da >  Math.PI) da -= Math.PI * 2;
+  while (da < -Math.PI) da += Math.PI * 2;
+  beamAngle += da * Math.min(1, dt * 8);
+
+  // Spawn ships
+  spawnTimer -= dt;
+  if (spawnTimer <= 0) {
+    spawnShip();
+    spawnInterval = Math.max(1.0, 2.8 - level * 0.15);
+    spawnTimer = spawnInterval * (0.7 + Math.random() * 0.6);
+  }
+
+  // Update ships
+  for (let i = ships.length - 1; i >= 0; i--) {
+    const s = ships[i];
+    if (s.dead) { ships.splice(i, 1); continue; }
+
+    // Wake trail
+    s.wakePoints.unshift({ x: s.x, y: s.y });
+    if (s.wakePoints.length > 10) s.wakePoints.pop();
+
+    if (s.leaving) {
+      s.x += s.leaveVx * dt;
+      s.y += s.leaveVy * dt;
+      s.warnFlash = Math.max(0, s.warnFlash - dt * 2);
+      if (s.x < -60 || s.x > W + 60 || s.y < OCEAN_Y - 60 || s.y > H + 60) {
+        ships.splice(i, 1);
+      }
+      continue;
+    }
+
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+
+    // Check if in beam
+    const shipAngle = Math.atan2(s.y - LH_TOP_Y, s.x - LH_TOP_X);
+    const shipDist  = dist(s.x, s.y, LH_TOP_X, LH_TOP_Y);
+    const inBeam = angleInArc(shipAngle, beamAngle, Math.PI / 8) && shipDist < BEAM_LEN;
+
+    if (inBeam && !s.warned) {
+      s.warnTime += dt;
+      s.warnFlash = (s.warnFlash + dt * 6) % (Math.PI * 2);
+      if (s.warnTime >= WARN_TIME) {
+        // Warned! Turn around
+        s.warned = true;
+        s.leaving = true;
+        s.leaveVx = -s.vx * 1.2;
+        s.leaveVy = -s.vy * 1.2;
+        s.warnFlash = 1;
+        shipsSaved++;
+        combo++;
+        comboTimer = 2.5;
+        const mult = Math.min(combo, 5);
+        const pts = 50 * mult;
+        score += pts;
+        addPopup(s.x, s.y - 20, '+' + pts + (mult > 1 ? ' x' + mult : ''), '#ffff00');
+        playWarn();
+        // Level up every 5 ships saved
+        if (shipsSaved % 5 === 0) {
+          level++;
+          addPopup(W / 2, H / 2, 'LEVEL ' + level + '!', '#00ffcc');
+          playLevelUp();
+        }
+      }
+    } else if (!inBeam) {
+      s.warnTime = Math.max(0, s.warnTime - dt * 0.5);
+      s.warnFlash = Math.max(0, s.warnFlash - dt * 3);
+    }
+
+    // Check collision with rocks
+    for (const rock of ROCKS) {
+      if (dist(s.x, s.y, rock.x, rock.y) < rock.r + 10) {
+        addExplosion(s.x, s.y);
+        addPopup(s.x, s.y - 20, 'CRASH!', '#ff4400');
+        playCrash();
+        s.dead = true;
+        lives--;
+        if (lives <= 0) {
+          state = 'over';
+          if (score > bestScore) {
+            bestScore = score;
+            localStorage.setItem('lh_best', bestScore);
+          }
+        }
+        break;
+      }
+    }
+
+    // Check collision with island
+    if (!s.dead) {
+      const relX = (s.x - ISLAND_X) / ISLAND_RX;
+      const relY = (s.y - ISLAND_Y) / ISLAND_RY;
+      if (relX * relX + relY * relY < 1) {
+        addExplosion(s.x, s.y);
+        addPopup(s.x, s.y - 20, 'CRASH!', '#ff4400');
+        playCrash();
+        s.dead = true;
+        lives--;
+        if (lives <= 0) {
+          state = 'over';
+          if (score > bestScore) {
+            bestScore = score;
+            localStorage.setItem('lh_best', bestScore);
+          }
+        }
+      }
+    }
+  }
+
+  // Update explosions
+  for (let i = explosions.length - 1; i >= 0; i--) {
+    const ex = explosions[i];
+    let alive = false;
+    for (const p of ex.parts) {
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vx *= 0.92;
+      p.vy *= 0.92;
+      p.life -= p.decay * dt;
+      if (p.life > 0) alive = true;
+    }
+    if (!alive) explosions.splice(i, 1);
+  }
+
+  // Update popups
+  for (let i = popups.length - 1; i >= 0; i--) {
+    const p = popups[i];
+    p.y += p.vy * dt;
+    p.life -= dt * 0.9;
+    if (p.life <= 0) popups.splice(i, 1);
+  }
+}
+
+// ── DRAW ──────────────────────────────────────────────────────────────────────
+function draw() {
+  ctx.save();
+  ctx.scale(scl, scl);
+
+  // Sky gradient
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, OCEAN_Y);
+  skyGrad.addColorStop(0, '#020614');
+  skyGrad.addColorStop(1, '#0a1a3a');
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, W, OCEAN_Y);
+
+  // Stars
+  for (const s of STARS) {
+    const brightness = 0.5 + 0.5 * Math.sin(t * 1.2 + s.blink);
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,255,255,${brightness})`;
+    ctx.fill();
+  }
+
+  // Ocean gradient
+  const seaGrad = ctx.createLinearGradient(0, OCEAN_Y, 0, H);
+  seaGrad.addColorStop(0, '#042030');
+  seaGrad.addColorStop(1, '#010c18');
+  ctx.fillStyle = seaGrad;
+  ctx.fillRect(0, OCEAN_Y, W, H - OCEAN_Y);
+
+  // Animated wave lines
+  ctx.save();
+  ctx.globalAlpha = 0.18;
+  ctx.strokeStyle = '#20a0c0';
+  ctx.lineWidth = 1.5;
+  for (let row = 0; row < 8; row++) {
+    const wy = OCEAN_Y + 18 + row * 22;
+    ctx.beginPath();
+    for (let x = 0; x <= W; x += 4) {
+      const y = wy + Math.sin((x / 50) + t * 1.8 + row * 0.5) * 3;
+      x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // Beam (draw before lighthouse so lighthouse appears on top)
+  drawBeam();
+
+  // Rocks
+  for (const rock of ROCKS) {
+    ctx.beginPath();
+    ctx.ellipse(rock.x, rock.y, rock.r * 1.3, rock.r * 0.8, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#2a2a2a';
+    ctx.fill();
+    ctx.strokeStyle = '#444';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // Island
+  ctx.beginPath();
+  ctx.ellipse(ISLAND_X, ISLAND_Y, ISLAND_RX, ISLAND_RY, 0, 0, Math.PI * 2);
+  const islandGrad = ctx.createRadialGradient(ISLAND_X, ISLAND_Y - 4, 2, ISLAND_X, ISLAND_Y, ISLAND_RX);
+  islandGrad.addColorStop(0, '#3a3028');
+  islandGrad.addColorStop(1, '#1a1410');
+  ctx.fillStyle = islandGrad;
+  ctx.fill();
+  ctx.strokeStyle = '#555040';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Lighthouse body
+  drawLighthouse();
+
+  // Ships
+  for (const s of ships) {
+    if (!s.dead) drawShip(s);
+  }
+
+  // Explosions
+  for (const ex of explosions) {
+    for (const p of ex.parts) {
+      if (p.life <= 0) continue;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2);
+      ctx.fillStyle = p.col;
+      ctx.globalAlpha = p.life;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // Popups
+  for (const p of popups) {
+    ctx.globalAlpha = Math.min(p.life, 1);
+    ctx.font = `bold ${14}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = p.col;
+    ctx.shadowColor = p.col;
+    ctx.shadowBlur = 8;
+    ctx.fillText(p.text, p.x, p.y);
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+  }
+
+  // HUD
+  drawHUD();
+
+  ctx.restore();
+}
+
+function drawBeam() {
+  const half = Math.PI / 8; // 22.5° each side = 45° total arc
+  const x0 = LH_TOP_X, y0 = LH_TOP_Y;
+
+  // Radial gradient for beam
+  const rg = ctx.createRadialGradient(x0, y0, 5, x0, y0, BEAM_LEN);
+  rg.addColorStop(0, 'rgba(255,230,80,0.55)');
+  rg.addColorStop(0.3, 'rgba(255,220,50,0.22)');
+  rg.addColorStop(1, 'rgba(255,200,0,0)');
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  ctx.arc(x0, y0, BEAM_LEN, beamAngle - half, beamAngle + half);
+  ctx.closePath();
+  ctx.fillStyle = rg;
+  ctx.globalAlpha = 0.85;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function drawLighthouse() {
+  const bx = LH_BASE_X, by = LH_BASE_Y;
+  // Base tower
+  const towerW = 14, towerH = 50;
+  // Gradient for tower
+  const tg = ctx.createLinearGradient(bx - towerW / 2, 0, bx + towerW / 2, 0);
+  tg.addColorStop(0, '#cccccc');
+  tg.addColorStop(0.5, '#ffffff');
+  tg.addColorStop(1, '#aaaaaa');
+  ctx.fillStyle = tg;
+  ctx.fillRect(bx - towerW / 2, by - towerH, towerW, towerH);
+
+  // Red stripe
+  const stripeY = by - towerH * 0.55;
+  ctx.fillStyle = '#cc2200';
+  ctx.fillRect(bx - towerW / 2, stripeY, towerW, towerH * 0.15);
+
+  // Lantern room (yellow box)
+  const lanternW = 18, lanternH = 12;
+  ctx.fillStyle = '#ffee44';
+  ctx.fillRect(bx - lanternW / 2, by - towerH - lanternH, lanternW, lanternH);
+  ctx.strokeStyle = '#888800';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(bx - lanternW / 2, by - towerH - lanternH, lanternW, lanternH);
+
+  // Cap/dome on lantern
+  ctx.beginPath();
+  ctx.moveTo(bx - lanternW / 2 - 2, by - towerH - lanternH);
+  ctx.lineTo(bx, by - towerH - lanternH - 8);
+  ctx.lineTo(bx + lanternW / 2 + 2, by - towerH - lanternH);
+  ctx.closePath();
+  ctx.fillStyle = '#cc3300';
+  ctx.fill();
+
+  // Glow from lantern
+  const glowGrad = ctx.createRadialGradient(bx, LH_TOP_Y, 0, bx, LH_TOP_Y, 20);
+  glowGrad.addColorStop(0, 'rgba(255,240,80,0.6)');
+  glowGrad.addColorStop(1, 'rgba(255,200,0,0)');
+  ctx.beginPath();
+  ctx.arc(bx, LH_TOP_Y, 20, 0, Math.PI * 2);
+  ctx.fillStyle = glowGrad;
+  ctx.fill();
+}
+
+function drawShip(s) {
+  ctx.save();
+  ctx.translate(s.x, s.y);
+  ctx.rotate(s.leaving ? Math.atan2(s.leaveVy, s.leaveVx) : s.angle);
+
+  // Wake trail
+  if (s.wakePoints.length > 1) {
+    ctx.save();
+    ctx.rotate(-( s.leaving ? Math.atan2(s.leaveVy, s.leaveVx) : s.angle));
+    for (let i = 1; i < s.wakePoints.length; i++) {
+      const alpha = (1 - i / s.wakePoints.length) * 0.25;
+      ctx.beginPath();
+      ctx.moveTo(s.wakePoints[i - 1].x - s.x, s.wakePoints[i - 1].y - s.y);
+      ctx.lineTo(s.wakePoints[i].x - s.x, s.wakePoints[i].y - s.y);
+      ctx.strokeStyle = `rgba(100,180,200,${alpha})`;
+      ctx.lineWidth = 3 - i * 0.25;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Ship color based on warn state
+  const inBeamAndWarning = !s.warned && s.warnTime > 0;
+  let shipCol = '#b0b8c0';
+  if (s.warned || s.leaving) {
+    shipCol = `rgba(0,220,120,${0.7 + 0.3 * Math.sin(t * 8)})`;
+  } else if (inBeamAndWarning) {
+    const flash = Math.sin(t * 10) * 0.5 + 0.5;
+    shipCol = `rgb(${Math.floor(176 + 79 * flash)},${Math.floor(184 + 71 * flash)},${Math.floor(192 - 72 * flash)})`;
+  }
+
+  // Hull triangle
+  ctx.beginPath();
+  ctx.moveTo(14, 0);
+  ctx.lineTo(-10, -6);
+  ctx.lineTo(-10, 6);
+  ctx.closePath();
+  ctx.fillStyle = shipCol;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+
+  // Cabin
+  ctx.fillStyle = '#667080';
+  ctx.fillRect(-6, -3, 8, 6);
+
+  // Warn progress arc (around ship)
+  if (inBeamAndWarning && s.warnTime > 0) {
+    const prog = s.warnTime / WARN_TIME;
+    ctx.beginPath();
+    ctx.arc(0, 0, 13, -Math.PI / 2, -Math.PI / 2 + prog * Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,220,0,0.8)';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawHUD() {
+  // Score top-left
+  ctx.textAlign = 'left';
+  ctx.font = 'bold 20px monospace';
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = '#00ccff';
+  ctx.shadowBlur = 6;
+  ctx.fillText(score, 12, 28);
+  ctx.shadowBlur = 0;
+
+  // Level top-center
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 13px monospace';
+  ctx.fillStyle = '#88ccff';
+  ctx.fillText('LV ' + level, W / 2, 24);
+
+  // Combo indicator
+  if (combo > 1) {
+    ctx.font = 'bold 11px monospace';
+    ctx.fillStyle = '#ffcc00';
+    ctx.fillText('x' + combo + ' COMBO', W / 2, 38);
+  }
+
+  // Lives top-right (lighthouse icons = small triangles)
+  for (let i = 0; i < MAX_LIVES; i++) {
+    const lx = W - 14 - i * 18;
+    const ly = 14;
+    const active = i < lives;
+    ctx.fillStyle = active ? '#ffee44' : '#333';
+    ctx.strokeStyle = active ? '#ffaa00' : '#555';
+    ctx.lineWidth = 1;
+    // Small lighthouse silhouette
+    ctx.fillRect(lx - 3, ly, 6, 12);
+    ctx.beginPath();
+    ctx.moveTo(lx - 5, ly);
+    ctx.lineTo(lx, ly - 5);
+    ctx.lineTo(lx + 5, ly);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillRect(lx - 3, ly, 6, 12);
+    ctx.strokeRect(lx - 3, ly, 6, 12);
+  }
+}
+
+function drawStartScreen() {
+  ctx.save();
+  ctx.scale(scl, scl);
+
+  // Background
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#010a1a');
+  bg.addColorStop(1, '#020c10');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars
+  for (const s of STARS) {
+    ctx.beginPath();
+    ctx.arc(s.x, s.y * 0.8, s.r, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.fill();
+  }
+
+  // Ocean
+  ctx.fillStyle = '#031820';
+  ctx.fillRect(0, H * 0.5, W, H * 0.5);
+
+  // Beam preview
+  const previewAngle = -Math.PI / 4;
+  const rg2 = ctx.createRadialGradient(LH_TOP_X, LH_TOP_Y, 5, LH_TOP_X, LH_TOP_Y, BEAM_LEN);
+  rg2.addColorStop(0, 'rgba(255,230,80,0.45)');
+  rg2.addColorStop(1, 'rgba(255,200,0,0)');
+  ctx.beginPath();
+  ctx.moveTo(LH_TOP_X, LH_TOP_Y);
+  ctx.arc(LH_TOP_X, LH_TOP_Y, BEAM_LEN, previewAngle - Math.PI / 8, previewAngle + Math.PI / 8);
+  ctx.closePath();
+  ctx.fillStyle = rg2;
+  ctx.globalAlpha = 0.7;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // Island & lighthouse
+  ctx.beginPath();
+  ctx.ellipse(ISLAND_X, ISLAND_Y, ISLAND_RX, ISLAND_RY, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#1a1410';
+  ctx.fill();
+  drawLighthouse();
+
+  // Title
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 64px monospace';
+  ctx.fillStyle = '#ffee44';
+  ctx.shadowColor = '#ffaa00';
+  ctx.shadowBlur = 30;
+  ctx.fillText('LIGHT', W / 2, H * 0.28);
+  ctx.fillText('HOUSE', W / 2, H * 0.28 + 70);
+  ctx.shadowBlur = 0;
+
+  ctx.font = 'bold 13px monospace';
+  ctx.fillStyle = '#88aacc';
+  ctx.fillText('GUIDE SHIPS TO SAFETY', W / 2, H * 0.28 + 108);
+
+  // Tap to start
+  const pulse = 0.6 + 0.4 * Math.sin(Date.now() / 400);
+  ctx.globalAlpha = pulse;
+  ctx.font = 'bold 18px monospace';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('TAP TO START', W / 2, H * 0.72);
+  ctx.globalAlpha = 1;
+
+  // Instructions
+  ctx.font = '12px monospace';
+  ctx.fillStyle = '#557799';
+  ctx.fillText('DRAG to aim beam · Warn ships before they hit rocks', W / 2, H * 0.80);
+
+  ctx.restore();
+}
+
+function drawOverScreen() {
+  ctx.save();
+  ctx.scale(scl, scl);
+
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#010408');
+  bg.addColorStop(1, '#010c10');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars
+  for (const s of STARS) {
+    ctx.beginPath();
+    ctx.arc(s.x, s.y * 0.8, s.r, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.fill();
+  }
+
+  ctx.textAlign = 'center';
+
+  ctx.font = 'bold 56px monospace';
+  ctx.fillStyle = '#cc2200';
+  ctx.shadowColor = '#ff4400';
+  ctx.shadowBlur = 20;
+  ctx.fillText('WRECKED', W / 2, H * 0.28);
+  ctx.shadowBlur = 0;
+
+  ctx.font = 'bold 14px monospace';
+  ctx.fillStyle = '#557799';
+  ctx.fillText('FINAL SCORE', W / 2, H * 0.40);
+
+  ctx.font = 'bold 52px monospace';
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = '#00ccff';
+  ctx.shadowBlur = 12;
+  ctx.fillText(score, W / 2, H * 0.50);
+  ctx.shadowBlur = 0;
+
+  ctx.font = 'bold 13px monospace';
+  ctx.fillStyle = '#334455';
+  ctx.fillText('BEST: ' + bestScore, W / 2, H * 0.57);
+
+  ctx.font = 'bold 12px monospace';
+  ctx.fillStyle = '#446688';
+  ctx.fillText('Ships saved: ' + shipsSaved + '  |  Level: ' + level, W / 2, H * 0.64);
+
+  // Tap to play again
+  const pulse = 0.6 + 0.4 * Math.sin(Date.now() / 400);
+  ctx.globalAlpha = pulse;
+  ctx.font = 'bold 18px monospace';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('TAP TO PLAY AGAIN', W / 2, H * 0.76);
+  ctx.globalAlpha = 1;
+
+  ctx.restore();
+}
+
+// ── GAME LOOP ─────────────────────────────────────────────────────────────────
+function loop(now) {
+  raf = requestAnimationFrame(loop);
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+
+  if (state === 'play') {
+    update(dt);
+    draw();
+  } else if (state === 'start') {
+    drawStartScreen();
+  } else if (state === 'over') {
+    drawOverScreen();
+  }
+}
+
+// ── INPUT ─────────────────────────────────────────────────────────────────────
+function getPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  const cx = (e.clientX - rect.left) / scl;
+  const cy = (e.clientY - rect.top)  / scl;
+  return { x: cx, y: cy };
+}
+
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  const pos = getPos(e);
+  if (state === 'start') {
+    reset();
+    state = 'play';
+    last = performance.now();
+  } else if (state === 'over') {
+    reset();
+    state = 'play';
+    last = performance.now();
+  } else if (state === 'play') {
+    pointerX = pos.x;
+    pointerY = pos.y;
+  }
+});
+
+canvas.addEventListener('pointermove', e => {
+  e.preventDefault();
+  if (state !== 'play') return;
+  const pos = getPos(e);
+  pointerX = pos.x;
+  pointerY = pos.y;
+});
+
+canvas.addEventListener('pointerup', e => {
+  e.preventDefault();
+});
+
+// ── START ─────────────────────────────────────────────────────────────────────
+last = performance.now();
+raf = requestAnimationFrame(loop);
+</script>
+</body>
+</html>

@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>LASSO</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#2a1a00;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H;
+function resize() {
+  W = cv.width = window.innerWidth;
+  H = cv.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── Audio ──────────────────────────────────────────────────────────────
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function sfx(type) {
+  const o = AC.createOscillator();
+  const g = AC.createGain();
+  o.connect(g); g.connect(AC.destination);
+  const now = AC.currentTime;
+  if (type === 'spin') {
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(120, now);
+    o.frequency.linearRampToValueAtTime(180, now + 0.15);
+    g.gain.setValueAtTime(0.08, now);
+    g.gain.linearRampToValueAtTime(0, now + 0.15);
+    o.start(now); o.stop(now + 0.15);
+  } else if (type === 'throw') {
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(300, now);
+    o.frequency.linearRampToValueAtTime(600, now + 0.1);
+    g.gain.setValueAtTime(0.2, now);
+    g.gain.linearRampToValueAtTime(0, now + 0.2);
+    o.start(now); o.stop(now + 0.2);
+  } else if (type === 'catch') {
+    o.type = 'sine';
+    o.frequency.setValueAtTime(440, now);
+    o.frequency.linearRampToValueAtTime(880, now + 0.05);
+    o.frequency.linearRampToValueAtTime(660, now + 0.15);
+    g.gain.setValueAtTime(0.3, now);
+    g.gain.linearRampToValueAtTime(0, now + 0.3);
+    o.start(now); o.stop(now + 0.3);
+  } else if (type === 'miss') {
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(200, now);
+    o.frequency.linearRampToValueAtTime(80, now + 0.3);
+    g.gain.setValueAtTime(0.15, now);
+    g.gain.linearRampToValueAtTime(0, now + 0.35);
+    o.start(now); o.stop(now + 0.35);
+  } else if (type === 'golden') {
+    [440, 550, 660, 880].forEach((f, i) => {
+      const oo = AC.createOscillator();
+      const gg = AC.createGain();
+      oo.connect(gg); gg.connect(AC.destination);
+      oo.type = 'sine';
+      oo.frequency.value = f;
+      const t = now + i * 0.06;
+      gg.gain.setValueAtTime(0.2, t);
+      gg.gain.linearRampToValueAtTime(0, t + 0.18);
+      oo.start(t); oo.stop(t + 0.18);
+    });
+    return;
+  }
+}
+
+// ── State ──────────────────────────────────────────────────────────────
+const GAME_TIME = 60;
+let state = 'title'; // title | playing | gameover
+let score = 0;
+let combo = 0;
+let timeLeft = GAME_TIME;
+let lastTime = 0;
+let waveTimer = 0;
+let waveIndex = 0;
+
+// Lasso states: idle | spinning | thrown | falling | retracting
+let lasso = {
+  state: 'idle',
+  angle: 0,
+  angVel: 0,
+  rx: 0,   // ellipse x-radius
+  ry: 0,   // ellipse y-radius
+  throwX: 0,
+  throwY: 0,
+  throwVY: 0,
+  throwRX: 0,
+  throwRY: 0,
+  retractT: 0,
+  retractFrom: { x: 0, y: 0, rx: 0, ry: 0 },
+  ropeSegments: [],
+};
+
+const MAX_RX = 70;
+const MAX_RY = 28;
+const MIN_RX = 14;
+const MIN_RY = 6;
+const SPIN_ACCEL = 3.5;
+const MAX_ANG_VEL = 12;
+const THROW_SPEED = -520;
+
+let holding = false;
+let holdStartTime = 0;
+let spinSfxTimer = 0;
+
+// Cowboy
+const cowboy = {
+  get x() { return W / 2; },
+  get y() { return H - 90; },
+  hatW: 44,
+  hatH: 18,
+  bodyH: 48,
+};
+
+// Animals array
+let animals = [];
+let particles = [];
+
+// ── Animal definitions ────────────────────────────────────────────────
+function makeAnimal(type, x, y, speed, lane) {
+  const base = { x, y, speed, lane, type, caught: false, catchAnim: 0, id: Math.random() };
+  if (type === 'cow') {
+    return { ...base, w: 58, h: 36, color: '#f0ede0', spotColor: '#555', spots: [
+      { ox: 10, oy: 8, r: 8 }, { ox: 32, oy: 14, r: 6 }, { ox: 20, oy: 22, r: 5 }
+    ]};
+  } else if (type === 'horse') {
+    return { ...base, w: 62, h: 38, color: '#8b5e3c' };
+  } else if (type === 'bull') {
+    return { ...base, w: 66, h: 40, color: '#ffd700', isGolden: true };
+  }
+  return base;
+}
+
+function spawnWave(dt) {
+  waveTimer -= dt;
+  if (waveTimer > 0) return;
+
+  const difficulty = Math.min(waveIndex * 0.18, 2.0);
+  const count = 1 + Math.floor(waveIndex / 3);
+  const actualCount = Math.min(count, 4);
+
+  for (let i = 0; i < actualCount; i++) {
+    const laneY = (H * 0.28) + (i * (H * 0.08));
+    const goldenChance = Math.random() < 0.08 + difficulty * 0.04;
+    const types = ['cow', 'horse', 'cow', 'horse'];
+    const type = goldenChance ? 'bull' : types[Math.floor(Math.random() * types.length)];
+    const baseSpeed = 65 + difficulty * 30 + Math.random() * 40;
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    const startX = dir > 0 ? -100 : W + 100;
+    animals.push(makeAnimal(type, startX, laneY, baseSpeed * dir, i));
+  }
+
+  waveTimer = Math.max(0.5, 2.2 - difficulty * 0.15);
+  waveIndex++;
+}
+
+// ── Particles ─────────────────────────────────────────────────────────
+function spawnCatchParticles(x, y, golden) {
+  const count = golden ? 20 : 12;
+  const color = golden ? ['#ffd700', '#fff700', '#ffaa00'] : ['#f5d76e', '#fff', '#e8c84a', '#ff9'];
+  for (let i = 0; i < count; i++) {
+    const angle = (Math.PI * 2 * i) / count + Math.random() * 0.5;
+    const speed = 60 + Math.random() * 120;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 60,
+      life: 1,
+      decay: 0.9 + Math.random() * 0.6,
+      r: 3 + Math.random() * 4,
+      color: color[Math.floor(Math.random() * color.length)],
+      star: Math.random() < 0.5,
+    });
+  }
+}
+
+// ── Input ──────────────────────────────────────────────────────────────
+function startHold() {
+  if (AC.state === 'suspended') AC.resume();
+  if (state === 'title') { state = 'playing'; return; }
+  if (state === 'gameover') { resetGame(); return; }
+  if (lasso.state === 'idle') {
+    lasso.state = 'spinning';
+    lasso.angVel = 1.5;
+    lasso.angle = 0;
+    lasso.rx = MIN_RX;
+    lasso.ry = MIN_RY;
+    holding = true;
+    holdStartTime = performance.now();
+  }
+}
+
+function endHold() {
+  if (!holding) return;
+  holding = false;
+  if (lasso.state === 'spinning') {
+    throwLasso();
+  }
+}
+
+function throwLasso() {
+  sfx('throw');
+  const cx = cowboy.x;
+  const cy = cowboy.y - cowboy.bodyH - cowboy.hatH - 10;
+  lasso.state = 'thrown';
+  lasso.throwX = cx;
+  lasso.throwY = cy;
+  lasso.throwRX = lasso.rx;
+  lasso.throwRY = lasso.ry;
+  lasso.throwVY = THROW_SPEED;
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' && !e.repeat) { e.preventDefault(); startHold(); }
+});
+document.addEventListener('keyup', e => {
+  if (e.code === 'Space') { e.preventDefault(); endHold(); }
+});
+cv.addEventListener('pointerdown', e => { e.preventDefault(); startHold(); });
+cv.addEventListener('pointerup', e => { e.preventDefault(); endHold(); });
+cv.addEventListener('pointercancel', e => { e.preventDefault(); endHold(); });
+
+// ── Reset ──────────────────────────────────────────────────────────────
+function resetGame() {
+  score = 0; combo = 0; timeLeft = GAME_TIME;
+  waveTimer = 0; waveIndex = 0;
+  animals = []; particles = [];
+  lasso.state = 'idle';
+  lasso.angVel = 0; lasso.rx = 0; lasso.ry = 0;
+  holding = false;
+  state = 'playing';
+}
+
+// ── Update ─────────────────────────────────────────────────────────────
+function update(dt) {
+  if (state !== 'playing') return;
+
+  timeLeft -= dt;
+  if (timeLeft <= 0) { timeLeft = 0; state = 'gameover'; return; }
+
+  spawnWave(dt);
+
+  // Update animals
+  for (let i = animals.length - 1; i >= 0; i--) {
+    const a = animals[i];
+    if (a.caught) {
+      a.catchAnim += dt * 3;
+      if (a.catchAnim > 1) animals.splice(i, 1);
+      continue;
+    }
+    a.x += a.speed * dt;
+    if (a.x > W + 150 || a.x < -150) animals.splice(i, 1);
+  }
+
+  // Update particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 200 * dt;
+    p.life -= p.decay * dt;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  // Lasso spin sfx
+  if (lasso.state === 'spinning') {
+    spinSfxTimer -= dt;
+    if (spinSfxTimer <= 0) {
+      sfx('spin');
+      spinSfxTimer = Math.max(0.05, 0.25 - lasso.angVel * 0.015);
+    }
+  }
+
+  // Update lasso
+  switch (lasso.state) {
+    case 'spinning': {
+      if (holding) {
+        lasso.angVel = Math.min(lasso.angVel + SPIN_ACCEL * dt, MAX_ANG_VEL);
+        const t = Math.min((lasso.angVel - 1.5) / (MAX_ANG_VEL - 1.5), 1);
+        lasso.rx = MIN_RX + (MAX_RX - MIN_RX) * t;
+        lasso.ry = MIN_RY + (MAX_RY - MIN_RY) * t;
+      }
+      lasso.angle += lasso.angVel * dt * Math.PI * 2;
+      break;
+    }
+    case 'thrown': {
+      lasso.throwY += lasso.throwVY * dt;
+      lasso.throwRX += 14 * dt;
+      lasso.throwRY += 6 * dt;
+
+      // Check catch
+      let caught = false;
+      for (let i = 0; i < animals.length; i++) {
+        const a = animals[i];
+        if (a.caught) continue;
+        const dx = lasso.throwX - a.x;
+        const dy = lasso.throwY - (a.y - a.h / 2);
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const catchRadius = (lasso.throwRX + lasso.throwRY) / 2;
+        if (dist < catchRadius + (a.w + a.h) / 5) {
+          // CATCH!
+          a.caught = true;
+          a.catchAnim = 0;
+          combo++;
+          const pts = a.isGolden ? 200 : 50;
+          score += pts * combo;
+          sfx(a.isGolden ? 'golden' : 'catch');
+          spawnCatchParticles(a.x, a.y - a.h / 2, a.isGolden);
+          lasso.state = 'retracting';
+          lasso.retractT = 0;
+          lasso.retractFrom = { x: lasso.throwX, y: lasso.throwY, rx: lasso.throwRX, ry: lasso.throwRY };
+          caught = true;
+          break;
+        }
+      }
+
+      if (!caught) {
+        const targetAreaTop = H * 0.2;
+        if (lasso.throwY < targetAreaTop || lasso.throwY < -50) {
+          // Missed — start falling
+          lasso.state = 'falling';
+          lasso.throwVY = 0;
+        }
+      }
+      break;
+    }
+    case 'falling': {
+      lasso.throwVY = Math.min(lasso.throwVY + 600 * dt, 500);
+      lasso.throwY += lasso.throwVY * dt;
+      const groundY = H - 50;
+      if (lasso.throwY >= groundY) {
+        lasso.throwY = groundY;
+        sfx('miss');
+        combo = 0;
+        lasso.state = 'retracting';
+        lasso.retractT = 0;
+        lasso.retractFrom = { x: lasso.throwX, y: lasso.throwY, rx: lasso.throwRX, ry: lasso.throwRY };
+      }
+      break;
+    }
+    case 'retracting': {
+      lasso.retractT += dt / 0.7;
+      if (lasso.retractT >= 1) {
+        lasso.state = 'idle';
+        lasso.angVel = 0;
+        lasso.rx = 0;
+        lasso.ry = 0;
+      }
+      break;
+    }
+  }
+}
+
+// ── Drawing helpers ────────────────────────────────────────────────────
+function drawBackground() {
+  // Sky gradient
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, H * 0.65);
+  skyGrad.addColorStop(0, '#1a0a2e');
+  skyGrad.addColorStop(0.3, '#4a1a0a');
+  skyGrad.addColorStop(0.7, '#c0541a');
+  skyGrad.addColorStop(1, '#e8852a');
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, W, H * 0.65);
+
+  // Sun
+  ctx.save();
+  ctx.globalAlpha = 0.9;
+  const sunGrad = ctx.createRadialGradient(W * 0.75, H * 0.22, 2, W * 0.75, H * 0.22, 55);
+  sunGrad.addColorStop(0, '#fff7a0');
+  sunGrad.addColorStop(0.4, '#ffcc00');
+  sunGrad.addColorStop(1, 'rgba(255,100,0,0)');
+  ctx.fillStyle = sunGrad;
+  ctx.beginPath();
+  ctx.arc(W * 0.75, H * 0.22, 55, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Distant hills
+  ctx.fillStyle = '#7a3010';
+  ctx.beginPath();
+  ctx.moveTo(0, H * 0.55);
+  ctx.bezierCurveTo(W * 0.15, H * 0.38, W * 0.3, H * 0.42, W * 0.45, H * 0.52);
+  ctx.bezierCurveTo(W * 0.55, H * 0.44, W * 0.7, H * 0.36, W * 0.85, H * 0.48);
+  ctx.bezierCurveTo(W * 0.92, H * 0.43, W, H * 0.46, W, H * 0.55);
+  ctx.lineTo(W, H * 0.65);
+  ctx.lineTo(0, H * 0.65);
+  ctx.closePath();
+  ctx.fill();
+
+  // Ground
+  const groundGrad = ctx.createLinearGradient(0, H * 0.63, 0, H);
+  groundGrad.addColorStop(0, '#c87830');
+  groundGrad.addColorStop(0.3, '#a85a18');
+  groundGrad.addColorStop(1, '#7a3a08');
+  ctx.fillStyle = groundGrad;
+  ctx.fillRect(0, H * 0.63, W, H * 0.37);
+
+  // Ground texture lines
+  ctx.strokeStyle = 'rgba(80,30,0,0.3)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 8; i++) {
+    const y = H * 0.65 + i * (H * 0.05);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+  }
+
+  // Fence posts
+  ctx.fillStyle = '#8b5a2b';
+  const postSpacing = 80;
+  const postCount = Math.ceil(W / postSpacing) + 2;
+  for (let i = 0; i < postCount; i++) {
+    const px = (i * postSpacing) - 20;
+    const py = H * 0.62;
+    // Post
+    ctx.fillRect(px - 5, py - 45, 10, 48);
+    // Cap
+    ctx.beginPath();
+    ctx.moveTo(px - 6, py - 45);
+    ctx.lineTo(px, py - 56);
+    ctx.lineTo(px + 6, py - 45);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // Fence rails
+  ctx.strokeStyle = '#8b5a2b';
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(0, H * 0.62 - 18);
+  ctx.lineTo(W, H * 0.62 - 18);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, H * 0.62 - 32);
+  ctx.lineTo(W, H * 0.62 - 32);
+  ctx.stroke();
+
+  // Dirt path
+  ctx.fillStyle = 'rgba(120,60,0,0.25)';
+  ctx.beginPath();
+  ctx.ellipse(W / 2, H * 0.68, W * 0.35, H * 0.04, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawCowboy(cx, cy) {
+  const bH = cowboy.bodyH;
+  const hW = cowboy.hatW;
+  const hH = cowboy.hatH;
+
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + 4, 22, 7, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Boots
+  ctx.fillStyle = '#3a1a00';
+  ctx.fillRect(cx - 16, cy - 8, 12, 10);
+  ctx.fillRect(cx + 4, cy - 8, 12, 10);
+  ctx.fillRect(cx - 20, cy - 2, 14, 6);
+  ctx.fillRect(cx + 6, cy - 2, 14, 6);
+
+  // Legs
+  ctx.fillStyle = '#2a4a8a';
+  ctx.fillRect(cx - 14, cy - 28, 11, 22);
+  ctx.fillRect(cx + 3, cy - 28, 11, 22);
+
+  // Belt
+  ctx.fillStyle = '#5a2a00';
+  ctx.fillRect(cx - 14, cy - 32, 28, 6);
+  ctx.fillStyle = '#d4a020';
+  ctx.fillRect(cx - 5, cy - 31, 10, 5);
+
+  // Body
+  ctx.fillStyle = '#c85820';
+  ctx.fillRect(cx - 14, cy - bH + 4, 28, bH - 32);
+
+  // Shirt details
+  ctx.fillStyle = '#aa3a10';
+  ctx.fillRect(cx - 2, cy - bH + 4, 4, bH - 32);
+
+  // Arms
+  ctx.fillStyle = '#c85820';
+  ctx.fillRect(cx - 22, cy - bH + 10, 10, 22);
+  ctx.fillRect(cx + 12, cy - bH + 10, 10, 22);
+
+  // Hands
+  ctx.fillStyle = '#d4956a';
+  ctx.fillRect(cx - 22, cy - bH + 30, 10, 8);
+  ctx.fillRect(cx + 12, cy - bH + 30, 10, 8);
+
+  // Neck
+  ctx.fillStyle = '#d4956a';
+  ctx.fillRect(cx - 6, cy - bH + 2, 12, 8);
+
+  // Head
+  ctx.fillStyle = '#d4956a';
+  ctx.fillRect(cx - 12, cy - bH - 12, 24, 20);
+
+  // Face details
+  ctx.fillStyle = '#a0604a';
+  ctx.fillRect(cx - 8, cy - bH + 2, 6, 4);  // left eye shadow
+  ctx.fillRect(cx + 2, cy - bH + 2, 6, 4);
+  ctx.fillStyle = '#2a1a00';
+  ctx.fillRect(cx - 6, cy - bH + 2, 4, 3);  // eyes
+  ctx.fillRect(cx + 2, cy - bH + 2, 4, 3);
+  ctx.fillRect(cx - 4, cy - bH + 8, 8, 2);  // mouth
+
+  // Hat brim
+  ctx.fillStyle = '#3a1a00';
+  ctx.fillRect(cx - hW / 2, cy - bH - 14, hW, 5);
+
+  // Hat crown
+  ctx.fillRect(cx - hW / 2 + 8, cy - bH - 14 - hH, hW - 16, hH);
+
+  // Hat band
+  ctx.fillStyle = '#8b4500';
+  ctx.fillRect(cx - hW / 2 + 8, cy - bH - 15, hW - 16, 4);
+}
+
+function drawAnimal(a) {
+  ctx.save();
+  const alpha = a.caught ? Math.max(0, 1 - a.catchAnim * 1.5) : 1;
+  ctx.globalAlpha = alpha;
+  const scaleUp = a.caught ? 1 + a.catchAnim * 0.5 : 1;
+  ctx.translate(a.x, a.y);
+  ctx.scale(scaleUp * (a.speed < 0 ? 1 : -1), scaleUp);
+
+  if (a.type === 'cow') drawCow(a);
+  else if (a.type === 'horse') drawHorse(a);
+  else if (a.type === 'bull') drawBull(a);
+
+  ctx.restore();
+
+  // Catch ring effect
+  if (a.caught) {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, 1 - a.catchAnim);
+    ctx.strokeStyle = '#ffd700';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.ellipse(a.x, a.y - a.h / 2, a.w / 2 + a.catchAnim * 30, a.h / 2 + a.catchAnim * 15, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawCow(a) {
+  const w = a.w, h = a.h;
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.ellipse(0, 4, w / 2, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Body
+  ctx.fillStyle = a.color;
+  ctx.beginPath();
+  ctx.roundRect(-w / 2, -h, w, h - 4, 8);
+  ctx.fill();
+  ctx.strokeStyle = '#888';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  // Spots
+  ctx.fillStyle = a.spotColor;
+  for (const sp of a.spots) {
+    ctx.beginPath();
+    ctx.ellipse(-w / 2 + sp.ox, -h + sp.oy, sp.r, sp.r * 0.7, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Legs
+  ctx.fillStyle = '#ccc';
+  const legPositions = [-w/2+8, -w/2+20, w/2-20, w/2-8];
+  for (const lx of legPositions) {
+    ctx.fillRect(lx - 4, -6, 7, 10);
+  }
+  // Head
+  ctx.fillStyle = a.color;
+  ctx.fillRect(w / 2 - 12, -h + 4, 20, 14);
+  ctx.strokeStyle = '#888';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(w / 2 - 12, -h + 4, 20, 14);
+  // Eye
+  ctx.fillStyle = '#333';
+  ctx.fillRect(w / 2 + 3, -h + 7, 4, 3);
+  // Nose
+  ctx.fillStyle = '#e8a0a0';
+  ctx.beginPath();
+  ctx.ellipse(w / 2 + 6, -h + 15, 5, 3, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Horns
+  ctx.fillStyle = '#d4b040';
+  ctx.fillRect(w / 2 - 10, -h + 2, 5, -8);
+  ctx.fillRect(w / 2 + 2, -h + 2, 5, -8);
+  // Tail
+  ctx.strokeStyle = '#ccc';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(-w / 2, -h + h * 0.3);
+  ctx.bezierCurveTo(-w / 2 - 14, -h + h * 0.1, -w / 2 - 18, -h + h * 0.5, -w / 2 - 10, -h + h * 0.7);
+  ctx.stroke();
+}
+
+function drawHorse(a) {
+  const w = a.w, h = a.h;
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.ellipse(0, 4, w / 2, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Body
+  ctx.fillStyle = a.color;
+  ctx.beginPath();
+  ctx.roundRect(-w / 2, -h, w, h - 4, 6);
+  ctx.fill();
+  ctx.strokeStyle = '#6a3a18';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  // Legs
+  ctx.fillStyle = '#7a4a28';
+  const legX = [-w/2+8, -w/2+20, w/2-20, w/2-8];
+  for (const lx of legX) {
+    ctx.fillRect(lx - 4, -7, 7, 12);
+    ctx.fillStyle = '#2a1a00';
+    ctx.fillRect(lx - 4, 2, 7, 3);
+    ctx.fillStyle = '#7a4a28';
+  }
+  // Neck
+  ctx.fillStyle = a.color;
+  ctx.beginPath();
+  ctx.moveTo(w / 2 - 8, -h);
+  ctx.lineTo(w / 2 + 4, -h);
+  ctx.lineTo(w / 2 + 14, -h - 16);
+  ctx.lineTo(w / 2 + 4, -h - 16);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#6a3a18';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  // Head
+  ctx.fillStyle = a.color;
+  ctx.fillRect(w / 2 + 2, -h - 22, 18, 14);
+  ctx.strokeStyle = '#6a3a18';
+  ctx.strokeRect(w / 2 + 2, -h - 22, 18, 14);
+  // Snout
+  ctx.fillStyle = '#c09060';
+  ctx.fillRect(w / 2 + 14, -h - 16, 8, 8);
+  // Eye
+  ctx.fillStyle = '#111';
+  ctx.fillRect(w / 2 + 5, -h - 20, 4, 3);
+  // Nostril
+  ctx.fillStyle = '#8a4a28';
+  ctx.beginPath();
+  ctx.ellipse(w / 2 + 18, -h - 11, 2, 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Mane
+  ctx.fillStyle = '#3a1a00';
+  for (let mi = 0; mi < 5; mi++) {
+    ctx.fillRect(w / 2 - 8 + mi * 3, -h - 4 - mi * 2, 4, 8 + mi * 2);
+  }
+  // Tail
+  ctx.strokeStyle = '#3a1a00';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(-w / 2, -h + 8);
+  ctx.bezierCurveTo(-w / 2 - 12, -h - 4, -w / 2 - 20, -h + 14, -w / 2 - 8, -h + 30);
+  ctx.stroke();
+}
+
+function drawBull(a) {
+  const w = a.w, h = a.h;
+  // Glow effect for golden bull
+  ctx.save();
+  ctx.shadowColor = '#ffd700';
+  ctx.shadowBlur = 18;
+  // Shadow on ground
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath();
+  ctx.ellipse(0, 4, w / 2, 7, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Body
+  const bodyGrad = ctx.createLinearGradient(-w/2, -h, w/2, 0);
+  bodyGrad.addColorStop(0, '#ffe060');
+  bodyGrad.addColorStop(0.5, '#ffd700');
+  bodyGrad.addColorStop(1, '#c8a000');
+  ctx.fillStyle = bodyGrad;
+  ctx.beginPath();
+  ctx.roundRect(-w / 2, -h, w, h - 2, 8);
+  ctx.fill();
+  ctx.strokeStyle = '#a87800';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+  // Muscular lines
+  ctx.strokeStyle = 'rgba(200,150,0,0.5)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-w/2+8, -h); ctx.lineTo(-w/2+8, -4);
+  ctx.moveTo(0, -h); ctx.lineTo(0, -4);
+  ctx.stroke();
+  // Legs
+  ctx.fillStyle = '#b89000';
+  const blegX = [-w/2+10, -w/2+24, w/2-24, w/2-10];
+  for (const lx of blegX) {
+    ctx.fillRect(lx - 5, -8, 9, 13);
+    ctx.fillStyle = '#6a4a00';
+    ctx.fillRect(lx - 5, 3, 9, 3);
+    ctx.fillStyle = '#b89000';
+  }
+  // Neck + head
+  ctx.fillStyle = '#ffd700';
+  ctx.beginPath();
+  ctx.moveTo(w/2 - 10, -h);
+  ctx.lineTo(w/2 + 6, -h);
+  ctx.lineTo(w/2 + 18, -h - 14);
+  ctx.lineTo(w/2 + 6, -h - 16);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#a87800';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  // Head
+  ctx.fillStyle = '#ffd700';
+  ctx.fillRect(w/2 + 4, -h - 24, 20, 16);
+  ctx.strokeStyle = '#a87800';
+  ctx.strokeRect(w/2 + 4, -h - 24, 20, 16);
+  // Big horns
+  ctx.fillStyle = '#ffe090';
+  ctx.strokeStyle = '#a87800';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(w/2 + 6, -h - 24);
+  ctx.bezierCurveTo(w/2 - 2, -h - 38, w/2 - 10, -h - 32, w/2 - 4, -h - 24);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(w/2 + 18, -h - 24);
+  ctx.bezierCurveTo(w/2 + 26, -h - 38, w/2 + 34, -h - 32, w/2 + 28, -h - 24);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  // Eyes
+  ctx.fillStyle = '#111';
+  ctx.fillRect(w/2 + 6, -h - 21, 5, 4);
+  ctx.fillRect(w/2 + 15, -h - 21, 5, 4);
+  // Snout
+  ctx.fillStyle = '#e8b000';
+  ctx.beginPath();
+  ctx.ellipse(w/2 + 20, -h - 12, 6, 4, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#8a5500';
+  ctx.beginPath();
+  ctx.ellipse(w/2 + 17, -h - 12, 2, 1.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(w/2 + 23, -h - 12, 2, 1.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Tail
+  ctx.strokeStyle = '#c8a000';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(-w/2, -h + 10);
+  ctx.bezierCurveTo(-w/2 - 14, -h - 2, -w/2 - 22, -h + 16, -w/2 - 10, -h + 32);
+  ctx.stroke();
+}
+
+function drawRopeSegments(x1, y1, x2, y2) {
+  const segments = 12;
+  const dx = (x2 - x1) / segments;
+  const dy = (y2 - y1) / segments;
+  ctx.strokeStyle = '#c8922a';
+  ctx.lineWidth = 2.5;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  for (let i = 1; i <= segments; i++) {
+    const tx = x1 + dx * i;
+    const ty = y1 + dy * i;
+    const wave = Math.sin(i * 0.9 + lasso.angle * 2) * 5 * (1 - i / segments);
+    ctx.lineTo(tx + wave, ty);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawLasso() {
+  const cx = cowboy.x;
+  const cy = cowboy.y - cowboy.bodyH - cowboy.hatH - 8;
+
+  switch (lasso.state) {
+    case 'idle': break;
+
+    case 'spinning': {
+      // Rope from hand to loop center
+      const lx = cx + Math.cos(lasso.angle) * lasso.rx * 0.6;
+      const ly = cy - lasso.ry * 0.5 + Math.sin(lasso.angle) * lasso.ry * 0.3;
+      drawRopeSegments(cx + 14, cy + 20, lx, ly);
+
+      // Spinning lasso loop (ellipse overhead perspective)
+      ctx.save();
+      ctx.translate(cx, cy - lasso.ry * 0.5);
+      ctx.strokeStyle = '#c8922a';
+      ctx.lineWidth = 3;
+      ctx.shadowColor = '#e8b040';
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, lasso.rx, lasso.ry, lasso.angle * 0.15, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // Knot
+      ctx.fillStyle = '#8b5a1a';
+      const kx = Math.cos(lasso.angle) * lasso.rx;
+      const ky = Math.sin(lasso.angle) * lasso.ry;
+      ctx.beginPath();
+      ctx.arc(kx, ky, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      break;
+    }
+
+    case 'thrown':
+    case 'falling': {
+      // Rope from hand to thrown loop
+      drawRopeSegments(cx + 14, cy + 20, lasso.throwX, lasso.throwY);
+
+      // Thrown loop
+      ctx.save();
+      ctx.translate(lasso.throwX, lasso.throwY);
+      ctx.strokeStyle = '#c8922a';
+      ctx.lineWidth = 3;
+      ctx.shadowColor = '#e8b040';
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, lasso.throwRX, lasso.throwRY, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      // Knot
+      ctx.fillStyle = '#8b5a1a';
+      ctx.beginPath();
+      ctx.arc(lasso.throwRX, 0, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      break;
+    }
+
+    case 'retracting': {
+      const t = lasso.retractT;
+      const ease = 1 - (1 - t) * (1 - t);
+      const rx = lasso.retractFrom.rx * (1 - ease);
+      const ry = lasso.retractFrom.ry * (1 - ease);
+      const loopX = lasso.retractFrom.x + (cx - lasso.retractFrom.x) * ease;
+      const loopY = lasso.retractFrom.y + (cy - lasso.retractFrom.y) * ease;
+
+      if (t < 0.95) {
+        drawRopeSegments(cx + 14, cy + 20, loopX, loopY);
+        ctx.save();
+        ctx.translate(loopX, loopY);
+        ctx.globalAlpha = 1 - ease * 0.7;
+        ctx.strokeStyle = '#c8922a';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, Math.max(2, rx), Math.max(1, ry), 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+      break;
+    }
+  }
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, p.life);
+    if (p.star) {
+      ctx.fillStyle = p.color;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.life * 3);
+      ctx.beginPath();
+      for (let i = 0; i < 5; i++) {
+        const a = (i * 4 * Math.PI) / 5 - Math.PI / 2;
+        const ai = a + (2 * Math.PI) / 5;
+        if (i === 0) ctx.moveTo(Math.cos(a) * p.r, Math.sin(a) * p.r);
+        else ctx.lineTo(Math.cos(a) * p.r, Math.sin(a) * p.r);
+        ctx.lineTo(Math.cos(ai) * p.r * 0.45, Math.sin(ai) * p.r * 0.45);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    } else {
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+function drawHUD() {
+  // Score
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.beginPath();
+  ctx.roundRect(12, 12, 160, 60, 10);
+  ctx.fill();
+
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 28px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText(score.toString().padStart(5, '0'), 22, 44);
+
+  ctx.fillStyle = '#ccc';
+  ctx.font = '13px monospace';
+  ctx.fillText('SCORE', 22, 62);
+
+  // Combo
+  if (combo > 1) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.beginPath();
+    ctx.roundRect(12, 82, 140, 44, 8);
+    ctx.fill();
+
+    const pulse = 1 + Math.sin(Date.now() * 0.01) * 0.08;
+    ctx.scale(pulse, pulse);
+    ctx.fillStyle = '#ff9900';
+    ctx.font = 'bold 22px monospace';
+    ctx.fillText(`x${combo} COMBO`, 16, 110);
+    ctx.restore();
+  }
+
+  // Timer
+  const timerColor = timeLeft <= 10 ? (Math.sin(Date.now() * 0.01) > 0 ? '#ff4444' : '#ff8888') : '#fff';
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.beginPath();
+  ctx.roundRect(W - 110, 12, 98, 52, 10);
+  ctx.fill();
+
+  ctx.fillStyle = timerColor;
+  ctx.font = 'bold 32px monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText(Math.ceil(timeLeft).toString(), W - 20, 50);
+  ctx.fillStyle = '#ccc';
+  ctx.font = '12px monospace';
+  ctx.fillText('TIME', W - 20, 58);
+
+  // Lasso state prompts
+  ctx.textAlign = 'center';
+  if (lasso.state === 'idle') {
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(W/2 - 115, H - 48, 230, 34);
+    ctx.fillStyle = '#ffe090';
+    ctx.font = 'bold 16px monospace';
+    ctx.fillText('HOLD SPACE / HOLD TAP TO SPIN', W / 2, H - 25);
+  } else if (lasso.state === 'spinning') {
+    const pct = Math.round(((lasso.angVel - 1.5) / (MAX_ANG_VEL - 1.5)) * 100);
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(W/2 - 80, H - 48, 160, 34);
+    ctx.fillStyle = '#ff9900';
+    ctx.font = 'bold 20px monospace';
+    ctx.fillText(`SPIN!  ${pct}%`, W / 2, H - 25);
+
+    // Spin power bar
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(W/2 - 70, H - 60, 140, 8);
+    const barColor = pct > 75 ? '#ff4400' : pct > 40 ? '#ff9900' : '#44ff88';
+    ctx.fillStyle = barColor;
+    ctx.fillRect(W/2 - 70, H - 60, 140 * (pct / 100), 8);
+  } else if (lasso.state === 'thrown') {
+    ctx.fillStyle = '#88ff88';
+    ctx.font = 'bold 20px monospace';
+    ctx.fillText('THROW!', W / 2, H - 28);
+  } else if (lasso.state === 'retracting') {
+    ctx.fillStyle = '#ff8888';
+    ctx.font = 'bold 16px monospace';
+    ctx.fillText('RETRACTING...', W / 2, H - 28);
+  }
+}
+
+function drawTitle() {
+  // Dim overlay
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Title box
+  const bw = Math.min(W - 40, 480);
+  const bh = 320;
+  const bx = W / 2 - bw / 2;
+  const by = H / 2 - bh / 2;
+
+  ctx.fillStyle = 'rgba(30,10,0,0.9)';
+  ctx.beginPath();
+  ctx.roundRect(bx, by, bw, bh, 18);
+  ctx.fill();
+  ctx.strokeStyle = '#c8922a';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  // Title
+  ctx.fillStyle = '#ffd700';
+  ctx.font = `bold ${Math.min(72, bw * 0.18)}px monospace`;
+  ctx.fillText('LASSO', W / 2, by + 90);
+  ctx.strokeStyle = '#a87000';
+  ctx.lineWidth = 2;
+  ctx.strokeText('LASSO', W / 2, by + 90);
+
+  ctx.fillStyle = '#e8c060';
+  ctx.font = `${Math.min(16, bw * 0.038)}px monospace`;
+  ctx.fillText('Spin your lasso and catch the animals!', W / 2, by + 120);
+
+  ctx.fillStyle = '#ccc';
+  ctx.font = `${Math.min(14, bw * 0.033)}px monospace`;
+  const lines = [
+    'HOLD SPACE / TAP AND HOLD — Spin lasso faster',
+    'RELEASE — Throw the lasso at a target',
+    '+50 pts per catch, combo multiplier',
+    'Golden Bull = 200 pts! Catch back-to-back for combos',
+    '60 seconds on the clock',
+  ];
+  lines.forEach((l, i) => ctx.fillText(l, W / 2, by + 160 + i * 26));
+
+  ctx.fillStyle = '#ffd700';
+  ctx.font = `bold ${Math.min(20, bw * 0.05)}px monospace`;
+  const pulse = Math.sin(Date.now() * 0.005) * 0.15 + 0.85;
+  ctx.globalAlpha = pulse;
+  ctx.fillText('PRESS SPACE or TAP TO START', W / 2, by + bh - 30);
+  ctx.globalAlpha = 1;
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(0, 0, W, H);
+
+  const bw = Math.min(W - 40, 420);
+  const bh = 280;
+  const bx = W / 2 - bw / 2;
+  const by = H / 2 - bh / 2;
+
+  ctx.fillStyle = 'rgba(20,8,0,0.95)';
+  ctx.beginPath();
+  ctx.roundRect(bx, by, bw, bh, 18);
+  ctx.fill();
+  ctx.strokeStyle = '#c8922a';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ff6622';
+  ctx.font = `bold ${Math.min(52, bw * 0.14)}px monospace`;
+  ctx.fillText('TIME UP!', W / 2, by + 72);
+
+  ctx.fillStyle = '#ffd700';
+  ctx.font = `bold ${Math.min(38, bw * 0.1)}px monospace`;
+  ctx.fillText(`SCORE: ${score}`, W / 2, by + 130);
+
+  const grade = score >= 3000 ? 'LEGENDARY!' : score >= 1500 ? 'CHAMPION!' : score >= 800 ? 'COWPOKE' : 'GREENHORN';
+  const gradeColor = score >= 3000 ? '#ffd700' : score >= 1500 ? '#ff9900' : score >= 800 ? '#88ff88' : '#aaa';
+  ctx.fillStyle = gradeColor;
+  ctx.font = `bold ${Math.min(24, bw * 0.065)}px monospace`;
+  ctx.fillText(grade, W / 2, by + 175);
+
+  ctx.fillStyle = '#ffd700';
+  ctx.font = `bold ${Math.min(18, bw * 0.048)}px monospace`;
+  const pulse = Math.sin(Date.now() * 0.005) * 0.15 + 0.85;
+  ctx.globalAlpha = pulse;
+  ctx.fillText('PRESS SPACE / TAP TO PLAY AGAIN', W / 2, by + bh - 30);
+  ctx.globalAlpha = 1;
+}
+
+// ── Target zone indicator ─────────────────────────────────────────────
+function drawTargetZone() {
+  if (lasso.state !== 'spinning' && lasso.state !== 'idle') return;
+  if (animals.length === 0) return;
+
+  // Subtle target area hint
+  ctx.strokeStyle = 'rgba(255,220,100,0.15)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([6, 6]);
+  ctx.beginPath();
+  ctx.rect(0, H * 0.20, W, H * 0.38);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+// ── Main loop ──────────────────────────────────────────────────────────
+function frame(ts) {
+  const dt = Math.min((ts - lastTime) / 1000, 0.05);
+  lastTime = ts;
+
+  ctx.clearRect(0, 0, W, H);
+
+  drawBackground();
+  drawTargetZone();
+
+  // Draw animals
+  for (const a of animals) drawAnimal(a);
+
+  // Draw particles
+  drawParticles();
+
+  // Draw cowboy
+  drawCowboy(cowboy.x, cowboy.y);
+
+  // Draw lasso
+  drawLasso();
+
+  // HUD
+  if (state === 'playing') {
+    drawHUD();
+    update(dt);
+  } else if (state === 'title') {
+    drawTitle();
+  } else if (state === 'gameover') {
+    drawHUD();
+    drawGameOver();
+  }
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(ts => { lastTime = ts; requestAnimationFrame(frame); });
+</script>
+</body>
+</html>

@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>FLOOD</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#0a0a1a;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H;
+function resize() {
+  W = cv.width = window.innerWidth;
+  H = cv.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', () => { resize(); drawAll(); });
+
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+
+function sfx(type) {
+  try {
+    const o = AC.createOscillator();
+    const g = AC.createGain();
+    o.connect(g);
+    g.connect(AC.destination);
+    if (type === 'flood') {
+      o.type = 'sine';
+      o.frequency.setValueAtTime(440, AC.currentTime);
+      o.frequency.exponentialRampToValueAtTime(660, AC.currentTime + 0.12);
+      g.gain.setValueAtTime(0.18, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.18);
+      o.start(); o.stop(AC.currentTime + 0.18);
+    } else if (type === 'win') {
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(523, AC.currentTime);
+      o.frequency.setValueAtTime(659, AC.currentTime + 0.1);
+      o.frequency.setValueAtTime(784, AC.currentTime + 0.2);
+      o.frequency.setValueAtTime(1047, AC.currentTime + 0.3);
+      g.gain.setValueAtTime(0.22, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.5);
+      o.start(); o.stop(AC.currentTime + 0.5);
+    } else if (type === 'lose') {
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(330, AC.currentTime);
+      o.frequency.exponentialRampToValueAtTime(110, AC.currentTime + 0.4);
+      g.gain.setValueAtTime(0.18, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.4);
+      o.start(); o.stop(AC.currentTime + 0.4);
+    } else if (type === 'tick') {
+      o.type = 'square';
+      o.frequency.setValueAtTime(220, AC.currentTime);
+      g.gain.setValueAtTime(0.08, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.05);
+      o.start(); o.stop(AC.currentTime + 0.05);
+    }
+  } catch(e) {}
+}
+
+// --- COLORS ---
+const COLORS = [
+  '#e74c3c', // 0 red
+  '#e67e22', // 1 orange
+  '#f1c40f', // 2 yellow
+  '#2ecc71', // 3 green
+  '#3498db', // 4 blue
+  '#9b59b6'  // 5 purple
+];
+
+const COLOR_BRIGHT = [
+  '#ff6b5b',
+  '#ffaa55',
+  '#ffe135',
+  '#55e891',
+  '#55b8ff',
+  '#c07bd4'
+];
+
+// --- GAME STATE ---
+let GRID_SIZE = 14;
+let MAX_MOVES = 25;
+let grid = [];         // color index per cell
+let floodRegion = [];  // bool per cell: is in flood territory
+let movesLeft = MAX_MOVES;
+let movesMade = 0;
+let phase = 'title';   // 'title' | 'play' | 'win' | 'lose'
+let level = 1;
+let bestScore = parseInt(localStorage.getItem('flood_best') || '0');
+
+// Animation
+let animating = false;
+let animFrame = 0;
+const ANIM_FRAMES = 12;
+let animWave = [];       // wave distance for each cell (flood animation)
+let animFromColor = [];  // color cells were before flood
+let animToColor = [];    // color cells transition to
+let animCellProgress = []; // per-cell [0..1] progress
+
+// Particles (win)
+let particles = [];
+
+// --- INIT ---
+function newGame() {
+  GRID_SIZE = 12 + Math.min(level - 1, 4);  // 12..16
+  MAX_MOVES = 25 - Math.min(level - 1, 5);  // 25..20
+  grid = [];
+  for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+    grid.push(Math.floor(Math.random() * COLORS.length));
+  }
+  floodRegion = new Array(GRID_SIZE * GRID_SIZE).fill(false);
+  floodRegion[0] = true;
+  // Seed flood region
+  expandFloodRegion(grid[0]);
+  movesLeft = MAX_MOVES;
+  movesMade = 0;
+  animating = false;
+  animWave = new Array(GRID_SIZE * GRID_SIZE).fill(-1);
+  animFromColor = grid.slice();
+  animToColor = grid.slice();
+  animCellProgress = new Array(GRID_SIZE * GRID_SIZE).fill(1);
+  particles = [];
+  phase = 'play';
+}
+
+function idx(r, c) { return r * GRID_SIZE + c; }
+
+// Flood-fill from (0,0), expanding region of same color
+function expandFloodRegion(color) {
+  const stack = [];
+  for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+    if (floodRegion[i]) stack.push(i);
+  }
+  while (stack.length > 0) {
+    const i = stack.pop();
+    const r = Math.floor(i / GRID_SIZE);
+    const c = i % GRID_SIZE;
+    const neighbors = [];
+    if (r > 0) neighbors.push(idx(r-1, c));
+    if (r < GRID_SIZE-1) neighbors.push(idx(r+1, c));
+    if (c > 0) neighbors.push(idx(r, c-1));
+    if (c < GRID_SIZE-1) neighbors.push(idx(r, c+1));
+    for (const n of neighbors) {
+      if (!floodRegion[n] && grid[n] === color) {
+        floodRegion[n] = true;
+        stack.push(n);
+      }
+    }
+  }
+}
+
+function isBoardFilled() {
+  return floodRegion.every(v => v);
+}
+
+// Pick a color: flood operation
+function pickColor(colorIdx) {
+  if (phase !== 'play' || animating) return;
+  const currentColor = grid[0];
+  if (colorIdx === currentColor) return; // same color, no op
+
+  sfx('flood');
+
+  // Record from colors for animation
+  const prevFrom = animFromColor.slice();
+  const prevGrid = grid.slice();
+
+  // Convert all flood region tiles to new color
+  for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+    if (floodRegion[i]) grid[i] = colorIdx;
+  }
+
+  // Expand flood region (BFS and find new additions with wave distances)
+  const newCells = [];
+  const waveDist = new Array(GRID_SIZE * GRID_SIZE).fill(-1);
+
+  // BFS from current flood region boundary
+  const queue = [];
+  for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+    if (floodRegion[i]) { waveDist[i] = 0; queue.push(i); }
+  }
+
+  let qi = 0;
+  while (qi < queue.length) {
+    const i = queue[qi++];
+    const r = Math.floor(i / GRID_SIZE);
+    const c = i % GRID_SIZE;
+    const neighbors = [];
+    if (r > 0) neighbors.push(idx(r-1, c));
+    if (r < GRID_SIZE-1) neighbors.push(idx(r+1, c));
+    if (c > 0) neighbors.push(idx(r, c-1));
+    if (c < GRID_SIZE-1) neighbors.push(idx(r, c+1));
+    for (const n of neighbors) {
+      if (waveDist[n] < 0 && grid[n] === colorIdx) {
+        waveDist[n] = waveDist[i] + 1;
+        if (!floodRegion[n]) {
+          floodRegion[n] = true;
+          newCells.push(n);
+        }
+        queue.push(n);
+      }
+    }
+  }
+
+  // Set up animation data
+  animWave = waveDist;
+  animFromColor = prevGrid.slice();
+  animToColor = grid.slice();
+  // All flood region cells need animation (not just new ones)
+  animCellProgress = new Array(GRID_SIZE * GRID_SIZE).fill(1);
+  for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+    if (floodRegion[i]) animCellProgress[i] = 0;
+  }
+
+  movesLeft--;
+  movesMade++;
+  animating = true;
+  animFrame = 0;
+
+  // Check end conditions after animation
+  setTimeout(() => {
+    if (isBoardFilled()) {
+      endGame(true);
+    } else if (movesLeft <= 0) {
+      endGame(false);
+    }
+  }, (ANIM_FRAMES + 8) * (1000/60));
+}
+
+function endGame(won) {
+  animating = false;
+  if (won) {
+    phase = 'win';
+    const score = movesLeft * GRID_SIZE * GRID_SIZE;
+    if (score > bestScore) {
+      bestScore = score;
+      localStorage.setItem('flood_best', bestScore);
+    }
+    sfx('win');
+    spawnParticles();
+  } else {
+    phase = 'lose';
+    sfx('lose');
+  }
+}
+
+// --- PARTICLES ---
+function spawnParticles() {
+  particles = [];
+  const { gx, gy, tileSize } = getGridLayout();
+  for (let i = 0; i < 120; i++) {
+    const col = COLORS[Math.floor(Math.random() * COLORS.length)];
+    particles.push({
+      x: gx + Math.random() * tileSize * GRID_SIZE,
+      y: gy + Math.random() * tileSize * GRID_SIZE,
+      vx: (Math.random() - 0.5) * 8,
+      vy: (Math.random() - 0.5) * 8 - 4,
+      life: 1,
+      decay: 0.012 + Math.random() * 0.015,
+      size: 4 + Math.random() * 6,
+      color: col,
+      rot: Math.random() * Math.PI * 2,
+      rotV: (Math.random() - 0.5) * 0.3
+    });
+  }
+}
+
+function updateParticles() {
+  for (const p of particles) {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.18;
+    p.vx *= 0.98;
+    p.life -= p.decay;
+    p.rot += p.rotV;
+  }
+  particles = particles.filter(p => p.life > 0);
+}
+
+// --- LAYOUT ---
+function getGridLayout() {
+  const padding = 20;
+  const buttonAreaH = 110;
+  const topAreaH = 60;
+  const availW = W - padding * 2;
+  const availH = H - padding * 2 - buttonAreaH - topAreaH;
+  const tileSize = Math.floor(Math.min(availW / GRID_SIZE, availH / GRID_SIZE));
+  const totalW = tileSize * GRID_SIZE;
+  const totalH = tileSize * GRID_SIZE;
+  const gx = Math.floor((W - totalW) / 2);
+  const gy = topAreaH + Math.floor((availH - totalH) / 2) + padding;
+  return { gx, gy, tileSize, totalW, totalH };
+}
+
+// --- COLOR INTERPOLATION ---
+function hexToRgb(hex) {
+  const r = parseInt(hex.slice(1,3), 16);
+  const g = parseInt(hex.slice(3,5), 16);
+  const b = parseInt(hex.slice(5,7), 16);
+  return [r, g, b];
+}
+
+function lerpColor(hex1, hex2, t) {
+  const [r1,g1,b1] = hexToRgb(hex1);
+  const [r2,g2,b2] = hexToRgb(hex2);
+  const r = Math.round(r1 + (r2-r1)*t);
+  const g = Math.round(g1 + (g2-g1)*t);
+  const b = Math.round(b1 + (b2-b1)*t);
+  return `rgb(${r},${g},${b})`;
+}
+
+// --- DRAWING ---
+function drawAll() {
+  ctx.clearRect(0, 0, W, H);
+
+  if (phase === 'title') {
+    drawTitle();
+    return;
+  }
+
+  const { gx, gy, tileSize } = getGridLayout();
+  const gap = Math.max(2, Math.floor(tileSize * 0.07));
+  const radius = Math.max(3, Math.floor(tileSize * 0.18));
+  const innerSize = tileSize - gap;
+
+  // Update animation
+  if (animating) {
+    animFrame++;
+    const maxDist = Math.max(...animWave.filter(v => v >= 0), 0);
+    for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+      if (floodRegion[i] && animWave[i] >= 0) {
+        // stagger by wave distance
+        const delay = animWave[i] * 1.5;
+        const progress = Math.max(0, Math.min(1, (animFrame - delay) / ANIM_FRAMES));
+        animCellProgress[i] = progress;
+      }
+    }
+    if (animFrame >= ANIM_FRAMES + maxDist * 1.5 + 4) {
+      animating = false;
+      animCellProgress.fill(1);
+    }
+  }
+
+  // Draw grid
+  for (let r = 0; r < GRID_SIZE; r++) {
+    for (let c = 0; c < GRID_SIZE; c++) {
+      const i = idx(r, c);
+      const x = gx + c * tileSize;
+      const y = gy + r * tileSize;
+
+      let t = animCellProgress[i];
+      let color;
+      if (t >= 1) {
+        color = COLORS[grid[i]];
+      } else {
+        // Ease in-out
+        t = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
+        color = lerpColor(COLORS[animFromColor[i]], COLORS[animToColor[i]], t);
+      }
+
+      // Glow for flood region
+      const inRegion = floodRegion[i];
+      if (inRegion) {
+        ctx.shadowColor = COLOR_BRIGHT[grid[i]];
+        ctx.shadowBlur = Math.floor(tileSize * 0.3);
+      } else {
+        ctx.shadowBlur = 0;
+      }
+
+      // Tile base
+      roundRect(ctx, x + gap/2, y + gap/2, innerSize, innerSize, radius);
+      ctx.fillStyle = color;
+      ctx.fill();
+
+      // Bright edge highlight for flood region
+      if (inRegion) {
+        ctx.shadowBlur = 0;
+        roundRect(ctx, x + gap/2, y + gap/2, innerSize, innerSize, radius);
+        ctx.strokeStyle = COLOR_BRIGHT[grid[i]];
+        ctx.lineWidth = Math.max(1.5, tileSize * 0.05);
+        ctx.stroke();
+      }
+
+      // Slight top-left highlight (shine)
+      const shineGrad = ctx.createLinearGradient(x + gap/2, y + gap/2, x + gap/2 + innerSize*0.6, y + gap/2 + innerSize*0.6);
+      shineGrad.addColorStop(0, 'rgba(255,255,255,0.18)');
+      shineGrad.addColorStop(1, 'rgba(255,255,255,0)');
+      roundRect(ctx, x + gap/2, y + gap/2, innerSize, innerSize, radius);
+      ctx.fillStyle = shineGrad;
+      ctx.fill();
+    }
+  }
+  ctx.shadowBlur = 0;
+
+  // Draw top HUD
+  drawHUD(gx, gy, tileSize);
+
+  // Draw color buttons
+  drawButtons();
+
+  // Particles
+  if (particles.length > 0) {
+    updateParticles();
+    drawParticles();
+  }
+
+  // Overlay screens
+  if (phase === 'win') drawWinScreen();
+  if (phase === 'lose') drawLoseScreen();
+}
+
+function drawHUD(gx, gy, tileSize) {
+  const totalW = tileSize * GRID_SIZE;
+  const barH = 14;
+  const barY = 18;
+  const barX = gx;
+
+  // Title
+  ctx.font = `bold ${Math.floor(H * 0.028)}px monospace`;
+  ctx.fillStyle = '#aaaacc';
+  ctx.textAlign = 'left';
+  ctx.fillText('FLOOD', gx, barY + barH);
+
+  // Level
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#6688cc';
+  ctx.font = `${Math.floor(H * 0.022)}px monospace`;
+  ctx.fillText(`LV ${level}`, gx + totalW / 2, barY + barH);
+
+  // Best score
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#ffdd44';
+  ctx.font = `${Math.floor(H * 0.022)}px monospace`;
+  ctx.fillText(`BEST ${bestScore}`, gx + totalW, barY + barH);
+
+  // Moves bar
+  const barTop = barY + barH + 6;
+  const barWidth = totalW;
+  const fillW = (movesLeft / MAX_MOVES) * barWidth;
+  const ratio = movesLeft / MAX_MOVES;
+  const barColor = ratio > 0.5 ? '#2ecc71' : ratio > 0.25 ? '#f1c40f' : '#e74c3c';
+
+  // Background
+  ctx.fillStyle = '#1a1a2e';
+  roundRect(ctx, barX, barTop, barWidth, barH, barH/2);
+  ctx.fill();
+
+  // Fill
+  if (fillW > 0) {
+    ctx.fillStyle = barColor;
+    roundRect(ctx, barX, barTop, fillW, barH, barH/2);
+    ctx.fill();
+  }
+
+  // Moves text
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `bold ${Math.floor(H * 0.019)}px monospace`;
+  ctx.fillText(`${movesLeft} moves left`, barX + barWidth/2, barTop + barH - 1);
+}
+
+function drawButtons() {
+  const btnCount = COLORS.length;
+  const btnAreaH = 90;
+  const btnY = H - btnAreaH;
+  const btnPad = 10;
+  const totalBtnW = W - btnPad * 2;
+  const btnW = Math.floor((totalBtnW - (btnCount-1) * 8) / btnCount);
+  const btnH = 56;
+  const btnRadius = 14;
+  const currentColor = grid[0];
+
+  for (let i = 0; i < btnCount; i++) {
+    const bx = btnPad + i * (btnW + 8);
+    const by = btnY + (btnAreaH - btnH) / 2;
+
+    // Shadow / glow for active
+    const isActive = (i === currentColor);
+    if (isActive) {
+      ctx.shadowColor = COLOR_BRIGHT[i];
+      ctx.shadowBlur = 18;
+    } else {
+      ctx.shadowBlur = 0;
+    }
+
+    // Button body
+    roundRect(ctx, bx, by, btnW, btnH, btnRadius);
+    ctx.fillStyle = COLORS[i];
+    ctx.fill();
+
+    // Active ring
+    if (isActive) {
+      ctx.shadowBlur = 0;
+      roundRect(ctx, bx, by, btnW, btnH, btnRadius);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      // Crown indicator
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      roundRect(ctx, bx, by, btnW, btnH * 0.45, btnRadius);
+      ctx.fill();
+    } else {
+      ctx.shadowBlur = 0;
+      // Subtle border
+      roundRect(ctx, bx, by, btnW, btnH, btnRadius);
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    // Shine
+    const sg = ctx.createLinearGradient(bx, by, bx, by + btnH * 0.55);
+    sg.addColorStop(0, 'rgba(255,255,255,0.2)');
+    sg.addColorStop(1, 'rgba(255,255,255,0)');
+    roundRect(ctx, bx + 2, by + 2, btnW - 4, btnH * 0.5, btnRadius - 2);
+    ctx.fillStyle = sg;
+    ctx.fill();
+
+    // Keyboard hint
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.font = `bold ${Math.floor(H * 0.018)}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.fillText(`${i+1}`, bx + btnW/2, by + btnH - 8);
+  }
+  ctx.shadowBlur = 0;
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.save();
+    ctx.globalAlpha = p.life;
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.rot);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(-p.size/2, -p.size/2, p.size, p.size * 0.6);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawWinScreen() {
+  const { gx, gy, tileSize } = getGridLayout();
+  const totalW = tileSize * GRID_SIZE;
+  const totalH = tileSize * GRID_SIZE;
+  const score = movesLeft * GRID_SIZE * GRID_SIZE + movesMade;
+
+  // Dim overlay
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  roundRect(ctx, gx - 10, gy - 10, totalW + 20, totalH + 20, 16);
+  ctx.fill();
+
+  const cx = gx + totalW / 2;
+  const cy = gy + totalH / 2;
+
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#f1c40f';
+  ctx.shadowBlur = 30;
+  ctx.fillStyle = '#f1c40f';
+  ctx.font = `bold ${Math.floor(Math.min(W,H) * 0.065)}px monospace`;
+  ctx.fillText('YOU WIN!', cx, cy - 40);
+
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `${Math.floor(Math.min(W,H) * 0.032)}px monospace`;
+  ctx.fillText(`Cleared in ${movesMade} moves`, cx, cy + 5);
+
+  const scoreVal = movesLeft * GRID_SIZE * GRID_SIZE;
+  ctx.fillStyle = '#f1c40f';
+  ctx.font = `bold ${Math.floor(Math.min(W,H) * 0.032)}px monospace`;
+  ctx.fillText(`Score: ${scoreVal}`, cx, cy + 45);
+  if (scoreVal >= bestScore) {
+    ctx.fillStyle = '#2ecc71';
+    ctx.font = `${Math.floor(Math.min(W,H) * 0.024)}px monospace`;
+    ctx.fillText('NEW BEST!', cx, cy + 78);
+  }
+
+  ctx.fillStyle = '#aaffaa';
+  ctx.font = `${Math.floor(Math.min(W,H) * 0.026)}px monospace`;
+  ctx.fillText('Tap to continue', cx, cy + 115);
+  ctx.shadowBlur = 0;
+}
+
+function drawLoseScreen() {
+  const { gx, gy, tileSize } = getGridLayout();
+  const totalW = tileSize * GRID_SIZE;
+  const totalH = tileSize * GRID_SIZE;
+
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  roundRect(ctx, gx - 10, gy - 10, totalW + 20, totalH + 20, 16);
+  ctx.fill();
+
+  const cx = gx + totalW / 2;
+  const cy = gy + totalH / 2;
+
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#e74c3c';
+  ctx.shadowBlur = 30;
+  ctx.fillStyle = '#e74c3c';
+  ctx.font = `bold ${Math.floor(Math.min(W,H) * 0.065)}px monospace`;
+  ctx.fillText('FLOODED!', cx, cy - 30);
+
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#cccccc';
+  ctx.font = `${Math.floor(Math.min(W,H) * 0.03)}px monospace`;
+  ctx.fillText('Out of moves', cx, cy + 20);
+
+  // Show coverage
+  const filled = floodRegion.filter(v => v).length;
+  const total = GRID_SIZE * GRID_SIZE;
+  const pct = Math.floor(filled / total * 100);
+  ctx.fillStyle = '#aaaaaa';
+  ctx.font = `${Math.floor(Math.min(W,H) * 0.026)}px monospace`;
+  ctx.fillText(`Coverage: ${pct}%`, cx, cy + 56);
+
+  ctx.fillStyle = '#ff9999';
+  ctx.font = `${Math.floor(Math.min(W,H) * 0.026)}px monospace`;
+  ctx.fillText('Tap to retry', cx, cy + 100);
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#0a0a1a';
+  ctx.fillRect(0, 0, W, H);
+
+  const cx = W / 2;
+  const cy = H / 2;
+
+  // Draw a mini sample grid
+  const previewSize = 6;
+  const ps = Math.floor(Math.min(W, H) * 0.045);
+  const pgx = cx - previewSize * ps / 2;
+  const pgy = cy - 80 - previewSize * ps / 2;
+  for (let r = 0; r < previewSize; r++) {
+    for (let c = 0; c < previewSize; c++) {
+      const ci = (r + c * 2 + r * c) % COLORS.length;
+      roundRect(ctx, pgx + c * ps + 2, pgy + r * ps + 2, ps - 4, ps - 4, 6);
+      ctx.fillStyle = COLORS[ci];
+      ctx.fill();
+    }
+  }
+
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#3498db';
+  ctx.shadowBlur = 30;
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `bold ${Math.floor(Math.min(W,H) * 0.11)}px monospace`;
+  ctx.fillText('FLOOD', cx, cy + 50);
+
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#8888bb';
+  ctx.font = `${Math.floor(Math.min(W,H) * 0.028)}px monospace`;
+  ctx.fillText('Fill the board before moves run out', cx, cy + 90);
+
+  ctx.fillStyle = '#55aaff';
+  ctx.font = `${Math.floor(Math.min(W,H) * 0.026)}px monospace`;
+  ctx.fillText('Tap or press any key to start', cx, cy + 135);
+
+  if (bestScore > 0) {
+    ctx.fillStyle = '#f1c40f';
+    ctx.font = `${Math.floor(Math.min(W,H) * 0.022)}px monospace`;
+    ctx.fillText(`Best score: ${bestScore}`, cx, cy + 175);
+  }
+  ctx.shadowBlur = 0;
+}
+
+// --- UTILITY ---
+function roundRect(ctx, x, y, w, h, r) {
+  r = Math.min(r, w/2, h/2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// --- INPUT ---
+function getButtonIndex(px, py) {
+  const btnCount = COLORS.length;
+  const btnAreaH = 90;
+  const btnY = H - btnAreaH;
+  const btnPad = 10;
+  const totalBtnW = W - btnPad * 2;
+  const btnW = Math.floor((totalBtnW - (btnCount-1) * 8) / btnCount);
+  const btnH = 56;
+  const by = btnY + (btnAreaH - btnH) / 2;
+  if (py < by || py > by + btnH) return -1;
+  for (let i = 0; i < btnCount; i++) {
+    const bx = btnPad + i * (btnW + 8);
+    if (px >= bx && px <= bx + btnW) return i;
+  }
+  return -1;
+}
+
+function handleClick(px, py) {
+  if (phase === 'title') {
+    level = 1;
+    newGame();
+    return;
+  }
+  if (phase === 'win') {
+    level++;
+    newGame();
+    return;
+  }
+  if (phase === 'lose') {
+    newGame();
+    return;
+  }
+  // Play phase
+  const bi = getButtonIndex(px, py);
+  if (bi >= 0) {
+    sfx('tick');
+    pickColor(bi);
+  }
+}
+
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  handleClick(e.clientX, e.clientY);
+});
+
+document.addEventListener('keydown', e => {
+  if (phase === 'title') { level = 1; newGame(); return; }
+  if (phase === 'win') { level++; newGame(); return; }
+  if (phase === 'lose') { newGame(); return; }
+  const n = parseInt(e.key);
+  if (n >= 1 && n <= 6) {
+    sfx('tick');
+    pickColor(n - 1);
+  }
+});
+
+// --- GAME LOOP ---
+let lastTime = 0;
+function loop(ts) {
+  requestAnimationFrame(loop);
+  drawAll();
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

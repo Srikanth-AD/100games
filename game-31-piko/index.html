@@ -1,0 +1,1284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game 31 - Piko</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #f9a825, #e65100);
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 24px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+            max-width: 480px;
+            width: 100%;
+        }
+
+        .title {
+            text-align: center;
+            color: #333;
+            margin-bottom: 4px;
+            font-size: 2.2em;
+            font-weight: 900;
+            letter-spacing: 2px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #888;
+            font-size: 0.85em;
+            margin-bottom: 18px;
+        }
+
+        /* ---- STATS ---- */
+        .stats {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 16px;
+            justify-content: space-around;
+        }
+
+        .stat {
+            background: #f5f5f5;
+            padding: 8px 12px;
+            border-radius: 10px;
+            text-align: center;
+            flex: 1;
+        }
+
+        .stat-label {
+            font-size: 0.75em;
+            color: #888;
+            margin-bottom: 3px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+            font-size: 1.25em;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .stat.round .stat-value { color: #e65100; }
+        .stat.score .stat-value { color: #2ecc71; }
+        .stat.lives .stat-value { color: #e74c3c; }
+
+        /* ---- FEEDBACK ---- */
+        .feedback {
+            text-align: center;
+            padding: 9px 12px;
+            border-radius: 10px;
+            margin-bottom: 14px;
+            font-weight: bold;
+            font-size: 0.95em;
+            min-height: 38px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
+            background: #f5f5f5;
+            color: #999;
+        }
+
+        .feedback.miss   { background: #ffeaea; color: #c0392b; animation: shake 0.35s; }
+        .feedback.good   { background: #eaffea; color: #27ae60; }
+        .feedback.perfect{ background: #fff3cd; color: #d68910; }
+        .feedback.info   { background: #e8f4fd; color: #1a73b8; }
+        .feedback.win    { background: linear-gradient(135deg, #f9a825, #e65100); color: white; }
+
+        @keyframes shake {
+            0%,100%{ transform: translateX(0); }
+            20%    { transform: translateX(-6px); }
+            60%    { transform: translateX(6px); }
+        }
+
+        /* ---- BOARD ---- */
+        .board-area {
+            background: #e8e0d8;
+            border-radius: 14px;
+            padding: 16px 12px 12px;
+            margin-bottom: 16px;
+            position: relative;
+            /* chalk-on-concrete texture */
+            background-image:
+                radial-gradient(circle at 20% 30%, rgba(255,255,255,0.15) 0%, transparent 50%),
+                radial-gradient(circle at 80% 70%, rgba(0,0,0,0.04) 0%, transparent 50%);
+        }
+
+        .board-label {
+            text-align: center;
+            font-size: 0.75em;
+            color: #aaa;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+
+        .board {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .board-row {
+            display: flex;
+            gap: 5px;
+            justify-content: center;
+        }
+
+        /* Single square row gets a centering fix so it lines up with the double pairs */
+        .board-row.single {
+            width: 130px; /* matches two 60px squares + 5px gap + 5px padding */
+            justify-content: center;
+        }
+
+        .sq {
+            width: 62px;
+            height: 62px;
+            border-radius: 8px;
+            border: 3px solid transparent;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.3em;
+            font-weight: 900;
+            cursor: default;
+            user-select: none;
+            position: relative;
+            transition: transform 0.12s, box-shadow 0.12s;
+            /* chalk outline style */
+            box-shadow: inset 0 1px 3px rgba(255,255,255,0.6), 0 2px 4px rgba(0,0,0,0.15);
+        }
+
+        /* Square colour palette - bright chalk colours */
+        .sq-1  { background: #ffe0b2; border-color: #fb8c00; color: #e65100; }
+        .sq-2  { background: #f3e5f5; border-color: #9c27b0; color: #6a1b9a; }
+        .sq-3  { background: #e8eaf6; border-color: #5c6bc0; color: #283593; }
+        .sq-4  { background: #e0f7fa; border-color: #00bcd4; color: #00838f; }
+        .sq-5  { background: #e8f5e9; border-color: #43a047; color: #1b5e20; }
+        .sq-6  { background: #fff9c4; border-color: #f9a825; color: #f57f17; }
+        .sq-7  { background: #fce4ec; border-color: #e91e63; color: #880e4f; }
+        .sq-8  { background: #e3f2fd; border-color: #1e88e5; color: #0d47a1; }
+        .sq-9  { background: #f1f8e9; border-color: #7cb342; color: #33691e; }
+        .sq-10 { background: #fff3e0; border-color: #ff7043; color: #bf360c; }
+
+        /* States */
+        .sq.target {
+            transform: scale(1.08);
+            box-shadow: 0 0 0 3px gold, 0 4px 12px rgba(0,0,0,0.25), inset 0 1px 3px rgba(255,255,255,0.6);
+            animation: pulse-target 1.2s ease-in-out infinite;
+            cursor: pointer;
+        }
+
+        @keyframes pulse-target {
+            0%,100% { box-shadow: 0 0 0 3px gold, 0 4px 12px rgba(0,0,0,0.25); }
+            50%     { box-shadow: 0 0 0 6px rgba(255,215,0,0.5), 0 4px 16px rgba(0,0,0,0.3); }
+        }
+
+        .sq.hop-next {
+            animation: hop-blink 0.55s ease-in-out infinite;
+            cursor: pointer;
+        }
+
+        @keyframes hop-blink {
+            0%,100% { opacity: 1; transform: scale(1.05); }
+            50%     { opacity: 0.55; transform: scale(1.0); }
+        }
+
+        .sq.hopped {
+            opacity: 0.45;
+            transform: scale(0.95);
+        }
+
+        .sq.player-here {
+            box-shadow: 0 0 0 3px #e65100, 0 4px 12px rgba(0,0,0,0.25);
+        }
+
+        .sq.skipped {
+            /* pamato is here — dimmed but clearly marked */
+            opacity: 0.7;
+        }
+
+        .sq-num {
+            font-size: 0.95em;
+            line-height: 1;
+        }
+
+        .sq-emoji {
+            font-size: 1.1em;
+            line-height: 1;
+        }
+
+        /* ---- AIM BAR ---- */
+        .aim-section {
+            background: #f5f5f5;
+            border-radius: 12px;
+            padding: 14px 16px;
+            margin-bottom: 14px;
+        }
+
+        .aim-label {
+            font-size: 0.8em;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+
+        .aim-track {
+            position: relative;
+            height: 28px;
+            background: #ddd;
+            border-radius: 14px;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+
+        /* Zone highlights inside the track */
+        .aim-zone-perfect {
+            position: absolute;
+            top: 0; bottom: 0;
+            left: 40%;
+            width: 20%;
+            background: rgba(255, 200, 0, 0.55);
+            border-radius: 4px;
+        }
+
+        .aim-zone-good-l {
+            position: absolute;
+            top: 0; bottom: 0;
+            left: 20%;
+            width: 20%;
+            background: rgba(46, 204, 113, 0.35);
+        }
+
+        .aim-zone-good-r {
+            position: absolute;
+            top: 0; bottom: 0;
+            left: 60%;
+            width: 20%;
+            background: rgba(46, 204, 113, 0.35);
+        }
+
+        .aim-cursor {
+            position: absolute;
+            top: 2px; bottom: 2px;
+            width: 10px;
+            background: #e65100;
+            border-radius: 5px;
+            transform: translateX(-50%);
+            box-shadow: 0 0 6px rgba(230, 81, 0, 0.7);
+            transition: left 0.02s linear;
+        }
+
+        .aim-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.72em;
+            color: #aaa;
+            padding: 0 2px;
+        }
+
+        /* ---- HOP TIMER ---- */
+        .hop-timer-section {
+            background: #f5f5f5;
+            border-radius: 12px;
+            padding: 14px 16px;
+            margin-bottom: 14px;
+        }
+
+        .hop-timer-label {
+            font-size: 0.8em;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+
+        .hop-timer-track {
+            height: 16px;
+            background: #ddd;
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 4px;
+        }
+
+        .hop-timer-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #2ecc71, #f9a825, #e74c3c);
+            border-radius: 8px;
+            transition: width 0.05s linear;
+            width: 100%;
+        }
+
+        .hop-timer-hint {
+            text-align: center;
+            font-size: 0.78em;
+            color: #aaa;
+        }
+
+        /* ---- BUTTONS ---- */
+        .btn {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1.05em;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.18s ease;
+            color: white;
+            margin-bottom: 8px;
+            letter-spacing: 0.5px;
+        }
+
+        .btn:last-child { margin-bottom: 0; }
+
+        .btn-throw {
+            background: linear-gradient(135deg, #e65100, #ff6f00);
+            font-size: 1.25em;
+            padding: 16px;
+        }
+        .btn-throw:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(230, 81, 0, 0.45);
+        }
+
+        .btn-hop {
+            background: linear-gradient(135deg, #1e88e5, #1565c0);
+            font-size: 1.15em;
+        }
+        .btn-hop:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(30, 136, 229, 0.4);
+        }
+
+        .btn-reset {
+            background: linear-gradient(135deg, #546e7a, #37474f);
+        }
+        .btn-reset:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.3);
+        }
+
+        .btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            transform: none !important;
+            box-shadow: none !important;
+        }
+
+        /* ---- PHASE LABEL ---- */
+        .phase-badge {
+            display: inline-block;
+            background: #e65100;
+            color: white;
+            font-size: 0.78em;
+            font-weight: bold;
+            padding: 3px 10px;
+            border-radius: 20px;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+
+        .phase-center {
+            text-align: center;
+            margin-bottom: 10px;
+        }
+
+        /* ---- DOUBLE-SQUARE HOP INSTRUCTION ---- */
+        .double-hint {
+            text-align: center;
+            font-size: 0.8em;
+            color: #888;
+            margin-bottom: 8px;
+        }
+
+        /* ---- WIN / GAME OVER MODAL ---- */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.75);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .modal-overlay.show { display: flex; }
+
+        .modal-box {
+            background: white;
+            padding: 36px 30px;
+            border-radius: 20px;
+            text-align: center;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+            max-width: 380px;
+            width: 90%;
+        }
+
+        .modal-title {
+            font-size: 2.2em;
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .modal-msg {
+            font-size: 1.05em;
+            color: #666;
+            margin-bottom: 18px;
+            line-height: 1.6;
+        }
+
+        .modal-stats {
+            background: #f5f5f5;
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 20px;
+            text-align: left;
+        }
+
+        .modal-stat-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid #eee;
+            font-size: 0.95em;
+        }
+
+        .modal-stat-row:last-child { border-bottom: none; }
+
+        .modal-stat-row span:last-child { font-weight: bold; color: #333; }
+
+        .btn-play-again {
+            background: linear-gradient(135deg, #e65100, #ff6f00);
+            color: white;
+            padding: 14px 32px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1.05em;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            width: 100%;
+        }
+
+        .btn-play-again:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(230, 81, 0, 0.4);
+        }
+
+        /* confetti burst */
+        .confetti-container {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            pointer-events: none;
+            z-index: 999;
+            overflow: hidden;
+        }
+
+        .confetti-piece {
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            opacity: 0;
+            animation: confetti-fall 2.5s ease-in forwards;
+        }
+
+        @keyframes confetti-fall {
+            0%   { opacity: 1; transform: translateY(-20px) rotate(0deg); }
+            100% { opacity: 0; transform: translateY(110vh) rotate(720deg); }
+        }
+
+        /* hop jump animation on player */
+        @keyframes hop-jump {
+            0%   { transform: translateY(0) scale(1); }
+            40%  { transform: translateY(-14px) scale(1.1, 0.9); }
+            70%  { transform: translateY(-6px) scale(0.95, 1.05); }
+            100% { transform: translateY(0) scale(1); }
+        }
+
+        .jumping { animation: hop-jump 0.35s ease; }
+
+        /* throw arc animation */
+        @keyframes throw-arc {
+            0%   { transform: translate(0,0) scale(1); opacity: 1; }
+            50%  { transform: translate(20px,-30px) scale(1.2); opacity: 1; }
+            100% { transform: translate(40px,0) scale(0.8); opacity: 0.8; }
+        }
+
+        .throwing { animation: throw-arc 0.4s ease; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1 class="title">PIKO</h1>
+    <p class="subtitle">Filipino Hopscotch</p>
+
+    <div class="stats">
+        <div class="stat round">
+            <div class="stat-label">Round</div>
+            <div class="stat-value" id="statRound">1 / 10</div>
+        </div>
+        <div class="stat score">
+            <div class="stat-label">Score</div>
+            <div class="stat-value" id="statScore">0</div>
+        </div>
+        <div class="stat lives">
+            <div class="stat-label">Lives</div>
+            <div class="stat-value" id="statLives">❤️❤️❤️</div>
+        </div>
+    </div>
+
+    <div class="feedback" id="feedback">Throw the pamato onto square 1!</div>
+
+    <!-- BOARD -->
+    <div class="board-area">
+        <div class="board-label">Hopscotch Court</div>
+        <div class="board" id="board">
+            <!-- Row 10 (single) -->
+            <div class="board-row single">
+                <div class="sq sq-10" id="sq-10" data-sq="10">
+                    <span class="sq-num">10</span>
+                    <span class="sq-emoji" id="em-10"></span>
+                </div>
+            </div>
+            <!-- Row 8&9 (double) -->
+            <div class="board-row">
+                <div class="sq sq-8" id="sq-8" data-sq="8">
+                    <span class="sq-num">8</span>
+                    <span class="sq-emoji" id="em-8"></span>
+                </div>
+                <div class="sq sq-9" id="sq-9" data-sq="9">
+                    <span class="sq-num">9</span>
+                    <span class="sq-emoji" id="em-9"></span>
+                </div>
+            </div>
+            <!-- Row 7 (single) -->
+            <div class="board-row single">
+                <div class="sq sq-7" id="sq-7" data-sq="7">
+                    <span class="sq-num">7</span>
+                    <span class="sq-emoji" id="em-7"></span>
+                </div>
+            </div>
+            <!-- Row 5&6 (double) -->
+            <div class="board-row">
+                <div class="sq sq-5" id="sq-5" data-sq="5">
+                    <span class="sq-num">5</span>
+                    <span class="sq-emoji" id="em-5"></span>
+                </div>
+                <div class="sq sq-6" id="sq-6" data-sq="6">
+                    <span class="sq-num">6</span>
+                    <span class="sq-emoji" id="em-6"></span>
+                </div>
+            </div>
+            <!-- Row 4 (single) -->
+            <div class="board-row single">
+                <div class="sq sq-4" id="sq-4" data-sq="4">
+                    <span class="sq-num">4</span>
+                    <span class="sq-emoji" id="em-4"></span>
+                </div>
+            </div>
+            <!-- Row 2&3 (double) -->
+            <div class="board-row">
+                <div class="sq sq-2" id="sq-2" data-sq="2">
+                    <span class="sq-num">2</span>
+                    <span class="sq-emoji" id="em-2"></span>
+                </div>
+                <div class="sq sq-3" id="sq-3" data-sq="3">
+                    <span class="sq-num">3</span>
+                    <span class="sq-emoji" id="em-3"></span>
+                </div>
+            </div>
+            <!-- Row 1 (single) -->
+            <div class="board-row single">
+                <div class="sq sq-1" id="sq-1" data-sq="1">
+                    <span class="sq-num">1</span>
+                    <span class="sq-emoji" id="em-1"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- AIM BAR (shown during throw phase) -->
+    <div class="aim-section" id="aimSection">
+        <div class="aim-label">Aim your throw</div>
+        <div class="aim-track">
+            <div class="aim-zone-good-l"></div>
+            <div class="aim-zone-perfect"></div>
+            <div class="aim-zone-good-r"></div>
+            <div class="aim-cursor" id="aimCursor"></div>
+        </div>
+        <div class="aim-labels">
+            <span>Miss</span>
+            <span style="color:#27ae60">Good</span>
+            <span style="color:#d4a017">Perfect</span>
+            <span style="color:#27ae60">Good</span>
+            <span>Miss</span>
+        </div>
+    </div>
+
+    <!-- HOP TIMER (shown during hop phase) -->
+    <div class="hop-timer-section" id="hopTimerSection" style="display:none;">
+        <div class="hop-timer-label">Hop window — tap the square!</div>
+        <div class="hop-timer-track">
+            <div class="hop-timer-fill" id="hopTimerFill"></div>
+        </div>
+        <div class="hop-timer-hint" id="hopTimerHint">Tap the glowing square to hop!</div>
+    </div>
+
+    <!-- Phase label -->
+    <div class="phase-center">
+        <span class="phase-badge" id="phaseBadge">Throw Phase</span>
+    </div>
+
+    <!-- Double-hop hint -->
+    <div class="double-hint" id="doubleHint" style="display:none;"></div>
+
+    <!-- Main action button -->
+    <button class="btn btn-throw" id="btnThrow" onclick="doThrow()">
+        🪨 THROW PAMATO
+    </button>
+
+    <button class="btn btn-hop" id="btnHop" onclick="doHop()" style="display:none;">
+        🧒 HOP!
+    </button>
+
+    <div style="margin-top: 10px;">
+        <button class="btn btn-reset" onclick="resetGame()">New Game</button>
+    </div>
+</div>
+
+<!-- MODAL -->
+<div class="modal-overlay" id="modalOverlay">
+    <div class="modal-box">
+        <div class="modal-title" id="modalTitle">🎉 You Won!</div>
+        <div class="modal-msg" id="modalMsg">Congratulations!</div>
+        <div class="modal-stats" id="modalStats">
+            <div class="modal-stat-row"><span>Rounds Completed</span><span id="finalRounds">10</span></div>
+            <div class="modal-stat-row"><span>Final Score</span><span id="finalScore">0</span></div>
+            <div class="modal-stat-row"><span>Lives Left</span><span id="finalLives">0</span></div>
+        </div>
+        <button class="btn-play-again" onclick="resetGame()">Play Again</button>
+    </div>
+</div>
+
+<!-- Confetti container -->
+<div class="confetti-container" id="confettiContainer"></div>
+
+<script>
+// =====================================================================
+// GAME STATE
+// =====================================================================
+const DOUBLE_PAIRS = [[2,3],[5,6],[8,9]]; // squares that are pairs
+const SINGLE_SQUARES = [1,4,7,10];
+
+// hop sequence: 1..10 in order
+const HOP_ORDER = [1,2,3,4,5,6,7,8,9,10];
+
+// Return true if sq is part of a double-pair
+function isDouble(sq) {
+    return DOUBLE_PAIRS.some(p => p.includes(sq));
+}
+
+// Return the partner of a double square (or null)
+function pairPartner(sq) {
+    for (const p of DOUBLE_PAIRS) {
+        if (p.includes(sq)) return p.find(x => x !== sq);
+    }
+    return null;
+}
+
+let G = {}; // game state
+
+function initState() {
+    G = {
+        lives: 3,
+        score: 0,
+        round: 1,          // which square to throw at (1..10)
+        phase: 'throw',    // 'throw' | 'hop' | 'hopback' | 'gameover' | 'win'
+        pamato: null,       // square pamato is on
+        // hop tracking
+        hopSeq: [],         // squares to hop (in order, skipping pamato)
+        hopIdx: 0,          // index into hopSeq
+        goingBack: false,
+        // aim bar
+        aimPos: 0,          // 0..100
+        aimDir: 1,
+        aimSpeed: 1.6,
+        aimRunning: false,
+        aimRaf: null,
+        // hop timer
+        hopTimerRunning: false,
+        hopTimerPct: 100,
+        hopTimerRaf: null,
+        hopTimerStart: null,
+        hopWindowMs: 2200,
+        // double-square state (need both)
+        waitingForDouble: false,
+        doubleFirst: null,
+        doubleSecond: null,
+        doubleTapped: [],
+        doubleTimer: null,
+    };
+}
+
+// =====================================================================
+// RENDER
+// =====================================================================
+function renderBoard() {
+    for (let sq = 1; sq <= 10; sq++) {
+        const el = document.getElementById('sq-' + sq);
+        const em = document.getElementById('em-' + sq);
+
+        // Clear classes (keep colour class)
+        el.classList.remove('target','hop-next','hopped','player-here','skipped');
+
+        // Emoji layer
+        em.textContent = '';
+
+        // Pamato
+        if (G.pamato === sq) {
+            em.textContent = '🪨';
+            el.classList.add('skipped');
+        }
+
+        // Player position
+        const playerSq = currentPlayerSquare();
+        if (playerSq === sq && G.phase !== 'throw') {
+            em.textContent = '🧒';
+            el.classList.add('player-here');
+        }
+
+        // Hop phase: mark hopped squares
+        if ((G.phase === 'hop' || G.phase === 'hopback') && G.hopIdx > 0) {
+            const doneSquares = G.hopSeq.slice(0, G.hopIdx);
+            if (doneSquares.includes(sq)) {
+                el.classList.add('hopped');
+            }
+        }
+    }
+
+    // Target square (throw phase)
+    if (G.phase === 'throw') {
+        const tEl = document.getElementById('sq-' + G.round);
+        tEl.classList.add('target');
+    }
+
+    // Hop-next square(s)
+    if ((G.phase === 'hop' || G.phase === 'hopback') && G.hopIdx < G.hopSeq.length) {
+        if (G.waitingForDouble) {
+            // both squares in the pair should blink
+            const cur = G.hopSeq[G.hopIdx];
+            const partner = pairPartner(cur);
+            document.getElementById('sq-' + cur).classList.add('hop-next');
+            if (partner) document.getElementById('sq-' + partner).classList.add('hop-next');
+        } else {
+            const next = G.hopSeq[G.hopIdx];
+            document.getElementById('sq-' + next).classList.add('hop-next');
+            // For doubles, also highlight partner
+            if (isDouble(next)) {
+                const partner = pairPartner(next);
+                if (partner) document.getElementById('sq-' + partner).classList.add('hop-next');
+            }
+        }
+    }
+}
+
+function currentPlayerSquare() {
+    if (G.phase === 'throw') return null;
+    if (G.hopIdx === 0) {
+        // haven't started hopping yet - at start position
+        if (G.goingBack) return G.hopSeq[G.hopSeq.length - 1];
+        return null;
+    }
+    // On the last hopped square
+    const idx = Math.min(G.hopIdx - 1, G.hopSeq.length - 1);
+    return G.hopSeq[idx];
+}
+
+function updateStats() {
+    document.getElementById('statRound').textContent = G.round + ' / 10';
+    document.getElementById('statScore').textContent = G.score;
+    const hearts = '❤️'.repeat(Math.max(0, G.lives)) + '🖤'.repeat(Math.max(0, 3 - G.lives));
+    document.getElementById('statLives').textContent = hearts;
+}
+
+function setFeedback(msg, type = '') {
+    const el = document.getElementById('feedback');
+    el.textContent = msg;
+    el.className = 'feedback' + (type ? ' ' + type : '');
+}
+
+function setPhaseBadge(text) {
+    document.getElementById('phaseBadge').textContent = text;
+}
+
+function showAimBar() {
+    document.getElementById('aimSection').style.display = '';
+    document.getElementById('hopTimerSection').style.display = 'none';
+    document.getElementById('btnThrow').style.display = '';
+    document.getElementById('btnHop').style.display = 'none';
+}
+
+function showHopBar() {
+    document.getElementById('aimSection').style.display = 'none';
+    document.getElementById('hopTimerSection').style.display = '';
+    document.getElementById('btnThrow').style.display = 'none';
+    document.getElementById('btnHop').style.display = '';
+}
+
+// =====================================================================
+// AIM BAR ANIMATION
+// =====================================================================
+let lastAimTime = null;
+
+function aimLoop(ts) {
+    if (!G.aimRunning) return;
+    if (!lastAimTime) lastAimTime = ts;
+    const dt = (ts - lastAimTime) / 16.67; // normalise to ~60fps
+    lastAimTime = ts;
+
+    G.aimPos += G.aimDir * G.aimSpeed * dt;
+    if (G.aimPos >= 100) { G.aimPos = 100; G.aimDir = -1; }
+    if (G.aimPos <= 0)   { G.aimPos = 0;   G.aimDir = 1; }
+
+    document.getElementById('aimCursor').style.left = G.aimPos + '%';
+    G.aimRaf = requestAnimationFrame(aimLoop);
+}
+
+function startAim() {
+    G.aimRunning = true;
+    G.aimPos = 0;
+    G.aimDir = 1;
+    lastAimTime = null;
+    G.aimRaf = requestAnimationFrame(aimLoop);
+}
+
+function stopAim() {
+    G.aimRunning = false;
+    if (G.aimRaf) cancelAnimationFrame(G.aimRaf);
+}
+
+// =====================================================================
+// HOP TIMER
+// =====================================================================
+function startHopTimer() {
+    G.hopTimerRunning = true;
+    G.hopTimerStart = performance.now();
+    hopTimerLoop();
+}
+
+function stopHopTimer() {
+    G.hopTimerRunning = false;
+    if (G.hopTimerRaf) cancelAnimationFrame(G.hopTimerRaf);
+}
+
+function hopTimerLoop() {
+    if (!G.hopTimerRunning) return;
+    const elapsed = performance.now() - G.hopTimerStart;
+    const pct = Math.max(0, 100 - (elapsed / G.hopWindowMs) * 100);
+    document.getElementById('hopTimerFill').style.width = pct + '%';
+
+    if (pct <= 0) {
+        // Time's up — stumble!
+        stopHopTimer();
+        onHopMiss('You stumbled! Missed the hop timing.');
+        return;
+    }
+    G.hopTimerRaf = requestAnimationFrame(hopTimerLoop);
+}
+
+// =====================================================================
+// THROW PHASE
+// =====================================================================
+function doThrow() {
+    if (G.phase !== 'throw') return;
+    stopAim();
+
+    const pos = G.aimPos;
+    // Zones: 0-20 miss, 20-40 good, 40-60 perfect, 60-80 good, 80-100 miss
+    let result, bonus;
+    if (pos >= 40 && pos <= 60) {
+        result = 'perfect';
+        bonus = 30;
+        setFeedback('Perfect throw! 🪨 Pamato lands perfectly! +' + bonus + ' pts', 'perfect');
+    } else if ((pos >= 20 && pos < 40) || (pos > 60 && pos <= 80)) {
+        result = 'good';
+        bonus = 10;
+        setFeedback('Good throw! 🪨 Pamato lands in square ' + G.round + '! +' + bonus + ' pts', 'good');
+    } else {
+        result = 'miss';
+        bonus = 0;
+        loseLife('Missed! Pamato landed outside. Turn lost!');
+        return;
+    }
+
+    G.score += bonus;
+    G.pamato = G.round;
+
+    // Play throw animation on square
+    const el = document.getElementById('sq-' + G.round);
+    el.classList.add('throwing');
+    setTimeout(() => el.classList.remove('throwing'), 400);
+
+    // Build hop sequence (1..10 in order, skip pamato square)
+    G.hopSeq = [];
+    for (let i = 1; i <= 10; i++) {
+        if (i !== G.round) G.hopSeq.push(i);
+    }
+    G.hopIdx = 0;
+    G.goingBack = false;
+    G.phase = 'hop';
+
+    updateStats();
+    renderBoard();
+    showHopBar();
+    setPhaseBadge('Hop Forward');
+    advanceHopInstruction();
+    startHopTimer();
+}
+
+// =====================================================================
+// HOP PHASE
+// =====================================================================
+function advanceHopInstruction() {
+    if (G.hopIdx >= G.hopSeq.length) {
+        // Done hopping
+        onHopSequenceComplete();
+        return;
+    }
+
+    const next = G.hopSeq[G.hopIdx];
+    G.waitingForDouble = false;
+    G.doubleTapped = [];
+
+    if (isDouble(next)) {
+        const partner = pairPartner(next);
+        const hint = document.getElementById('doubleHint');
+        hint.style.display = '';
+        if (G.goingBack) {
+            hint.textContent = 'Straddle! Tap ' + next + ' AND ' + partner + ' together (or one after the other fast)';
+        } else {
+            hint.textContent = 'Straddle! Tap ' + next + ' AND ' + partner + ' together (or one after the other fast)';
+        }
+        G.waitingForDouble = true;
+    } else {
+        document.getElementById('doubleHint').style.display = 'none';
+    }
+
+    // Hop window speed increases with round number
+    G.hopWindowMs = Math.max(1000, 2400 - G.round * 120);
+    resetHopTimer();
+    startHopTimer();
+    renderBoard();
+}
+
+function resetHopTimer() {
+    stopHopTimer();
+    document.getElementById('hopTimerFill').style.width = '100%';
+}
+
+// Called when a square on the board is clicked/tapped
+function onSquareTap(sqNum) {
+    if (G.phase !== 'hop' && G.phase !== 'hopback') return;
+    if (G.hopIdx >= G.hopSeq.length) return;
+
+    const expected = G.hopSeq[G.hopIdx];
+
+    if (G.waitingForDouble) {
+        // Need both squares of the pair
+        const partner = pairPartner(expected);
+        const pairSet = new Set([expected, partner]);
+        if (!pairSet.has(sqNum)) return; // wrong square
+        if (G.doubleTapped.includes(sqNum)) return; // already tapped
+        G.doubleTapped.push(sqNum);
+
+        if (G.doubleTapped.length >= 2 || true) {
+            // Accept as soon as any of the pair is tapped (simplified)
+            // but we need BOTH — let's accept after 2nd tap OR auto-accept after first with bonus timer
+            // For fun/accessibility: accept 1st tap and briefly wait for 2nd
+            if (G.doubleTapped.length === 1) {
+                // Wait 600ms for the second tap
+                if (G.doubleTimer) clearTimeout(G.doubleTimer);
+                G.doubleTimer = setTimeout(() => {
+                    // Only one was tapped — still counts but no bonus
+                    completeDoubleHop(false);
+                }, 600);
+                return;
+            } else {
+                // Both tapped!
+                if (G.doubleTimer) clearTimeout(G.doubleTimer);
+                completeDoubleHop(true);
+            }
+        }
+    } else {
+        // Single square
+        if (sqNum !== expected) return; // wrong square
+        stopHopTimer();
+        onHopSuccess(sqNum, false);
+    }
+}
+
+function completeDoubleHop(bothTapped) {
+    stopHopTimer();
+    const sq = G.hopSeq[G.hopIdx];
+    const pts = bothTapped ? 15 : 8;
+    onHopSuccess(sq, bothTapped, pts);
+}
+
+function onHopSuccess(sq, isDouble, pts) {
+    const basePoints = pts !== undefined ? pts : 10;
+    G.score += basePoints;
+    G.hopIdx++;
+
+    // Jump animation on square
+    const el = document.getElementById('sq-' + sq);
+    el.classList.add('jumping');
+    setTimeout(() => el.classList.remove('jumping'), 350);
+
+    setFeedback('Hop! +' + basePoints + ' pts', 'good');
+    updateStats();
+    renderBoard();
+    advanceHopInstruction();
+}
+
+function onHopMiss(msg) {
+    loseLife(msg);
+}
+
+function onHopSequenceComplete() {
+    stopHopTimer();
+    document.getElementById('doubleHint').style.display = 'none';
+
+    if (!G.goingBack) {
+        // Reached square 10 — now pick up pamato and hop back
+        G.goingBack = true;
+        // Reverse the sequence for the way back
+        G.hopSeq = G.hopSeq.slice().reverse();
+        // On the way back we also need to STOP at the pamato square to pick it up
+        // Insert pamato-pickup at correct position
+        // We'll handle it naturally: pamato square is skipped in hopSeq
+        // Let's insert a "pickup" step by just adding the pamato square at the right position in reverse
+        const pamato = G.pamato;
+        // Find where pamato fits in the descending order
+        // hopSeq is currently reverse of [1..10 minus pamato]
+        // We insert pamato at its natural descending position
+        let insertIdx = G.hopSeq.findIndex(x => x < pamato);
+        if (insertIdx === -1) insertIdx = G.hopSeq.length;
+        G.hopSeq.splice(insertIdx, 0, pamato); // add pamato pickup step
+        G.hopIdx = 0;
+        setPhaseBadge('Hop Back + Pick Up');
+        setFeedback('Now hop back! Pick up the pamato on the way!', 'info');
+        document.getElementById('hopTimerHint').textContent = 'Tap each glowing square to hop back!';
+        advanceHopInstruction();
+    } else {
+        // Made it all the way back — round complete!
+        G.score += 50 + G.round * 5;
+        setFeedback('Round ' + G.round + ' complete! +' + (50 + G.round * 5) + ' bonus pts!', 'perfect');
+        G.pamato = null;
+        updateStats();
+        renderBoard();
+
+        setTimeout(() => {
+            if (G.round >= 10) {
+                // WIN!
+                winGame();
+            } else {
+                G.round++;
+                G.phase = 'throw';
+                G.aimSpeed = 1.5 + G.round * 0.2; // gets harder
+                setPhaseBadge('Throw Phase');
+                showAimBar();
+                setFeedback('Round ' + G.round + '! Throw the pamato onto square ' + G.round + '!', 'info');
+                renderBoard();
+                updateStats();
+                startAim();
+            }
+        }, 1400);
+    }
+}
+
+// =====================================================================
+// HOP BUTTON (keyboard-style fallback — auto-detects next square)
+// =====================================================================
+function doHop() {
+    if (G.phase !== 'hop' && G.phase !== 'hopback') return;
+    if (G.hopIdx >= G.hopSeq.length) return;
+
+    const next = G.hopSeq[G.hopIdx];
+    onSquareTap(next);
+    // For doubles, also tap partner
+    if (G.waitingForDouble && G.doubleTapped.length > 0) {
+        const partner = pairPartner(next);
+        if (partner) {
+            setTimeout(() => onSquareTap(partner), 100);
+        }
+    }
+}
+
+// =====================================================================
+// LIFE MANAGEMENT
+// =====================================================================
+function loseLife(msg) {
+    G.lives--;
+    updateStats();
+
+    if (G.lives <= 0) {
+        setFeedback(msg + ' Game over!', 'miss');
+        stopAim();
+        stopHopTimer();
+        G.phase = 'gameover';
+        setTimeout(() => showModal(false), 1200);
+    } else {
+        setFeedback(msg + ' ' + G.lives + ' lives left. Try again!', 'miss');
+        // Reset to throw phase for this round
+        stopAim();
+        stopHopTimer();
+        G.pamato = null;
+        G.phase = 'throw';
+        G.aimSpeed = 1.5 + G.round * 0.2;
+        setPhaseBadge('Throw Phase');
+        document.getElementById('doubleHint').style.display = 'none';
+        renderBoard();
+        showAimBar();
+        setTimeout(() => {
+            setFeedback('Round ' + G.round + ': Throw to square ' + G.round + '!', 'info');
+            startAim();
+        }, 1200);
+    }
+}
+
+// =====================================================================
+// WIN / GAME OVER
+// =====================================================================
+function winGame() {
+    G.phase = 'win';
+    stopAim();
+    stopHopTimer();
+    setFeedback('You completed all 10 rounds! WINNER!', 'win');
+    updateStats();
+    renderBoard();
+    spawnConfetti();
+    setTimeout(() => showModal(true), 800);
+}
+
+function showModal(won) {
+    const overlay = document.getElementById('modalOverlay');
+    const title = document.getElementById('modalTitle');
+    const msg = document.getElementById('modalMsg');
+
+    if (won) {
+        title.textContent = '🎉 Piko Champion!';
+        title.style.color = '#e65100';
+        msg.textContent = 'Salamat! You hopped through all 10 rounds of Piko!';
+    } else {
+        title.textContent = '😢 Game Over';
+        title.style.color = '#c0392b';
+        msg.textContent = 'Sayang! You ran out of lives. Try again!';
+    }
+
+    document.getElementById('finalRounds').textContent = (G.round - (won ? 0 : 1)) + ' / 10';
+    document.getElementById('finalScore').textContent = G.score;
+    document.getElementById('finalLives').textContent = Math.max(0, G.lives);
+    overlay.classList.add('show');
+}
+
+// =====================================================================
+// CONFETTI
+// =====================================================================
+const CONFETTI_COLORS = ['#f9a825','#e65100','#e91e63','#1e88e5','#43a047','#9c27b0','#fff'];
+
+function spawnConfetti() {
+    const container = document.getElementById('confettiContainer');
+    container.innerHTML = '';
+    for (let i = 0; i < 80; i++) {
+        const p = document.createElement('div');
+        p.className = 'confetti-piece';
+        p.style.left = Math.random() * 100 + 'vw';
+        p.style.top = '-20px';
+        p.style.background = CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
+        p.style.borderRadius = Math.random() > 0.5 ? '50%' : '2px';
+        p.style.width  = (6 + Math.random() * 8) + 'px';
+        p.style.height = (6 + Math.random() * 8) + 'px';
+        p.style.animationDelay = (Math.random() * 1.5) + 's';
+        p.style.animationDuration = (1.8 + Math.random() * 1.2) + 's';
+        container.appendChild(p);
+    }
+    setTimeout(() => { container.innerHTML = ''; }, 4000);
+}
+
+// =====================================================================
+// RESET
+// =====================================================================
+function resetGame() {
+    stopAim();
+    stopHopTimer();
+    if (G.doubleTimer) clearTimeout(G.doubleTimer);
+    document.getElementById('confettiContainer').innerHTML = '';
+    document.getElementById('modalOverlay').classList.remove('show');
+    document.getElementById('doubleHint').style.display = 'none';
+
+    initState();
+    G.phase = 'throw';
+    G.aimSpeed = 1.7;
+
+    updateStats();
+    renderBoard();
+    showAimBar();
+    setPhaseBadge('Throw Phase');
+    setFeedback('Round 1! Aim and throw the pamato onto square 1!', 'info');
+    startAim();
+}
+
+// =====================================================================
+// SQUARE CLICK WIRING
+// =====================================================================
+for (let sq = 1; sq <= 10; sq++) {
+    document.getElementById('sq-' + sq).addEventListener('click', () => {
+        if (G.phase === 'throw') {
+            // Tapping the target square also throws (shortcut)
+            if (sq === G.round) doThrow();
+        } else {
+            onSquareTap(sq);
+        }
+    });
+}
+
+// =====================================================================
+// INIT
+// =====================================================================
+initState();
+G.phase = 'throw';
+G.aimSpeed = 1.7;
+updateStats();
+renderBoard();
+showAimBar();
+setPhaseBadge('Throw Phase');
+setFeedback('Round 1! Aim and throw the pamato onto square 1!', 'info');
+startAim();
+</script>
+</body>
+</html>

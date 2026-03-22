@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>FIVE</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#0a1f0a;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H;
+function resize() { W = cv.width = window.innerWidth; H = cv.height = window.innerHeight; }
+resize();
+window.addEventListener('resize', resize);
+
+// ── Audio ─────────────────────────────────────────────────
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function sfx(type) {
+  const t = AC.currentTime;
+  function tone(f, dur, wave, gain, delay=0) {
+    const o=AC.createOscillator(),g=AC.createGain();
+    o.connect(g);g.connect(AC.destination);
+    o.type=wave;o.frequency.value=f;
+    g.gain.setValueAtTime(gain,t+delay);g.gain.linearRampToValueAtTime(0,t+delay+dur);
+    o.start(t+delay);o.stop(t+delay+dur+0.01);
+  }
+  if (type==='flip')    tone(400,0.05,'sine',0.15);
+  else if (type==='hold')  tone(600,0.06,'sine',0.18);
+  else if (type==='unhold') tone(350,0.06,'sine',0.12);
+  else if (type==='draw')  { tone(500,0.06,'sine',0.2); tone(650,0.08,'sine',0.15,0.07); }
+  else if (type==='win')   [523,659,784,1047].forEach((f,i)=>tone(f,0.1,'sine',0.18,i*0.09));
+  else if (type==='bigwin') [523,659,784,1047,1318].forEach((f,i)=>tone(f,0.12,'triangle',0.22,i*0.08));
+  else if (type==='lose')  { tone(330,0.15,'sawtooth',0.18); tone(220,0.2,'sawtooth',0.15,0.15); }
+  else if (type==='gameover') [330,262,196].forEach((f,i)=>tone(f,0.15,'square',0.15,i*0.18));
+}
+
+// ── Deck ──────────────────────────────────────────────────
+const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+const SUITS = ['♠','♥','♦','♣'];
+const VALS  = {}; RANKS.forEach((r,i) => VALS[r] = i+2);
+
+function makeDeck() {
+  const d = [];
+  for(const s of SUITS) for(const r of RANKS) d.push({r,s,v:VALS[r]});
+  for(let i=d.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[d[i],d[j]]=[d[j],d[i]];}
+  return d;
+}
+
+// ── Hand evaluation ───────────────────────────────────────
+function evaluate(hand) {
+  const vals  = hand.map(c=>c.v).sort((a,b)=>a-b);
+  const suits = hand.map(c=>c.s);
+  const counts = {};
+  vals.forEach(v=>counts[v]=(counts[v]||0)+1);
+  const groups = Object.values(counts).sort((a,b)=>b-a);
+
+  const isFlush    = suits.every(s=>s===suits[0]);
+  const isStraight = (vals[4]-vals[0]===4 && groups[0]===1) ||
+                     (vals.join(',') === '2,3,4,5,14' && groups[0]===1); // wheel
+  const isRoyal    = isFlush && isStraight && vals[0]===10;
+
+  if (isRoyal)                          return {name:'ROYAL FLUSH',    pts:250};
+  if (isStraight && isFlush)            return {name:'STRAIGHT FLUSH', pts:50};
+  if (groups[0]===4)                    return {name:'FOUR OF A KIND', pts:25};
+  if (groups[0]===3 && groups[1]===2)   return {name:'FULL HOUSE',     pts:9};
+  if (isFlush)                          return {name:'FLUSH',          pts:6};
+  if (isStraight)                       return {name:'STRAIGHT',       pts:4};
+  if (groups[0]===3)                    return {name:'THREE OF A KIND',pts:3};
+  if (groups[0]===2 && groups[1]===2)   return {name:'TWO PAIR',       pts:2};
+
+  // Jacks or better
+  const pairVal = +Object.keys(counts).find(k=>counts[k]===2);
+  if (groups[0]===2 && pairVal>=11)     return {name:'JACKS OR BETTER',pts:1};
+
+  return {name:'', pts:0};
+}
+
+const PAYTABLE = [
+  ['ROYAL FLUSH',    250],
+  ['STRAIGHT FLUSH', 50],
+  ['FOUR OF A KIND', 25],
+  ['FULL HOUSE',     9],
+  ['FLUSH',          6],
+  ['STRAIGHT',       4],
+  ['THREE OF A KIND',3],
+  ['TWO PAIR',       2],
+  ['JACKS OR BETTER',1],
+];
+
+// ── State ─────────────────────────────────────────────────
+let gs = 'start'; // start | select | result | over
+let deck, hand, held, credits, lastWin, handResult;
+let best = +localStorage.getItem('five_best') || 0;
+let revealTimer = 0, dealAnim = []; // per-card deal animation t (0..1)
+let lastTs = 0;
+
+function newDeal() {
+  if (credits <= 0) { gs='over'; return; }
+  credits--;
+  if (deck.length < 10) deck = makeDeck();
+  hand = Array.from({length:5}, ()=>deck.pop());
+  held = [false,false,false,false,false];
+  dealAnim = [0,0,0,0,0];
+  lastWin = 0; handResult = {name:'',pts:0};
+  gs = 'select';
+  sfx('flip');
+}
+
+function doDraw() {
+  for(let i=0;i<5;i++) if(!held[i]) hand[i]=deck.pop();
+  handResult = evaluate(hand);
+  lastWin = handResult.pts;
+  credits += lastWin;
+  best = Math.max(credits, best);
+  localStorage.setItem('five_best', best);
+  revealTimer = lastWin>0 ? 2800 : 2000;
+  gs = 'result';
+  if (lastWin >= 25) sfx('bigwin');
+  else if (lastWin > 0) sfx('win');
+  else sfx('lose');
+}
+
+function init() {
+  deck = makeDeck();
+  credits = 20;
+  newDeal();
+}
+
+// ── Card drawing ──────────────────────────────────────────
+function rr(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.arcTo(x+w,y,x+w,y+r,r);
+  ctx.lineTo(x+w,y+h-r);ctx.arcTo(x+w,y+h,x+w-r,y+h,r);
+  ctx.lineTo(x+r,y+h);ctx.arcTo(x,y+h,x,y+h-r,r);
+  ctx.lineTo(x,y+r);ctx.arcTo(x,y,x+r,y,r);ctx.closePath();
+}
+
+function drawCard(cx, cy, cw, ch, card, holdHighlight, alpha=1) {
+  ctx.save(); ctx.globalAlpha = alpha;
+  const x=cx-cw/2, y=cy-ch/2, rad=cw*0.07;
+
+  if (holdHighlight) {
+    ctx.shadowColor='#ffd740'; ctx.shadowBlur=18;
+  } else {
+    ctx.shadowColor='rgba(0,0,0,0.5)'; ctx.shadowBlur=14; ctx.shadowOffsetY=6;
+  }
+  rr(x,y,cw,ch,rad);
+  ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.shadowBlur=0; ctx.shadowOffsetY=0;
+
+  if (holdHighlight) {
+    rr(x,y,cw,ch,rad);
+    ctx.strokeStyle='#ffd740'; ctx.lineWidth=3; ctx.stroke();
+  } else {
+    rr(x,y,cw,ch,rad);
+    ctx.strokeStyle='rgba(0,0,0,0.12)'; ctx.lineWidth=1; ctx.stroke();
+  }
+
+  const isRed = card.s==='♥'||card.s==='♦';
+  const col = isRed ? '#c0392b' : '#1a1a2e';
+  const fs = cw*0.175;
+
+  ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.fillStyle=col;
+  ctx.font=`bold ${fs}px Arial`; ctx.fillText(card.r, x+cw*0.1, y+ch*0.13);
+  ctx.font=`${fs*0.85}px Arial`;  ctx.fillText(card.s, x+cw*0.1, y+ch*0.24);
+
+  ctx.textAlign='center';
+  ctx.font=`${cw*0.38}px Arial`; ctx.fillStyle=col;
+  ctx.fillText(card.s, cx, cy+ch*0.06);
+
+  ctx.save();
+  ctx.translate(cx+cw*0.4, cy+ch*0.38); ctx.rotate(Math.PI);
+  ctx.textAlign='left'; ctx.fillStyle=col;
+  ctx.font=`bold ${fs}px Arial`; ctx.fillText(card.r,0,-ch*0.11);
+  ctx.font=`${fs*0.85}px Arial`; ctx.fillText(card.s,0,0);
+  ctx.restore();
+  ctx.restore();
+}
+
+function drawCardBack(cx, cy, cw, ch, alpha=1) {
+  ctx.save(); ctx.globalAlpha=alpha;
+  const x=cx-cw/2, y=cy-ch/2, rad=cw*0.07;
+  ctx.shadowColor='rgba(0,0,0,0.4)'; ctx.shadowBlur=12; ctx.shadowOffsetY=5;
+  rr(x,y,cw,ch,rad); ctx.fillStyle='#1a4a8a'; ctx.fill();
+  ctx.shadowBlur=0; ctx.shadowOffsetY=0;
+  rr(x+cw*0.08,y+ch*0.06,cw*0.84,ch*0.88,rad*0.5); ctx.fillStyle='#1565c0'; ctx.fill();
+  ctx.save(); ctx.clip();
+  ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.lineWidth=1.5;
+  for(let i=-ch;i<cw*2;i+=10){
+    ctx.beginPath();ctx.moveTo(x+i,y);ctx.lineTo(x+i+ch,y+ch);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(x+i+ch,y);ctx.lineTo(x+i,y+ch);ctx.stroke();
+  }
+  ctx.restore(); ctx.restore();
+}
+
+// ── Screens ───────────────────────────────────────────────
+function drawStart() {
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(W*0.22,88)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#fff'; ctx.fillText('FIVE',W/2,H*0.2);
+  ctx.font=`${Math.min(W*0.048,20)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.5)';
+  ctx.fillText('5-CARD DRAW POKER',W/2,H*0.285);
+
+  // demo cards fan
+  const cw=Math.min(W*0.28,105), ch=cw*1.4;
+  const fan=[{r:'A',s:'♠',v:14},{r:'K',s:'♥',v:13},{r:'Q',s:'♦',v:12},{r:'J',s:'♣',v:11},{r:'10',s:'♥',v:10}];
+  fan.forEach((card,i)=>{
+    ctx.save();
+    const angle=(i-2)*0.14;
+    ctx.translate(W/2, H*0.52);
+    ctx.rotate(angle);
+    drawCard(0, 0, cw, ch, card, false);
+    ctx.restore();
+  });
+
+  const p=0.65+0.35*Math.sin(Date.now()*0.003);
+  ctx.fillStyle=`rgba(255,255,255,${p})`;
+  ctx.font=`bold ${Math.min(W*0.055,22)}px Arial`;
+  ctx.fillText('TAP TO PLAY',W/2,H*0.87);
+}
+
+function cardLayout() {
+  const cw = Math.min((W - 32) / 5.8, H * 0.22, 88);
+  const ch = cw * 1.42;
+  const gap = cw * 0.14;
+  const totalW = 5*cw + 4*gap;
+  const x0 = (W - totalW) / 2;
+  const cy = H * 0.44;
+  return {cw, ch, gap, x0, cy};
+}
+
+function drawSelect(dt) {
+  // Animate deals
+  dealAnim = dealAnim.map((v,i)=>Math.min(1, v + dt/160 * (1 + i*0.2)));
+
+  const {cw,ch,gap,x0,cy} = cardLayout();
+
+  // hand result display (empty during select)
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+
+  // Credits
+  ctx.font=`bold ${Math.min(W*0.12,50)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#fff'; ctx.fillText(credits, W/2, H*0.1);
+  ctx.font=`${Math.min(W*0.035,14)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.45)'; ctx.fillText('CREDITS',W/2,H*0.152);
+
+  // Best
+  ctx.textAlign='right'; ctx.font=`${Math.min(W*0.033,13)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.fillText(`BEST: ${best}`,W*0.96,H*0.1);
+
+  ctx.textAlign='center';
+  ctx.font=`${Math.min(W*0.04,16)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.4)';
+  ctx.fillText('TAP CARDS TO HOLD',W/2,H*0.22);
+
+  // Cards
+  for(let i=0;i<5;i++){
+    const t=dealAnim[i];
+    const ease=1-Math.pow(1-t,3);
+    const cx=x0+i*(cw+gap)+cw/2;
+    const cardCy=cy+(1-ease)*H*0.15;
+    drawCard(cx, cardCy, cw, ch, hand[i], held[i], ease);
+
+    // HOLD label
+    if(held[i]){
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.font=`bold ${Math.min(W*0.038,15)}px Arial`;
+      ctx.fillStyle='#ffd740';
+      ctx.fillText('HOLD', cx, cy+ch/2+Math.min(H*0.04,22));
+    }
+  }
+
+  // DRAW button
+  const bw=Math.min(W*0.5,200), bh=Math.min(H*0.08,52);
+  const bx=(W-bw)/2, by=H*0.72;
+  rr(bx,by,bw,bh,bh/2);
+  ctx.fillStyle='#2e7d32'; ctx.fill();
+  ctx.strokeStyle='#4caf50'; ctx.lineWidth=2.5; ctx.stroke();
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(W*0.065,26)}px Arial`;
+  ctx.fillStyle='#fff'; ctx.fillText('DRAW',W/2,by+bh/2);
+
+  drawPayTable();
+  return {bx,by,bw,bh};
+}
+
+function drawResult(dt) {
+  revealTimer -= dt;
+  const {cw,ch,gap,x0,cy} = cardLayout();
+
+  // Credits
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(W*0.12,50)}px 'Arial Black',Arial`;
+  ctx.fillStyle = lastWin>0 ? '#ffd740' : '#fff';
+  ctx.fillText(credits, W/2, H*0.1);
+  ctx.font=`${Math.min(W*0.035,14)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.45)'; ctx.fillText('CREDITS',W/2,H*0.152);
+
+  // Win display
+  if(lastWin>0){
+    ctx.font=`bold ${Math.min(W*0.06,24)}px Arial`;
+    ctx.fillStyle='#ffd740';
+    ctx.fillText(handResult.name,W/2,H*0.22);
+    ctx.font=`bold ${Math.min(W*0.048,19)}px Arial`;
+    ctx.fillStyle='#4caf50';
+    ctx.fillText(`+${lastWin} CREDIT${lastWin!==1?'S':''}`,W/2,H*0.27);
+  } else {
+    ctx.font=`${Math.min(W*0.048,19)}px Arial`;
+    ctx.fillStyle='rgba(255,255,255,0.4)';
+    ctx.fillText('NO WIN',W/2,H*0.22);
+  }
+
+  for(let i=0;i<5;i++){
+    const cx=x0+i*(cw+gap)+cw/2;
+    const hl = handResult.pts>0; // highlight all cards on win
+    drawCard(cx,cy,cw,ch,hand[i],hl);
+  }
+
+  // Tap to continue
+  const p=0.6+0.4*Math.sin(Date.now()*0.004);
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`${Math.min(W*0.045,18)}px Arial`;
+  ctx.fillStyle=`rgba(255,255,255,${p})`;
+  ctx.fillText(credits>0?'TAP TO DEAL AGAIN':'TAP TO CONTINUE',W/2,H*0.75);
+
+  drawPayTable(handResult.name);
+
+  if(revealTimer<=0&&credits<=0){
+    gs='over';
+  }
+}
+
+function drawPayTable(highlight='') {
+  const sz=Math.min(W*0.028,11);
+  const px=W*0.03, py=H*0.82;
+  const lineH=sz*1.55;
+
+  ctx.textBaseline='middle';
+  PAYTABLE.forEach(([name,pts],i)=>{
+    const ly=py+i*lineH;
+    const active=name===highlight;
+    ctx.fillStyle = active ? '#ffd740' : 'rgba(255,255,255,0.22)';
+    ctx.font=`${active?'bold ':''  }${sz}px Arial`;
+    ctx.textAlign='left';  ctx.fillText(name, px, ly);
+    ctx.textAlign='right'; ctx.fillText(pts,  W-px, ly);
+  });
+}
+
+function drawOver() {
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.min(W*0.12,52)}px 'Arial Black',Arial`;
+  ctx.fillStyle='#f44336'; ctx.fillText('BUST',W/2,H*0.28);
+  ctx.font=`bold ${Math.min(W*0.05,20)}px Arial`;
+  ctx.fillStyle='rgba(255,255,255,0.6)'; ctx.fillText('Out of credits',W/2,H*0.36);
+  if(best>0){
+    ctx.font=`bold ${Math.min(W*0.055,22)}px Arial`;
+    ctx.fillStyle='#ffd740'; ctx.fillText(`BEST: ${best} CREDITS`,W/2,H*0.48);
+  }
+  const p=0.65+0.35*Math.sin(Date.now()*0.003);
+  ctx.fillStyle=`rgba(255,255,255,${p})`;
+  ctx.font=`bold ${Math.min(W*0.055,22)}px Arial`;
+  ctx.fillText('TAP TO PLAY AGAIN',W/2,H*0.82);
+}
+
+// ── Main loop ─────────────────────────────────────────────
+let drawBtn = null;
+
+function draw(ts=0) {
+  requestAnimationFrame(draw);
+  const dt=Math.min(ts-lastTs,50); lastTs=ts;
+  ctx.clearRect(0,0,W,H);
+
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#0a1f0a'); bg.addColorStop(1,'#0d200d');
+  ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+  // felt dots
+  ctx.fillStyle='rgba(255,255,255,0.018)';
+  for(let i=0;i<W;i+=6) for(let j=0;j<H;j+=6) if((i+j)%12===0){ctx.beginPath();ctx.arc(i,j,0.9,0,Math.PI*2);ctx.fill();}
+
+  if      (gs==='start')  drawStart();
+  else if (gs==='select') drawBtn=drawSelect(dt);
+  else if (gs==='result') { drawResult(dt); drawBtn=null; }
+  else if (gs==='over')   drawOver();
+}
+
+// ── Input ─────────────────────────────────────────────────
+function tap(x,y) {
+  if(AC.state==='suspended') AC.resume();
+  if(gs==='start') { init(); return; }
+  if(gs==='over')  { init(); return; }
+  if(gs==='result'){
+    if(credits<=0){ gs='over'; return; }
+    newDeal(); return;
+  }
+  if(gs!=='select') return;
+
+  // DRAW button
+  if(drawBtn){
+    const {bx,by,bw,bh}=drawBtn;
+    if(x>=bx&&x<=bx+bw&&y>=by&&y<=by+bh){ sfx('draw'); doDraw(); return; }
+  }
+
+  // Card tap (toggle hold)
+  const {cw,ch,gap,x0,cy} = cardLayout();
+  for(let i=0;i<5;i++){
+    const cx=x0+i*(cw+gap)+cw/2;
+    if(x>=cx-cw/2&&x<=cx+cw/2&&y>=cy-ch/2&&y<=cy+ch/2){
+      held[i]=!held[i];
+      sfx(held[i]?'hold':'unhold');
+      return;
+    }
+  }
+}
+
+cv.addEventListener('click',      e=>tap(e.clientX,e.clientY));
+cv.addEventListener('touchstart', e=>{e.preventDefault();tap(e.touches[0].clientX,e.touches[0].clientY);},{passive:false});
+
+draw();
+</script>
+</body>
+</html>

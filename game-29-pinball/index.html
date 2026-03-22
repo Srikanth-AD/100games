@@ -1,0 +1,979 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game 29 - Pinball</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #0a0a1a, #1a0a2e);
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 24px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+            max-width: 420px;
+            width: 100%;
+        }
+
+        .title {
+            text-align: center;
+            color: #1a1a2e;
+            margin-bottom: 16px;
+            font-size: 2.2em;
+            letter-spacing: 2px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .stats {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 16px;
+            justify-content: space-around;
+        }
+
+        .stat {
+            background: #f0f0f8;
+            padding: 8px 14px;
+            border-radius: 8px;
+            text-align: center;
+            flex: 1;
+            border: 2px solid #e0e0f0;
+        }
+
+        .stat-label {
+            font-size: 0.78em;
+            color: #666;
+            margin-bottom: 3px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+            font-size: 1.25em;
+            font-weight: bold;
+            color: #1a1a2e;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .stat.score .stat-value { color: #ff6b35; }
+        .stat.lives .stat-value  { color: #e74c3c; }
+        .stat.best .stat-value   { color: #8e44ad; }
+
+        /* Canvas wrapper */
+        .canvas-wrapper {
+            position: relative;
+            width: 320px;
+            margin: 0 auto 16px;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 0 30px rgba(100, 0, 255, 0.4), 0 0 60px rgba(0, 200, 255, 0.15);
+        }
+
+        #gameCanvas {
+            display: block;
+            background: #070715;
+        }
+
+        /* Launch power bar */
+        .power-bar-container {
+            width: 320px;
+            margin: 0 auto 14px;
+            background: #f0f0f8;
+            border-radius: 8px;
+            padding: 8px 12px;
+            border: 2px solid #e0e0f0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .power-label {
+            font-size: 0.78em;
+            font-weight: bold;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            white-space: nowrap;
+        }
+
+        .power-bar-track {
+            flex: 1;
+            height: 12px;
+            background: #ddd;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        .power-bar-fill {
+            height: 100%;
+            width: 0%;
+            border-radius: 6px;
+            background: linear-gradient(90deg, #00ff88, #ffff00, #ff4444);
+            transition: width 0.05s linear;
+        }
+
+        /* Mobile controls */
+        .mobile-controls {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            align-items: center;
+            width: 320px;
+            margin: 0 auto;
+        }
+
+        .btn-flipper {
+            flex: 1;
+            padding: 14px 8px;
+            border: none;
+            border-radius: 10px;
+            font-size: 0.95em;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.1s ease;
+            color: white;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: none;
+        }
+
+        .btn-flipper-left {
+            background: linear-gradient(135deg, #0088ff, #0055cc);
+            box-shadow: 0 4px 12px rgba(0, 136, 255, 0.4);
+        }
+
+        .btn-flipper-left:active,
+        .btn-flipper-left.pressed {
+            background: linear-gradient(135deg, #44aaff, #0088ff);
+            transform: translateY(1px);
+            box-shadow: 0 2px 8px rgba(0, 136, 255, 0.6);
+        }
+
+        .btn-launch {
+            flex: 1;
+            padding: 14px 8px;
+            border: none;
+            border-radius: 10px;
+            font-size: 0.95em;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.1s ease;
+            color: white;
+            background: linear-gradient(135deg, #ff6b35, #cc4400);
+            box-shadow: 0 4px 12px rgba(255, 107, 53, 0.4);
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: none;
+        }
+
+        .btn-launch:active,
+        .btn-launch.pressed {
+            background: linear-gradient(135deg, #ff9955, #ff6b35);
+            transform: translateY(1px);
+            box-shadow: 0 2px 8px rgba(255, 107, 53, 0.6);
+        }
+
+        .btn-flipper-right {
+            background: linear-gradient(135deg, #ff3388, #cc0055);
+            box-shadow: 0 4px 12px rgba(255, 51, 136, 0.4);
+        }
+
+        .btn-flipper-right:active,
+        .btn-flipper-right.pressed {
+            background: linear-gradient(135deg, #ff66aa, #ff3388);
+            transform: translateY(1px);
+            box-shadow: 0 2px 8px rgba(255, 51, 136, 0.6);
+        }
+
+        .controls-hint {
+            text-align: center;
+            font-size: 0.72em;
+            color: #999;
+            margin-top: 8px;
+        }
+
+        /* Game over overlay */
+        .game-over-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.85);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .game-over-overlay.show {
+            display: flex;
+        }
+
+        .game-over-content {
+            background: white;
+            padding: 36px 40px;
+            border-radius: 20px;
+            text-align: center;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            max-width: 340px;
+            width: 90%;
+        }
+
+        .game-over-title {
+            font-size: 2.4em;
+            font-weight: bold;
+            color: #e74c3c;
+            margin-bottom: 8px;
+        }
+
+        .game-over-subtitle {
+            font-size: 1em;
+            color: #888;
+            margin-bottom: 24px;
+        }
+
+        .game-over-stats {
+            background: #f8f8ff;
+            padding: 16px;
+            border-radius: 12px;
+            margin-bottom: 24px;
+            border: 2px solid #e0e0f0;
+        }
+
+        .game-over-stat-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid #eee;
+            font-size: 1em;
+        }
+
+        .game-over-stat-row:last-child {
+            border-bottom: none;
+        }
+
+        .game-over-stat-row span:first-child { color: #666; }
+        .game-over-stat-row span:last-child  { font-weight: bold; color: #1a1a2e; }
+
+        .btn-play-again {
+            background: linear-gradient(135deg, #ff6b35, #cc4400);
+            color: white;
+            padding: 14px 36px;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.1em;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 6px 16px rgba(255, 107, 53, 0.4);
+            letter-spacing: 0.5px;
+        }
+
+        .btn-play-again:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(255, 107, 53, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="title">PINBALL</h1>
+
+        <div class="stats">
+            <div class="stat score">
+                <div class="stat-label">Score</div>
+                <div class="stat-value" id="scoreDisplay">0</div>
+            </div>
+            <div class="stat lives">
+                <div class="stat-label">Lives</div>
+                <div class="stat-value" id="livesDisplay">&#9679;&#9679;&#9679;</div>
+            </div>
+            <div class="stat best">
+                <div class="stat-label">Best</div>
+                <div class="stat-value" id="bestDisplay">0</div>
+            </div>
+        </div>
+
+        <div class="canvas-wrapper">
+            <canvas id="gameCanvas" width="320" height="560"></canvas>
+        </div>
+
+        <div class="power-bar-container">
+            <span class="power-label">Power</span>
+            <div class="power-bar-track">
+                <div class="power-bar-fill" id="powerBarFill"></div>
+            </div>
+        </div>
+
+        <div class="mobile-controls">
+            <button class="btn-flipper btn-flipper-left" id="btnLeft">LEFT (Z)</button>
+            <button class="btn-launch" id="btnLaunch">LAUNCH</button>
+            <button class="btn-flipper btn-flipper-right" id="btnRight">RIGHT (/)</button>
+        </div>
+
+        <div class="controls-hint">Z / Left Flipper &nbsp;|&nbsp; Space / Launch &nbsp;|&nbsp; / / Right Flipper</div>
+    </div>
+
+    <div class="game-over-overlay" id="gameOverOverlay">
+        <div class="game-over-content">
+            <div class="game-over-title">GAME OVER</div>
+            <div class="game-over-subtitle">Better luck next time!</div>
+            <div class="game-over-stats">
+                <div class="game-over-stat-row">
+                    <span>Final Score</span>
+                    <span id="finalScore">0</span>
+                </div>
+                <div class="game-over-stat-row">
+                    <span>Best Score</span>
+                    <span id="finalBest">0</span>
+                </div>
+                <div class="game-over-stat-row">
+                    <span>Bumpers Hit</span>
+                    <span id="finalBumpers">0</span>
+                </div>
+            </div>
+            <button class="btn-play-again" onclick="resetGame()">Play Again</button>
+        </div>
+    </div>
+
+    <script>
+    // ─── Constants ────────────────────────────────────────────────────────────
+    const W = 320, H = 560;
+    const GRAVITY   = 0.35;
+    const BALL_R    = 8;
+    const WALL_L    = 20;   // left wall x
+    const WALL_R    = 300;  // right wall x
+    const WALL_TOP  = 20;   // top wall y
+
+    // Launch channel sits on the right side
+    const CHANNEL_X      = 295;  // center-x of launch channel
+    const CHANNEL_START_Y = 490; // ball rests here when waiting to launch
+    const CHANNEL_WALL_X  = 305; // right edge (wall)
+
+    // Flipper geometry
+    const FL = 55; // flipper length px
+    // Left flipper pivot
+    const LFP = { x: 72, y: 520 };
+    // Right flipper pivot
+    const RFP = { x: 248, y: 520 };
+    // Flipper angles (radians). 0 = right, positive = CCW when viewed in canvas coords
+    const L_REST  =  35 * Math.PI / 180;   // pointing down-right
+    const L_UP    = -30 * Math.PI / 180;   // pointing up-right
+    const R_REST  = 145 * Math.PI / 180;   // pointing down-left
+    const R_UP    = 210 * Math.PI / 180;   // pointing up-left
+
+    const FLIPPER_SPEED = 18 * Math.PI / 180; // rad per frame when moving
+
+    // ─── State ────────────────────────────────────────────────────────────────
+    const canvas = document.getElementById('gameCanvas');
+    const ctx    = canvas.getContext('2d');
+
+    let score       = 0;
+    let lives       = 3;
+    let bestScore   = 0;
+    let bumpersHit  = 0;
+    let gameOver    = false;
+    let launched    = false;   // false = ball sitting in launch channel
+    let launching   = false;   // true = space/button held, building power
+    let launchPower = 0;       // 0..1
+
+    let ball = { x: CHANNEL_X, y: CHANNEL_START_Y, vx: 0, vy: 0 };
+
+    let leftFlipperAngle  = L_REST;
+    let rightFlipperAngle = R_REST;
+    let leftActive  = false;
+    let rightActive = false;
+    let leftPrevAngle  = L_REST;
+    let rightPrevAngle = R_REST;
+
+    // Bumpers: { x, y, r, pts, lit, litTimer }
+    let bumpers = [];
+
+    function makeBumpers() {
+        bumpers = [
+            { x: 85,  y: 120, r: 18, pts: 100, lit: false, litTimer: 0 },
+            { x: 175, y: 100, r: 18, pts: 150, lit: false, litTimer: 0 },
+            { x: 255, y: 130, r: 18, pts: 100, lit: false, litTimer: 0 },
+            { x: 100, y: 210, r: 16, pts: 200, lit: false, litTimer: 0 },
+            { x: 200, y: 200, r: 16, pts: 150, lit: false, litTimer: 0 },
+            { x: 155, y: 290, r: 16, pts: 200, lit: false, litTimer: 0 },
+        ];
+    }
+
+    // ─── Input handling ───────────────────────────────────────────────────────
+    const keys = {};
+    document.addEventListener('keydown', e => {
+        if (e.repeat) return;
+        keys[e.key] = true;
+        if (e.key === 'z' || e.key === 'Z') leftActive = true;
+        if (e.key === '/')                   rightActive = true;
+        if (e.key === ' ') {
+            e.preventDefault();
+            if (!launched && !gameOver) launching = true;
+        }
+    });
+    document.addEventListener('keyup', e => {
+        keys[e.key] = false;
+        if (e.key === 'z' || e.key === 'Z') leftActive = false;
+        if (e.key === '/')                   rightActive = false;
+        if (e.key === ' ') {
+            if (launching && !launched && !gameOver) releaseLaunch();
+            launching = false;
+        }
+    });
+
+    // Mobile buttons — touch + mouse both handled
+    function bindFlipperButton(btnId, setActive) {
+        const btn = document.getElementById(btnId);
+        function press(e) { e.preventDefault(); setActive(true);  btn.classList.add('pressed'); }
+        function release(e) { e.preventDefault(); setActive(false); btn.classList.remove('pressed'); }
+        btn.addEventListener('pointerdown',  press);
+        btn.addEventListener('pointerup',    release);
+        btn.addEventListener('pointerleave', release);
+        btn.addEventListener('pointercancel',release);
+    }
+
+    bindFlipperButton('btnLeft',  v => { leftActive = v; });
+    bindFlipperButton('btnRight', v => { rightActive = v; });
+
+    const btnLaunch = document.getElementById('btnLaunch');
+    btnLaunch.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        if (!launched && !gameOver) { launching = true; btnLaunch.classList.add('pressed'); }
+    });
+    btnLaunch.addEventListener('pointerup', e => {
+        e.preventDefault();
+        btnLaunch.classList.remove('pressed');
+        if (launching && !launched && !gameOver) releaseLaunch();
+        launching = false;
+    });
+    btnLaunch.addEventListener('pointerleave', e => {
+        btnLaunch.classList.remove('pressed');
+        if (launching && !launched && !gameOver) releaseLaunch();
+        launching = false;
+    });
+    btnLaunch.addEventListener('pointercancel', e => {
+        btnLaunch.classList.remove('pressed');
+        launching = false;
+    });
+
+    function releaseLaunch() {
+        launched = true;
+        launching = false;
+        const speed = 4 + launchPower * 14;
+        ball.vx = 0;
+        ball.vy = -speed;
+        launchPower = 0;
+        document.getElementById('powerBarFill').style.width = '0%';
+    }
+
+    // ─── Geometry helpers ─────────────────────────────────────────────────────
+    function flipperTip(pivot, angle) {
+        return {
+            x: pivot.x + Math.cos(angle) * FL,
+            y: pivot.y + Math.sin(angle) * FL
+        };
+    }
+
+    // Closest point on segment ab to point p; returns {pt, t}
+    function closestPointOnSegment(ax, ay, bx, by, px, py) {
+        const dx = bx - ax, dy = by - ay;
+        const lenSq = dx * dx + dy * dy;
+        if (lenSq === 0) return { pt: { x: ax, y: ay }, t: 0 };
+        let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+        t = Math.max(0, Math.min(1, t));
+        return { pt: { x: ax + t * dx, y: ay + t * dy }, t };
+    }
+
+    function dist(ax, ay, bx, by) {
+        return Math.hypot(bx - ax, by - ay);
+    }
+
+    // ─── Physics update ───────────────────────────────────────────────────────
+    function update() {
+        if (gameOver) return;
+
+        // Update flippers
+        leftPrevAngle  = leftFlipperAngle;
+        rightPrevAngle = rightFlipperAngle;
+
+        if (leftActive) {
+            leftFlipperAngle = Math.max(L_UP,   leftFlipperAngle  - FLIPPER_SPEED);
+        } else {
+            leftFlipperAngle = Math.min(L_REST,  leftFlipperAngle  + FLIPPER_SPEED);
+        }
+        if (rightActive) {
+            rightFlipperAngle = Math.min(R_UP,  rightFlipperAngle + FLIPPER_SPEED);
+        } else {
+            rightFlipperAngle = Math.max(R_REST, rightFlipperAngle - FLIPPER_SPEED);
+        }
+
+        // Build launch power
+        if (launching && !launched) {
+            launchPower = Math.min(1, launchPower + 0.022);
+            document.getElementById('powerBarFill').style.width = (launchPower * 100) + '%';
+            return; // don't move ball while holding
+        }
+
+        if (!launched) return; // ball waiting, nothing to update
+
+        // Apply gravity
+        ball.vy += GRAVITY;
+
+        // Move ball
+        ball.x += ball.vx;
+        ball.y += ball.vy;
+
+        // ── Top-right corner arc (curves ball from launch lane into playfield) ──
+        {
+            const arcCX = WALL_R, arcCY = WALL_TOP, arcR = 22;
+            const dx = ball.x - arcCX, dy = ball.y - arcCY;
+            const d = Math.hypot(dx, dy);
+            const minD = arcR + BALL_R;
+            if (d < minD && d > 0 && ball.x > arcCX - arcR - BALL_R) {
+                const nx = dx / d, ny = dy / d;
+                const dot = ball.vx * nx + ball.vy * ny;
+                if (dot < 0) {
+                    ball.x = arcCX + nx * minD;
+                    ball.y = arcCY + ny * minD;
+                    ball.vx -= 2 * dot * nx;
+                    ball.vy -= 2 * dot * ny;
+                    const spd = Math.hypot(ball.vx, ball.vy);
+                    if (spd > 18) { ball.vx = ball.vx / spd * 18; ball.vy = ball.vy / spd * 18; }
+                }
+            }
+        }
+
+        // ── Wall collisions ──
+        // Left wall (slightly angled: x=20 at y=0, x=15 at y=560 — very subtle)
+        const leftWallX  = WALL_L - (ball.y / H) * 5;
+        const rightWallX = WALL_R + (ball.y / H) * 5;
+
+        if (ball.x - BALL_R < leftWallX) {
+            ball.x = leftWallX + BALL_R;
+            ball.vx = Math.abs(ball.vx) * 0.78;
+        }
+        if (ball.x + BALL_R > rightWallX) {
+            ball.x = rightWallX - BALL_R;
+            ball.vx = -Math.abs(ball.vx) * 0.78;
+        }
+        // Top wall
+        if (ball.y - BALL_R < WALL_TOP) {
+            ball.y = WALL_TOP + BALL_R;
+            ball.vy = Math.abs(ball.vy) * 0.78;
+        }
+
+        // ── Launch channel walls (right side) ──
+        // Channel is between x=281 and x=305, y from ~400 to H
+        // The channel has its own right wall at 305 to prevent ball escaping right
+        if (ball.y > 390 && ball.x + BALL_R > CHANNEL_WALL_X - 4) {
+            ball.x = CHANNEL_WALL_X - 4 - BALL_R;
+            ball.vx = -Math.abs(ball.vx) * 0.7;
+        }
+
+        // ── Bumper collisions ──
+        for (const b of bumpers) {
+            const d = dist(ball.x, ball.y, b.x, b.y);
+            const minD = b.r + BALL_R;
+            if (d < minD) {
+                // Push ball out
+                const nx = (ball.x - b.x) / d;
+                const ny = (ball.y - b.y) / d;
+                ball.x = b.x + nx * minD;
+                ball.y = b.y + ny * minD;
+
+                // Reflect velocity and add speed boost
+                const speed = Math.hypot(ball.vx, ball.vy);
+                const boostSpeed = Math.max(speed, 4) * 1.35;
+                ball.vx = nx * boostSpeed;
+                ball.vy = ny * boostSpeed;
+
+                // Score and light up
+                if (!b.lit) {
+                    score += b.pts;
+                    bumpersHit++;
+                    updateScoreDisplay();
+                }
+                b.lit = true;
+                b.litTimer = 18; // frames
+            }
+            if (b.litTimer > 0) b.litTimer--;
+            if (b.litTimer === 0) b.lit = false;
+        }
+
+        // ── Flipper collisions ──
+        collideFlipper(LFP, leftFlipperAngle, leftPrevAngle, 'left');
+        collideFlipper(RFP, rightFlipperAngle, rightPrevAngle, 'right');
+
+        // ── Drain ──
+        if (ball.y > H + 20) {
+            lives--;
+            updateLivesDisplay();
+            if (lives <= 0) {
+                endGame();
+            } else {
+                resetBall();
+            }
+        }
+    }
+
+    function collideFlipper(pivot, angle, prevAngle, side) {
+        const tip = flipperTip(pivot, angle);
+        const { pt, t } = closestPointOnSegment(pivot.x, pivot.y, tip.x, tip.y, ball.x, ball.y);
+        const d = dist(ball.x, ball.y, pt.x, pt.y);
+
+        if (d < BALL_R + 3) {
+            // Normal from flipper surface to ball
+            let nx = (ball.x - pt.x) / d;
+            let ny = (ball.y - pt.y) / d;
+            if (d === 0) { nx = 0; ny = -1; }
+
+            // Push ball out of flipper
+            ball.x = pt.x + nx * (BALL_R + 3.5);
+            ball.y = pt.y + ny * (BALL_R + 3.5);
+
+            // Angular velocity of flipper at contact point
+            const angularVel = (angle - prevAngle); // rad/frame
+            // Tangential velocity at contact point (distance t*FL from pivot)
+            const contactDist = t * FL;
+            const tangentialSpeed = angularVel * contactDist;
+
+            // Tangent direction (perpendicular to normal, oriented by flip direction)
+            const tx = -ny;
+            const ty =  nx;
+
+            // Reflect velocity
+            const dot = ball.vx * nx + ball.vy * ny;
+            ball.vx = ball.vx - 2 * dot * nx;
+            ball.vy = ball.vy - 2 * dot * ny;
+
+            // Add flipper angular boost
+            ball.vx += tx * tangentialSpeed * 3.5;
+            ball.vy += ty * tangentialSpeed * 3.5;
+
+            // Dampen
+            const spd = Math.hypot(ball.vx, ball.vy);
+            if (spd > 18) {
+                ball.vx = (ball.vx / spd) * 18;
+                ball.vy = (ball.vy / spd) * 18;
+            }
+        }
+    }
+
+    // ─── Draw ─────────────────────────────────────────────────────────────────
+    function draw() {
+        ctx.clearRect(0, 0, W, H);
+
+        // Background
+        ctx.fillStyle = '#070715';
+        ctx.fillRect(0, 0, W, H);
+
+        drawWalls();
+        drawLaunchChannel();
+        drawBumpers();
+        drawFlippers();
+        drawBall();
+        drawLaunchBallIfWaiting();
+    }
+
+    function drawWalls() {
+        // Subtle neon wall glow
+        ctx.strokeStyle = '#2244aa';
+        ctx.lineWidth = 2;
+        ctx.shadowColor = '#4488ff';
+        ctx.shadowBlur = 8;
+
+        // Left wall (angled inward slightly)
+        ctx.beginPath();
+        ctx.moveTo(WALL_L, WALL_TOP);
+        ctx.lineTo(WALL_L - 5, H - 80);
+        ctx.stroke();
+
+        // Right wall (stops at channel entry, ~y=400)
+        ctx.beginPath();
+        ctx.moveTo(WALL_R, WALL_TOP);
+        ctx.lineTo(WALL_R + 5, 400);
+        ctx.stroke();
+
+        // Top wall (stops before corner arc)
+        ctx.beginPath();
+        ctx.moveTo(WALL_L, WALL_TOP);
+        ctx.lineTo(WALL_R - 22, WALL_TOP);
+        ctx.stroke();
+
+        // Top-right corner arc (connects right wall to top wall)
+        ctx.beginPath();
+        ctx.arc(WALL_R, WALL_TOP, 22, Math.PI * 0.5, Math.PI);
+        ctx.stroke();
+
+        // Gutter guides (angled inner walls leading to flippers)
+        ctx.strokeStyle = '#1a3366';
+        ctx.lineWidth = 1.5;
+        ctx.shadowBlur = 4;
+        // Left gutter guide
+        ctx.beginPath();
+        ctx.moveTo(15, 430);
+        ctx.lineTo(LFP.x - 4, LFP.y);
+        ctx.stroke();
+        // Right gutter guide (stopping at channel entry)
+        ctx.beginPath();
+        ctx.moveTo(281, 430);
+        ctx.lineTo(RFP.x + 4, RFP.y);
+        ctx.stroke();
+
+        ctx.shadowBlur = 0;
+    }
+
+    function drawLaunchChannel() {
+        // Channel walls on right
+        ctx.strokeStyle = '#334466';
+        ctx.lineWidth = 1.5;
+
+        // Left wall of channel
+        ctx.beginPath();
+        ctx.moveTo(281, 400);
+        ctx.lineTo(281, H);
+        ctx.stroke();
+
+        // Right wall of channel
+        ctx.strokeStyle = '#445577';
+        ctx.beginPath();
+        ctx.moveTo(CHANNEL_WALL_X, 390);
+        ctx.lineTo(CHANNEL_WALL_X, H);
+        ctx.stroke();
+
+        // Spring/plunger hint at bottom
+        ctx.fillStyle = '#223344';
+        ctx.fillRect(282, 530, 22, 8);
+        ctx.fillStyle = '#446688';
+        ctx.fillRect(285, 526, 16, 4);
+    }
+
+    function drawBumpers() {
+        for (const b of bumpers) {
+            const lit = b.lit;
+
+            // Outer glow
+            const glowR = lit ? b.r + 10 : b.r + 4;
+            const grad = ctx.createRadialGradient(b.x, b.y, b.r - 2, b.x, b.y, glowR);
+            if (lit) {
+                grad.addColorStop(0, 'rgba(255,255,100,0.9)');
+                grad.addColorStop(1, 'rgba(255,200,0,0)');
+            } else {
+                grad.addColorStop(0, 'rgba(180,80,255,0.5)');
+                grad.addColorStop(1, 'rgba(100,0,200,0)');
+            }
+            ctx.beginPath();
+            ctx.arc(b.x, b.y, glowR, 0, Math.PI * 2);
+            ctx.fillStyle = grad;
+            ctx.fill();
+
+            // Body
+            ctx.beginPath();
+            ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+            ctx.fillStyle = lit ? '#ffe020' : '#5500cc';
+            ctx.fill();
+
+            // Ring
+            ctx.strokeStyle = lit ? '#ffffff' : '#9933ff';
+            ctx.lineWidth = lit ? 3 : 2;
+            ctx.shadowColor = lit ? '#ffff00' : '#aa00ff';
+            ctx.shadowBlur = lit ? 16 : 8;
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+
+            // Score label
+            ctx.fillStyle = lit ? '#1a1a00' : '#ddbbff';
+            ctx.font = 'bold 9px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(b.pts, b.x, b.y);
+        }
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+    }
+
+    function drawFlippers() {
+        drawOneFlipper(LFP, leftFlipperAngle, '#0088ff', '#00ccff');
+        drawOneFlipper(RFP, rightFlipperAngle, '#ff3388', '#ff88cc');
+    }
+
+    function drawOneFlipper(pivot, angle, colorInner, colorOuter) {
+        const tip = flipperTip(pivot, angle);
+
+        // Glow
+        ctx.shadowColor = colorOuter;
+        ctx.shadowBlur = 12;
+
+        ctx.beginPath();
+        ctx.moveTo(pivot.x, pivot.y);
+        ctx.lineTo(tip.x, tip.y);
+        ctx.strokeStyle = colorInner;
+        ctx.lineWidth = 10;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+
+        // Bright center line
+        ctx.beginPath();
+        ctx.moveTo(pivot.x, pivot.y);
+        ctx.lineTo(tip.x, tip.y);
+        ctx.strokeStyle = colorOuter;
+        ctx.lineWidth = 4;
+        ctx.stroke();
+
+        ctx.shadowBlur = 0;
+
+        // Pivot dot
+        ctx.beginPath();
+        ctx.arc(pivot.x, pivot.y, 5, 0, Math.PI * 2);
+        ctx.fillStyle = colorOuter;
+        ctx.fill();
+    }
+
+    function drawBall() {
+        if (!launched) return; // drawn separately when waiting
+
+        // Glow
+        const grd = ctx.createRadialGradient(ball.x, ball.y, 0, ball.x, ball.y, BALL_R + 8);
+        grd.addColorStop(0, 'rgba(255,255,255,0.9)');
+        grd.addColorStop(0.5, 'rgba(200,220,255,0.5)');
+        grd.addColorStop(1, 'rgba(100,100,255,0)');
+        ctx.beginPath();
+        ctx.arc(ball.x, ball.y, BALL_R + 8, 0, Math.PI * 2);
+        ctx.fillStyle = grd;
+        ctx.fill();
+
+        // Main ball
+        const ballGrd = ctx.createRadialGradient(ball.x - 2, ball.y - 2, 1, ball.x, ball.y, BALL_R);
+        ballGrd.addColorStop(0, '#ffffff');
+        ballGrd.addColorStop(0.5, '#c8d8ff');
+        ballGrd.addColorStop(1, '#6688cc');
+        ctx.beginPath();
+        ctx.arc(ball.x, ball.y, BALL_R, 0, Math.PI * 2);
+        ctx.fillStyle = ballGrd;
+        ctx.fill();
+    }
+
+    function drawLaunchBallIfWaiting() {
+        if (launched) return;
+
+        const bx = CHANNEL_X;
+        const by = CHANNEL_START_Y;
+
+        // Glow (pulsing hint if charging)
+        if (launching) {
+            const glowSize = 10 + launchPower * 20;
+            const grd = ctx.createRadialGradient(bx, by, 0, bx, by, glowSize);
+            grd.addColorStop(0, 'rgba(255,200,50,0.9)');
+            grd.addColorStop(1, 'rgba(255,100,0,0)');
+            ctx.beginPath();
+            ctx.arc(bx, by, glowSize, 0, Math.PI * 2);
+            ctx.fillStyle = grd;
+            ctx.fill();
+        }
+
+        const ballGrd = ctx.createRadialGradient(bx - 2, by - 2, 1, bx, by, BALL_R);
+        ballGrd.addColorStop(0, '#ffffff');
+        ballGrd.addColorStop(0.5, '#c8d8ff');
+        ballGrd.addColorStop(1, '#6688cc');
+        ctx.beginPath();
+        ctx.arc(bx, by, BALL_R, 0, Math.PI * 2);
+        ctx.fillStyle = ballGrd;
+        ctx.fill();
+
+        // Hint text
+        if (!launching) {
+            ctx.fillStyle = 'rgba(255,255,255,0.45)';
+            ctx.font = 'bold 10px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('HOLD', bx, by + 24);
+            ctx.fillText('LAUNCH', bx, by + 36);
+            ctx.textAlign = 'left';
+        }
+    }
+
+    // ─── Game state helpers ───────────────────────────────────────────────────
+    function resetBall() {
+        ball.x  = CHANNEL_X;
+        ball.y  = CHANNEL_START_Y;
+        ball.vx = 0;
+        ball.vy = 0;
+        launched    = false;
+        launching   = false;
+        launchPower = 0;
+        document.getElementById('powerBarFill').style.width = '0%';
+    }
+
+    function updateScoreDisplay() {
+        document.getElementById('scoreDisplay').textContent = score;
+        if (score > bestScore) {
+            bestScore = score;
+            document.getElementById('bestDisplay').textContent = bestScore;
+        }
+    }
+
+    function updateLivesDisplay() {
+        const dots = ['', '\u25cb', '\u25cf\u25cb', '\u25cf\u25cf\u25cb', '\u25cf\u25cf\u25cf'];
+        // filled = lost lives, hollow = remaining
+        const remaining = Math.max(0, lives);
+        const lost      = 3 - remaining;
+        let s = '';
+        for (let i = 0; i < remaining; i++) s += '\u25cf';
+        for (let i = 0; i < lost; i++)      s += '\u25cb';
+        document.getElementById('livesDisplay').textContent = s || '\u25cb\u25cb\u25cb';
+    }
+
+    function endGame() {
+        gameOver = true;
+        if (score > bestScore) bestScore = score;
+        document.getElementById('finalScore').textContent   = score;
+        document.getElementById('finalBest').textContent    = bestScore;
+        document.getElementById('finalBumpers').textContent = bumpersHit;
+        document.getElementById('bestDisplay').textContent  = bestScore;
+        document.getElementById('gameOverOverlay').classList.add('show');
+    }
+
+    function resetGame() {
+        score      = 0;
+        lives      = 3;
+        bumpersHit = 0;
+        gameOver   = false;
+
+        makeBumpers();
+        resetBall();
+        updateScoreDisplay();
+        updateLivesDisplay();
+
+        document.getElementById('gameOverOverlay').classList.remove('show');
+        document.getElementById('bestDisplay').textContent = bestScore;
+    }
+
+    // ─── Main loop ────────────────────────────────────────────────────────────
+    function loop() {
+        update();
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+    // ─── Init ─────────────────────────────────────────────────────────────────
+    makeBumpers();
+    updateLivesDisplay();
+    updateScoreDisplay();
+    loop();
+    </script>
+</body>
+</html>

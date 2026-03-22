@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>UNDERTOW</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;touch-action:none;}
+html,body{width:100%;height:100%;overflow:hidden;background:#040e12;}
+body{display:flex;align-items:center;justify-content:center;font-family:'Segoe UI',Arial,sans-serif;}
+canvas{display:block;touch-action:none;}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script>
+const cv = document.getElementById('cv');
+const cx = cv.getContext('2d');
+let W, H;
+function resize() {
+  W = cv.width = window.innerWidth;
+  H = cv.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', () => { resize(); });
+
+// Audio
+let actx;
+function getACtx() {
+  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+  return actx;
+}
+function sfx(freq, dur, vol = 0.3, type = 'sine', freqEnd = null) {
+  try {
+    const a = getACtx();
+    const o = a.createOscillator();
+    const g = a.createGain();
+    o.connect(g); g.connect(a.destination);
+    o.type = type;
+    o.frequency.setValueAtTime(freq, a.currentTime);
+    if (freqEnd) o.frequency.exponentialRampToValueAtTime(freqEnd, a.currentTime + dur);
+    g.gain.setValueAtTime(vol, a.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + dur);
+    o.start(); o.stop(a.currentTime + dur);
+  } catch(e) {}
+}
+function sfxKick() { sfx(300, 0.08, 0.25, 'sine', 200); }
+function sfxSwitch() {
+  sfx(440, 0.06, 0.2, 'sine');
+  setTimeout(() => sfx(550, 0.1, 0.25, 'sine'), 60);
+}
+function sfxDie() {
+  sfx(200, 0.1, 0.4, 'sawtooth');
+  setTimeout(() => sfx(140, 0.2, 0.35, 'sawtooth'), 100);
+  setTimeout(() => sfx(90, 0.3, 0.3, 'sawtooth'), 220);
+}
+
+// Game state
+let gs = 'start';
+let swimmerX, swimmerY;
+let swimmerVX = 0;
+let currentDir = 1; // 1=right, -1=left
+let currentStrength = 0.4;
+let switchTimer = 0;
+let switchInterval = 4.5;
+let survivalTime = 0;
+let bestTime = parseFloat(localStorage.getItem('undertow_best') || '0');
+let particles = [];
+let lastT = 0;
+let activePointers = new Set();
+let leftPressed = false, rightPressed = false;
+let flashTimer = 0;
+
+// River walls
+function wallLeft() { return W * 0.06; }
+function wallRight() { return W * 0.94; }
+function swimmerR() { return Math.min(W, H) * 0.032; }
+
+function initRound() {
+  swimmerX = W / 2;
+  swimmerY = H / 2;
+  swimmerVX = 0;
+  currentDir = Math.random() > 0.5 ? 1 : -1;
+  currentStrength = 0.4;
+  switchTimer = switchInterval * (0.6 + Math.random() * 0.4);
+  survivalTime = 0;
+  particles = [];
+  spawnCurrentParticles(60);
+}
+
+function startGame() {
+  initRound();
+  gs = 'play';
+}
+
+// Current particles
+function spawnCurrentParticles(count) {
+  for (let i = 0; i < count; i++) {
+    spawnParticle(true);
+  }
+}
+
+function spawnParticle(randomX) {
+  const wL = wallLeft(), wR = wallRight();
+  const riverW = wR - wL;
+  const x = randomX
+    ? wL + Math.random() * riverW
+    : (currentDir > 0 ? wL - 10 : wR + 10);
+  particles.push({
+    x,
+    y: wallTop() + Math.random() * (wallBottom() - wallTop()),
+    speed: (1.5 + Math.random() * 2.5) * currentDir,
+    size: 2 + Math.random() * 3,
+    alpha: 0.3 + Math.random() * 0.5,
+    life: 1,
+  });
+}
+
+function wallTop() { return H * 0.08; }
+function wallBottom() { return H * 0.92; }
+
+function updateParticles(dt) {
+  const wL = wallLeft(), wR = wallRight();
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    // Update speed direction gradually
+    p.speed = Math.abs(p.speed) * currentDir * (0.95 + Math.random() * 0.1);
+    p.x += p.speed * dt * 1.5 * (currentStrength / 0.4);
+    if (p.x < wL - 20 || p.x > wR + 20) {
+      particles.splice(i, 1);
+    }
+  }
+  // Spawn new particles from the upstream edge
+  const spawnRate = 0.6 * dt;
+  if (Math.random() < spawnRate) {
+    spawnParticle(false);
+  }
+}
+
+function drawParticles() {
+  const col = currentDir > 0 ? '80,180,255' : '255,140,50';
+  particles.forEach(p => {
+    cx.save();
+    cx.globalAlpha = p.alpha;
+    cx.fillStyle = `rgba(${col},1)`;
+    cx.beginPath();
+    cx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    cx.fill();
+    cx.restore();
+  });
+}
+
+function drawRiver() {
+  const wL = wallLeft(), wR = wallRight();
+  const wT = wallTop(), wB = wallBottom();
+
+  // Background
+  cx.fillStyle = '#040e12';
+  cx.fillRect(0, 0, W, H);
+
+  // Banks
+  cx.fillStyle = '#0a2510';
+  cx.fillRect(0, 0, wL, H);
+  cx.fillRect(wR, 0, W - wR, H);
+
+  // River body
+  const rGrad = cx.createLinearGradient(wL, 0, wR, 0);
+  rGrad.addColorStop(0, '#071a24');
+  rGrad.addColorStop(0.5, '#0a2535');
+  rGrad.addColorStop(1, '#071a24');
+  cx.fillStyle = rGrad;
+  cx.fillRect(wL, wT, wR - wL, wB - wT);
+
+  // Danger zones (near walls)
+  const dangerW = 40;
+  const sr = swimmerR();
+  const leftDanger = Math.max(0, 1 - (swimmerX - wL - sr) / dangerW);
+  const rightDanger = Math.max(0, 1 - (wR - swimmerX - sr) / dangerW);
+
+  if (leftDanger > 0) {
+    const lg = cx.createLinearGradient(wL, 0, wL + dangerW + sr, 0);
+    lg.addColorStop(0, `rgba(255,50,30,${0.55 * leftDanger})`);
+    lg.addColorStop(1, 'rgba(255,50,30,0)');
+    cx.fillStyle = lg;
+    cx.fillRect(wL, wT, dangerW + sr, wB - wT);
+  }
+  if (rightDanger > 0) {
+    const rg = cx.createLinearGradient(wR, 0, wR - dangerW - sr, 0);
+    rg.addColorStop(0, `rgba(255,50,30,${0.55 * rightDanger})`);
+    rg.addColorStop(1, 'rgba(255,50,30,0)');
+    cx.fillStyle = rg;
+    cx.fillRect(wR - dangerW - sr, wT, dangerW + sr, wB - wT);
+  }
+
+  // Wall edges
+  cx.strokeStyle = '#1a4a20';
+  cx.lineWidth = 3;
+  cx.beginPath(); cx.moveTo(wL, wT); cx.lineTo(wL, wB); cx.stroke();
+  cx.beginPath(); cx.moveTo(wR, wT); cx.lineTo(wR, wB); cx.stroke();
+}
+
+function drawSwimmer() {
+  const sr = swimmerR();
+  cx.save();
+  cx.shadowColor = '#ffffff';
+  cx.shadowBlur = 16;
+  cx.beginPath();
+  cx.arc(swimmerX, swimmerY, sr, 0, Math.PI * 2);
+  cx.fillStyle = '#ffffff';
+  cx.fill();
+  cx.shadowBlur = 0;
+  // Subtle face-like indicator
+  cx.fillStyle = '#88bbdd';
+  cx.beginPath();
+  cx.arc(swimmerX, swimmerY, sr * 0.35, 0, Math.PI * 2);
+  cx.fill();
+  cx.restore();
+}
+
+function drawCurrentArrow() {
+  const label = currentDir > 0 ? '→ CURRENT' : '← CURRENT';
+  const col = currentDir > 0 ? '#50b4ff' : '#ff8c28';
+  const fSize = Math.max(18, Math.min(W, H) * 0.05);
+  cx.save();
+  cx.font = `900 ${fSize}px Arial`;
+  cx.textAlign = 'center';
+  cx.textBaseline = 'middle';
+  cx.fillStyle = col;
+  cx.shadowColor = col;
+  cx.shadowBlur = 18;
+  cx.globalAlpha = 0.85;
+  cx.fillText(label, W / 2, H * 0.18);
+  cx.shadowBlur = 0;
+  cx.restore();
+}
+
+function drawSwitchBar() {
+  const barW = W * 0.55;
+  const barH = Math.max(6, H * 0.012);
+  const bX = (W - barW) / 2;
+  const bY = H * 0.24;
+  const fraction = Math.max(0, switchTimer / switchInterval);
+
+  cx.save();
+  cx.fillStyle = '#1a3a2a';
+  roundRect(cx, bX, bY, barW, barH, barH / 2);
+  cx.fill();
+
+  const barCol = currentDir > 0 ? '#50b4ff' : '#ff8c28';
+  cx.fillStyle = barCol;
+  roundRect(cx, bX, bY, barW * fraction, barH, barH / 2);
+  cx.fill();
+
+  cx.fillStyle = '#334455';
+  cx.font = `${Math.max(9, barH * 1.6)}px Arial`;
+  cx.textAlign = 'center';
+  cx.textBaseline = 'top';
+  cx.fillText('SWITCH', W / 2, bY + barH + 2);
+  cx.restore();
+}
+
+function drawStrengthBar() {
+  const barW = W * 0.25;
+  const barH = Math.max(5, H * 0.01);
+  const bX = W * 0.03;
+  const bY = H * 0.88;
+  const maxStr = 1.8;
+  const fraction = Math.min(1, (currentStrength - 0.4) / (maxStr - 0.4));
+
+  cx.save();
+  cx.fillStyle = '#1a2a1a';
+  roundRect(cx, bX, bY, barW, barH, barH / 2);
+  cx.fill();
+
+  const hue = Math.round(fraction * 30); // green -> orange-red
+  cx.fillStyle = `hsl(${120 - hue * 4},90%,55%)`;
+  roundRect(cx, bX, bY, barW * fraction, barH, barH / 2);
+  cx.fill();
+
+  cx.fillStyle = '#334455';
+  cx.font = `${Math.max(9, barH * 1.8)}px Arial`;
+  cx.textAlign = 'left';
+  cx.textBaseline = 'bottom';
+  cx.fillText('STRENGTH', bX, bY - 2);
+  cx.restore();
+}
+
+function drawScore() {
+  const fSize = Math.max(20, Math.min(W, H) * 0.062);
+  cx.save();
+  cx.font = `900 ${fSize}px Arial`;
+  cx.textAlign = 'left';
+  cx.textBaseline = 'top';
+  cx.fillStyle = '#00ffcc';
+  cx.shadowColor = '#00ffcc44';
+  cx.shadowBlur = 10;
+  cx.fillText(survivalTime.toFixed(1) + 's', W * 0.03, H * 0.03);
+  cx.shadowBlur = 0;
+
+  if (bestTime > 0) {
+    cx.font = `${fSize * 0.38}px Arial`;
+    cx.fillStyle = '#224433';
+    cx.fillText('BEST ' + bestTime.toFixed(1) + 's', W * 0.03, H * 0.03 + fSize + 2);
+  }
+  cx.restore();
+}
+
+function drawTapHints() {
+  const fSize = Math.max(13, Math.min(W, H) * 0.035);
+  cx.save();
+  cx.font = `bold ${fSize}px Arial`;
+  cx.textAlign = 'left';
+  cx.textBaseline = 'middle';
+  cx.fillStyle = 'rgba(80,150,200,0.3)';
+  cx.fillText('◀ TAP', wallLeft() + 12, H / 2);
+  cx.textAlign = 'right';
+  cx.fillText('TAP ▶', wallRight() - 12, H / 2);
+  cx.restore();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  if (w < 0) w = 0;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawStart() {
+  // Draw river in background
+  drawRiver();
+  drawParticles();
+  drawCurrentArrow();
+
+  cx.save();
+  cx.fillStyle = 'rgba(4,14,18,0.72)';
+  cx.fillRect(0, 0, W, H);
+
+  const tSize = Math.min(W, H) * 0.13;
+  cx.font = `900 ${tSize}px Arial`;
+  cx.textAlign = 'center';
+  cx.textBaseline = 'middle';
+  cx.fillStyle = '#00eeff';
+  cx.shadowColor = '#00eeff';
+  cx.shadowBlur = 32;
+  cx.fillText('UNDERTOW', W / 2, H * 0.3);
+  cx.shadowBlur = 0;
+
+  cx.font = `bold ${tSize * 0.22}px Arial`;
+  cx.fillStyle = '#3a7a88';
+  cx.fillText('SURVIVE THE CURRENT', W / 2, H * 0.3 + tSize * 0.72);
+
+  const iSize = Math.min(W, H) * 0.04;
+  const infoY = H * 0.52;
+  const lH = iSize * 1.6;
+  cx.font = `${iSize}px Arial`;
+  cx.fillStyle = '#2a5a6a';
+  cx.fillText('← TAP left half to kick left', W / 2, infoY);
+  cx.fillText('TAP right half to kick right →', W / 2, infoY + lH);
+  cx.fillText('Don\'t hit the walls!', W / 2, infoY + lH * 2);
+
+  // Big tap hint
+  cx.font = `bold ${iSize * 1.4}px Arial`;
+  cx.fillStyle = '#1a8a9a';
+  cx.fillText('← TAP →', W / 2, infoY + lH * 3.4);
+
+  const bW = W * 0.52, bH = H * 0.072;
+  const bX = W / 2 - bW / 2, bY = H * 0.8;
+  cx.fillStyle = '#00ccdd';
+  cx.shadowColor = '#00ccdd';
+  cx.shadowBlur = 20;
+  roundRect(cx, bX, bY, bW, bH, bH / 2);
+  cx.fill();
+  cx.shadowBlur = 0;
+  cx.fillStyle = '#040e12';
+  cx.font = `bold ${iSize * 1.1}px Arial`;
+  cx.fillText('TAP TO SWIM', W / 2, bY + bH / 2);
+
+  if (bestTime > 0) {
+    cx.fillStyle = '#1a3a3a';
+    cx.font = `${iSize * 0.8}px Arial`;
+    cx.fillText(`BEST: ${bestTime.toFixed(1)}s`, W / 2, bY + bH + lH);
+  }
+  cx.restore();
+}
+
+function drawOver() {
+  drawRiver();
+  drawParticles();
+
+  cx.save();
+  cx.fillStyle = 'rgba(4,14,18,0.82)';
+  cx.fillRect(0, 0, W, H);
+
+  const tSize = Math.min(W, H) * 0.09;
+  cx.font = `900 ${tSize}px Arial`;
+  cx.textAlign = 'center';
+  cx.textBaseline = 'middle';
+  cx.fillStyle = '#ff4455';
+  cx.shadowColor = '#ff2244';
+  cx.shadowBlur = 24;
+  cx.fillText('WIPED OUT!', W / 2, H * 0.28);
+  cx.shadowBlur = 0;
+
+  cx.font = `900 ${tSize * 1.6}px Arial`;
+  cx.fillStyle = '#ffffff';
+  cx.fillText(survivalTime.toFixed(1) + 's', W / 2, H * 0.46);
+
+  cx.font = `bold ${tSize * 0.4}px Arial`;
+  cx.fillStyle = '#445566';
+  cx.fillText('SURVIVED', W / 2, H * 0.46 + tSize);
+
+  cx.fillStyle = '#1a3a3a';
+  cx.font = `${tSize * 0.35}px Arial`;
+  cx.fillText(`BEST: ${bestTime.toFixed(1)}s`, W / 2, H * 0.59);
+
+  const bW = W * 0.52, bH = H * 0.072;
+  const bX = W / 2 - bW / 2, bY = H * 0.72;
+  cx.fillStyle = '#00ccdd';
+  cx.shadowColor = '#00ccdd';
+  cx.shadowBlur = 20;
+  roundRect(cx, bX, bY, bW, bH, bH / 2);
+  cx.fill();
+  cx.shadowBlur = 0;
+  cx.fillStyle = '#040e12';
+  cx.font = `bold ${tSize * 0.42}px Arial`;
+  cx.fillText('TRY AGAIN', W / 2, bY + bH / 2);
+  cx.restore();
+}
+
+// Game loop
+function loop(t) {
+  requestAnimationFrame(loop);
+  const dt = Math.min((t - lastT) / 16.67, 3);
+  lastT = t;
+
+  if (gs === 'start') {
+    // Animate current in background
+    updateParticles(dt);
+    drawStart();
+    return;
+  }
+
+  if (gs === 'over') {
+    drawOver();
+    return;
+  }
+
+  // gs === 'play'
+  survivalTime += dt * (1 / 60);
+
+  // Switch timer
+  switchTimer -= dt * (1 / 60);
+  if (switchTimer <= 0) {
+    currentDir *= -1;
+    switchTimer = switchInterval * (0.6 + Math.random() * 0.5);
+    sfxSwitch();
+  }
+
+  // Increase strength over time
+  currentStrength = 0.4 + Math.floor(survivalTime / 10) * 0.1;
+
+  // Apply current to swimmer
+  const force = currentDir * currentStrength * 0.12 * dt;
+  swimmerVX += force;
+
+  // Apply player kick impulses
+  if (leftPressed) swimmerVX -= 0.25 * dt;
+  if (rightPressed) swimmerVX += 0.25 * dt;
+
+  // Damping
+  swimmerVX *= Math.pow(0.88, dt);
+
+  // Cap velocity
+  const maxV = 6;
+  swimmerVX = Math.max(-maxV, Math.min(maxV, swimmerVX));
+
+  // Move swimmer
+  swimmerX += swimmerVX * dt;
+
+  // Keep swimmer in vertical center area
+  swimmerY = H / 2;
+
+  // Check wall collision
+  const sr = swimmerR();
+  const wL = wallLeft(), wR = wallRight();
+  if (swimmerX - sr <= wL || swimmerX + sr >= wR) {
+    sfxDie();
+    if (survivalTime > bestTime) {
+      bestTime = survivalTime;
+      localStorage.setItem('undertow_best', bestTime);
+    }
+    gs = 'over';
+    return;
+  }
+
+  // Update and draw
+  updateParticles(dt);
+
+  drawRiver();
+  drawParticles();
+  drawSwimmer();
+  drawCurrentArrow();
+  drawSwitchBar();
+  drawScore();
+  drawStrengthBar();
+  drawTapHints();
+
+  // Flash overlay
+  if (flashTimer > 0) {
+    cx.save();
+    cx.globalAlpha = flashTimer * 0.3;
+    cx.fillStyle = '#00ffcc';
+    cx.fillRect(0, 0, W, H);
+    cx.restore();
+    flashTimer -= 0.04 * dt;
+    if (flashTimer < 0) flashTimer = 0;
+  }
+}
+requestAnimationFrame(loop);
+
+// Input handling
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  getACtx();
+  activePointers.add(e.pointerId);
+
+  if (gs === 'start') {
+    initRound();
+    startGame();
+    return;
+  }
+  if (gs === 'over') {
+    initRound();
+    startGame();
+    return;
+  }
+
+  // Determine kick direction
+  if (e.clientX < W / 2) {
+    leftPressed = true;
+    sfxKick();
+  } else {
+    rightPressed = true;
+    sfxKick();
+  }
+  flashTimer = 0.6;
+});
+
+cv.addEventListener('pointerup', e => {
+  e.preventDefault();
+  activePointers.delete(e.pointerId);
+  if (activePointers.size === 0) {
+    leftPressed = false;
+    rightPressed = false;
+  } else {
+    // Re-evaluate remaining pointers
+    leftPressed = false; rightPressed = false;
+    // Can't easily re-check remaining pointers by position without storing them
+    // So just clear — player must re-tap
+  }
+});
+
+cv.addEventListener('pointercancel', e => {
+  activePointers.delete(e.pointerId);
+  if (activePointers.size === 0) {
+    leftPressed = false;
+    rightPressed = false;
+  }
+});
+
+// Prevent context menu on long press mobile
+cv.addEventListener('contextmenu', e => e.preventDefault());
+</script>
+</body>
+</html>

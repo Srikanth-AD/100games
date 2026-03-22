@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>SWITCHWORD</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#080c10;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H;
+function resize() { W = cv.width = window.innerWidth; H = cv.height = window.innerHeight; }
+resize();
+window.addEventListener('resize', () => { resize(); });
+
+// ── Audio ──────────────────────────────────────────────────────────────────
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function sfx(type) {
+  const t = AC.currentTime;
+  function tone(freq, start, dur, wave, gain, ramp) {
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    o.type = wave; o.frequency.value = freq;
+    g.gain.setValueAtTime(gain, t + start);
+    g.gain.linearRampToValueAtTime(ramp !== undefined ? ramp : 0, t + start + dur);
+    o.start(t + start); o.stop(t + start + dur);
+  }
+  if (type === 'tick') {
+    tone(880, 0, 0.06, 'sine', 0.15);
+  } else if (type === 'correct') {
+    tone(440, 0,    0.08, 'sine', 0.2);
+    tone(554, 0.07, 0.08, 'sine', 0.2);
+    tone(659, 0.14, 0.12, 'sine', 0.25);
+  } else if (type === 'wrong') {
+    tone(220, 0,    0.06, 'sawtooth', 0.2);
+    tone(196, 0.07, 0.1,  'sawtooth', 0.15);
+  } else if (type === 'win') {
+    [523,659,784,1047].forEach((f,i) => tone(f, i*0.1, 0.15, 'sine', 0.2));
+  } else if (type === 'chainwin') {
+    [523,659,784,1047,1319].forEach((f,i) => tone(f, i*0.08, 0.18, 'sine', 0.25));
+  } else if (type === 'gameover') {
+    [330,262,196,147].forEach((f,i) => tone(f, i*0.13, 0.12, 'square', 0.15));
+  } else if (type === 'bonus') {
+    tone(880, 0, 0.05, 'sine', 0.18);
+    tone(1100, 0.05, 0.08, 'sine', 0.18);
+  }
+}
+
+// ── Verified Word Chains ───────────────────────────────────────────────────
+// Each array: [start, step1, step2, ..., target]
+// Adjacent pairs differ by exactly 1 letter
+const CHAINS = [
+  ['CAT','BAT','BAD','BED','RED'],
+  ['MAN','CAN','CON','COT','DOT','DOG'],
+  ['HOT','DOT','DOG','FOG','FOX'],
+  ['COLD','CORD','WORD','WARD','WARM'],
+  ['SINK','SING','RING','RINK','RICK','RICE'],
+  ['HAND','BAND','BOND','FOND','FIND','FINE'],
+  ['CAR','BAR','BAT','BIT','BIG','PIG'],
+  ['SIT','SET','NET','NOT','NOD','NOB'],
+  ['FAN','TAN','TIN','WIN','WIG','BIG'],
+  ['PINE','MINE','MILE','MILD','WILD','WILE'],
+  ['GAME','CAME','COME','SOME','SAME','SANE'],
+  ['BEAR','BEER','DEER','DEED','SEED','SEEN'],
+  ['FIRE','HIRE','HERE','HARE','BARE','DARE'],
+  ['KING','RING','RIND','FIND','FEND','BEND'],
+  ['CAVE','GAVE','GIVE','LIVE','LINE','MINE'],
+  ['SHIP','SHOP','STOP','STEP','STEM','ITEM'],
+  ['FLIP','FLIT','FLAT','FLAB','SLAB','SLOB'],
+  ['FLOW','FLEW','FLAW','FLAT','FIAT','FIST'],
+  ['LIME','LIKE','BIKE','BILE','MILE','MOLE'],
+  ['POND','BOND','BONE','BORE','CORE','CARE'],
+];
+
+// Words for generating distractors
+const WORD_POOL_3 = [
+  'CAT','BAT','BAD','BED','RED','MAN','CAN','CON','COT','DOT','DOG','HOT','FOG','FOX',
+  'CAR','BAR','BIT','BIG','PIG','SIT','SET','NET','NOT','NOD','FAN','TAN','TIN','WIN','WIG',
+  'CUP','CUT','GUT','GUN','FUN','RUN','BUN','SUN','SON','TON','TEN','HEN','HIM','HIT',
+  'FAT','RAT','RAN','RAM','JAM','JAR','WAR','WAS','SAP','SAT','HAT','HAS','GAS','GAP',
+  'MAP','MAT','MAD','LAD','LAP','LAW','PAW','PAT','PAN','PIN','PIT','POT','POD','COD',
+  'BOD','BOX','BOW','BOB','ROB','ROD','ROT','ROW','TOW','TOY','SOY','SOB','SOD','MOD',
+  'MOP','MOB','MOT','NOR','NOR','OAR','OAK','ODD','OFT','OPT','ORB','ORE','OWL','OWN',
+];
+const WORD_POOL_4 = [
+  'COLD','CORD','WORD','WARD','WARM','SINK','SING','RING','RINK','RICK','RICE',
+  'HAND','BAND','BOND','FOND','FIND','FINE','PINE','MINE','MILE','MILD','WILD',
+  'GAME','CAME','COME','SOME','SAME','SANE','BEAR','BEER','DEER','DEED','SEED','SEEN',
+  'FIRE','HIRE','HERE','HARE','BARE','DARE','KING','RIND','FEND','BEND','CAVE','CANE',
+  'LANE','BORE','BONE','SHIP','SHOP','STOP','STEP','STEM','LIME','LIKE','BIKE','BILE',
+  'POND','CORE','CARE','FLIP','FLIT','FLAT','SLAB','SLOB','FLOW','FLEW','FLAW','FIST',
+  'CAKE','LAKE','LANE','LATE','MATE','MANE','MADE','FADE','FACE','LACE','RACE','PACE',
+  'BACK','RACK','ROCK','LOCK','LOOK','BOOK','BOOT','ROOT','LOOT','LOOP','POOL','POLL',
+  'BOLD','BELL','BALL','TALL','TALE','TAME','FAME','FARE','FARM','FORM','FORD','FORE',
+  'GOLD','FOLD','TOLD','TOLL','TOOL','FOOL','FOIL','COIL','COAL','COAT','GOAT','GOAD',
+];
+
+function diffCount(a, b) {
+  if (a.length !== b.length) return 999;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++;
+  return d;
+}
+
+function generateDistractors(current, correct, count) {
+  const pool = current.length === 3 ? WORD_POOL_3 : WORD_POOL_4;
+  // candidates: words that differ by 1 letter from current but are not the correct next step
+  const candidates = pool.filter(w =>
+    w.length === current.length &&
+    w !== current &&
+    w !== correct &&
+    diffCount(w, current) === 1
+  );
+  // shuffle and pick
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+  const result = candidates.slice(0, count);
+  // pad with words that differ by 2 if not enough 1-diff words
+  if (result.length < count) {
+    const pad = pool.filter(w =>
+      w.length === current.length && w !== current && w !== correct && !result.includes(w)
+    );
+    for (let i = pad.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pad[i], pad[j]] = [pad[j], pad[i]];
+    }
+    result.push(...pad.slice(0, count - result.length));
+  }
+  return result;
+}
+
+// ── State ──────────────────────────────────────────────────────────────────
+let gs = 'start';
+let chain, chainIdx, chainOrder;
+let score, chainsDone;
+let timer, timerMax;
+let choices = [];           // [{word, correct}]
+let flashWord = '';
+let flashColor = '';
+let flashTimer = 0;
+let bestScore = +localStorage.getItem('switchword_best') || 0;
+let bonusFlash = 0;
+let particles = [];
+
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function init() {
+  score = 0;
+  chainsDone = 0;
+  timer = 60;
+  timerMax = 60;
+  chainOrder = shuffle([...Array(CHAINS.length).keys()]);
+  particles = [];
+  loadChain();
+  gs = 'play';
+}
+
+function loadChain() {
+  const idx = chainOrder[chainsDone % chainOrder.length];
+  chain = CHAINS[idx];
+  chainIdx = 0;
+  buildChoices();
+}
+
+function buildChoices() {
+  const current = chain[chainIdx];
+  const correct = chain[chainIdx + 1];
+  const distractors = generateDistractors(current, correct, 3);
+  const all = shuffle([{word: correct, correct: true}, ...distractors.map(w => ({word: w, correct: false}))]);
+  choices = all;
+}
+
+function spawnParticles(cx, cy, color) {
+  for (let i = 0; i < 12; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 2 + Math.random() * 4;
+    particles.push({
+      x: cx, y: cy,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1, color
+    });
+  }
+}
+
+// ── Drawing Helpers ────────────────────────────────────────────────────────
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y);
+  ctx.arcTo(x+w, y, x+w, y+r, r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.arcTo(x+w, y+h, x+w-r, y+h, r);
+  ctx.lineTo(x+r, y+h);
+  ctx.arcTo(x, y+h, x, y+h-r, r);
+  ctx.lineTo(x, y+r);
+  ctx.arcTo(x, y, x+r, y, r);
+  ctx.closePath();
+}
+
+function drawGrid() {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0,200,255,0.04)';
+  ctx.lineWidth = 1;
+  const step = Math.min(W, H) * 0.07;
+  for (let x = 0; x < W; x += step) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = 0; y < H; y += step) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function getButtonLayout() {
+  const btnW = Math.min(W * 0.42, 170);
+  const btnH = Math.min(H * 0.085, 60);
+  const gap = btnH * 0.35;
+  const totalH = 2 * btnH + gap;
+  const by = H * 0.65;
+  return [
+    { x: W * 0.5 - btnW - gap * 0.5, y: by,           w: btnW, h: btnH },
+    { x: W * 0.5 + gap * 0.5,         y: by,           w: btnW, h: btnH },
+    { x: W * 0.5 - btnW - gap * 0.5, y: by + btnH + gap, w: btnW, h: btnH },
+    { x: W * 0.5 + gap * 0.5,         y: by + btnH + gap, w: btnW, h: btnH },
+  ];
+}
+
+function drawWordTile(word, cx, cy, size, color, glow) {
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (glow) {
+    ctx.save();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 30;
+  }
+  ctx.font = `bold ${size}px 'Courier New', monospace`;
+  ctx.fillStyle = color;
+  ctx.fillText(word, cx, cy);
+  if (glow) ctx.restore();
+}
+
+// ── Screens ────────────────────────────────────────────────────────────────
+function drawStart() {
+  drawGrid();
+
+  // Title
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.save();
+  ctx.shadowColor = '#00ccff';
+  ctx.shadowBlur = 40;
+  ctx.font = `bold ${Math.min(W * 0.18, 80)}px 'Courier New', monospace`;
+  ctx.fillStyle = '#00ccff';
+  ctx.fillText('SWITCH', W / 2, H * 0.18);
+  ctx.shadowColor = '#ff6600';
+  ctx.shadowBlur = 40;
+  ctx.fillStyle = '#ff6600';
+  ctx.fillText('WORD', W / 2, H * 0.28);
+  ctx.restore();
+
+  ctx.font = `${Math.min(W * 0.042, 16)}px 'Courier New', monospace`;
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.fillText('TRANSFORM ONE WORD INTO ANOTHER', W / 2, H * 0.37);
+
+  // Show example chain
+  const ex = ['CAT', 'BAT', 'BAD', 'BED', 'RED'];
+  const tileW = Math.min(W * 0.14, 56);
+  const tileH = tileW;
+  const gap = tileW * 0.25;
+  const totalW = ex.length * tileW + (ex.length - 1) * gap;
+  const startX = W / 2 - totalW / 2 + tileW / 2;
+  const ey = H * 0.52;
+  const colors = ['#00ccff','#33ddaa','#66ee77','#aadd33','#ff6600'];
+
+  ex.forEach((word, i) => {
+    const tx = startX + i * (tileW + gap);
+    rr(tx - tileW/2, ey - tileH/2, tileW, tileH, 8);
+    ctx.fillStyle = `rgba(0,0,0,0.5)`;
+    ctx.fill();
+    ctx.strokeStyle = colors[i];
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `bold ${Math.min(W * 0.055, 22)}px 'Courier New', monospace`;
+    ctx.fillStyle = colors[i];
+    ctx.fillText(word, tx, ey);
+    if (i < ex.length - 1) {
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.font = `${Math.min(W * 0.04, 16)}px Arial`;
+      ctx.fillText('→', tx + tileW/2 + gap/2, ey);
+    }
+  });
+
+  ctx.font = `${Math.min(W * 0.038, 15)}px 'Courier New', monospace`;
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.fillText('Change one letter at a time', W / 2, H * 0.62);
+  ctx.fillText('Pick the correct next word', W / 2, H * 0.67);
+  ctx.fillText('Wrong = -5 seconds', W / 2, H * 0.72);
+
+  if (bestScore > 0) {
+    ctx.font = `bold ${Math.min(W * 0.045, 18)}px 'Courier New', monospace`;
+    ctx.fillStyle = '#ffd700';
+    ctx.fillText(`BEST: ${bestScore}`, W / 2, H * 0.79);
+  }
+
+  const p = 0.6 + 0.4 * Math.sin(Date.now() * 0.003);
+  ctx.fillStyle = `rgba(255,255,255,${p})`;
+  ctx.font = `bold ${Math.min(W * 0.055, 22)}px 'Courier New', monospace`;
+  ctx.fillText('TAP TO PLAY', W / 2, H * 0.88);
+}
+
+function drawPlay(dt) {
+  drawGrid();
+
+  // Update timer
+  timer -= dt / 1000;
+  if (timer <= 0) {
+    timer = 0;
+    if (score > bestScore) { bestScore = score; localStorage.setItem('switchword_best', bestScore); }
+    gs = 'over';
+    sfx('gameover');
+    return;
+  }
+
+  // Update flash
+  if (flashTimer > 0) flashTimer -= dt;
+
+  // Update bonus flash
+  if (bonusFlash > 0) bonusFlash -= dt;
+
+  // Update particles
+  particles = particles.filter(p => p.life > 0);
+  particles.forEach(p => {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.15;
+    p.life -= 0.03;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3 * p.life, 0, Math.PI * 2);
+    ctx.fillStyle = p.color + Math.floor(p.life * 255).toString(16).padStart(2, '0');
+    ctx.fill();
+  });
+
+  const current = chain[chainIdx];
+  const target = chain[chain.length - 1];
+  const stepsLeft = chain.length - 1 - chainIdx;
+  const progress = chainIdx / (chain.length - 1);
+
+  // Progress dots
+  const dotR = Math.min(W * 0.022, 9);
+  const dotsTotal = chain.length;
+  const dotsSpan = (dotsTotal - 1) * dotR * 3;
+  const dotsX = W / 2 - dotsSpan / 2;
+  for (let i = 0; i < dotsTotal; i++) {
+    const dx = dotsX + i * dotR * 3;
+    const dy = H * 0.1;
+    ctx.beginPath();
+    ctx.arc(dx, dy, dotR, 0, Math.PI * 2);
+    if (i < chainIdx) {
+      ctx.fillStyle = '#00cc88';
+    } else if (i === chainIdx) {
+      ctx.fillStyle = '#00ccff';
+    } else {
+      ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    }
+    ctx.fill();
+  }
+
+  // Target word label
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `${Math.min(W * 0.032, 13)}px 'Courier New', monospace`;
+  ctx.fillStyle = 'rgba(255,165,0,0.6)';
+  ctx.fillText('TARGET', W / 2, H * 0.16);
+
+  ctx.save();
+  ctx.shadowColor = '#ffa500';
+  ctx.shadowBlur = 15;
+  ctx.font = `bold ${Math.min(W * 0.11, 48)}px 'Courier New', monospace`;
+  ctx.fillStyle = '#ffa500';
+  ctx.fillText(target, W / 2, H * 0.22);
+  ctx.restore();
+
+  // Steps remaining
+  ctx.font = `${Math.min(W * 0.032, 13)}px 'Courier New', monospace`;
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fillText(`${stepsLeft} step${stepsLeft !== 1 ? 's' : ''} to go`, W / 2, H * 0.28);
+
+  // Current word (with flash color if set)
+  let wordColor = '#ffffff';
+  if (flashTimer > 0) {
+    const t = flashTimer / 400;
+    wordColor = flashColor === 'green'
+      ? `rgba(0,255,136,${t * 0.7 + 0.3})`
+      : `rgba(255,80,80,${t * 0.7 + 0.3})`;
+  }
+
+  ctx.save();
+  ctx.shadowColor = flashTimer > 0 ? (flashColor === 'green' ? '#00ff88' : '#ff4444') : '#00ccff';
+  ctx.shadowBlur = flashTimer > 0 ? 40 : 20;
+  ctx.font = `bold ${Math.min(W * 0.18, 78)}px 'Courier New', monospace`;
+  ctx.fillStyle = wordColor;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(flashWord || current, W / 2, H * 0.43);
+  ctx.restore();
+
+  // Divider
+  ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(W * 0.1, H * 0.55);
+  ctx.lineTo(W * 0.9, H * 0.55);
+  ctx.stroke();
+
+  // Choice buttons
+  const layout = getButtonLayout();
+  choices.forEach((choice, i) => {
+    if (i >= layout.length) return;
+    const b = layout[i];
+    const cx = b.x + b.w / 2;
+    const cy = b.y + b.h / 2;
+
+    let bg = 'rgba(0,20,40,0.7)';
+    let border = 'rgba(0,180,255,0.5)';
+    let textColor = '#00ccff';
+
+    if (flashTimer > 0 && flashWord) {
+      if (choice.word === chain[chainIdx] && flashColor === 'green') {
+        bg = 'rgba(0,80,40,0.9)';
+        border = '#00ff88';
+        textColor = '#00ff88';
+      } else if (!choice.correct && flashColor === 'red' && choice.word === flashWord) {
+        bg = 'rgba(80,0,0,0.9)';
+        border = '#ff4444';
+        textColor = '#ff4444';
+      }
+    }
+
+    rr(b.x, b.y, b.w, b.h, 10);
+    ctx.fillStyle = bg;
+    ctx.fill();
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `bold ${Math.min(W * 0.085, 34)}px 'Courier New', monospace`;
+    ctx.fillStyle = textColor;
+    ctx.fillText(choice.word, cx, cy);
+  });
+
+  // Score
+  ctx.textAlign = 'left';
+  ctx.font = `bold ${Math.min(W * 0.065, 26)}px 'Courier New', monospace`;
+  ctx.fillStyle = '#ffd700';
+  ctx.fillText(score, W * 0.04, H * 0.055);
+
+  ctx.font = `${Math.min(W * 0.03, 12)}px 'Courier New', monospace`;
+  ctx.fillStyle = 'rgba(255,215,0,0.5)';
+  ctx.fillText('SCORE', W * 0.04, H * 0.085);
+
+  // Chains done
+  ctx.textAlign = 'right';
+  ctx.font = `bold ${Math.min(W * 0.048, 19)}px 'Courier New', monospace`;
+  ctx.fillStyle = '#00cc88';
+  ctx.fillText(`×${chainsDone}`, W * 0.96, H * 0.055);
+  ctx.font = `${Math.min(W * 0.03, 12)}px 'Courier New', monospace`;
+  ctx.fillStyle = 'rgba(0,200,136,0.5)';
+  ctx.fillText('CHAINS', W * 0.96, H * 0.085);
+
+  // Bonus flash
+  if (bonusFlash > 0) {
+    const alpha = Math.min(1, bonusFlash / 300);
+    ctx.textAlign = 'center';
+    ctx.font = `bold ${Math.min(W * 0.06, 24)}px 'Courier New', monospace`;
+    ctx.fillStyle = `rgba(0,255,136,${alpha})`;
+    ctx.fillText('+10s BONUS!', W / 2, H * 0.93);
+  }
+
+  // Timer bar
+  const barH = Math.min(H * 0.018, 10);
+  const barY = H - barH - 4;
+  const barW = W * 0.92;
+  const barX = W * 0.04;
+  const frac = timer / timerMax;
+
+  rr(barX, barY, barW, barH, barH / 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fill();
+
+  const barColor = frac > 0.5 ? '#00cc88' : frac > 0.25 ? '#ffaa00' : '#ff4444';
+  if (frac > 0) {
+    rr(barX, barY, barW * frac, barH, barH / 2);
+    ctx.fillStyle = barColor;
+    ctx.fill();
+  }
+
+  // Timer number
+  ctx.textAlign = 'center';
+  ctx.font = `bold ${Math.min(W * 0.04, 16)}px 'Courier New', monospace`;
+  ctx.fillStyle = barColor;
+  ctx.fillText(Math.ceil(timer) + 's', W / 2, barY - 6);
+}
+
+function drawOver() {
+  drawGrid();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.save();
+  ctx.shadowColor = '#ff4444';
+  ctx.shadowBlur = 30;
+  ctx.font = `bold ${Math.min(W * 0.12, 52)}px 'Courier New', monospace`;
+  ctx.fillStyle = '#ff4444';
+  ctx.fillText('TIME UP', W / 2, H * 0.22);
+  ctx.restore();
+
+  ctx.font = `bold ${Math.min(W * 0.22, 90)}px 'Courier New', monospace`;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(score, W / 2, H * 0.42);
+
+  ctx.font = `${Math.min(W * 0.04, 16)}px 'Courier New', monospace`;
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.fillText('SCORE', W / 2, H * 0.52);
+
+  ctx.font = `${Math.min(W * 0.045, 18)}px 'Courier New', monospace`;
+  ctx.fillStyle = '#00cc88';
+  ctx.fillText(`CHAINS COMPLETED: ${chainsDone}`, W / 2, H * 0.6);
+
+  if (bestScore > 0) {
+    ctx.font = `bold ${Math.min(W * 0.05, 20)}px 'Courier New', monospace`;
+    ctx.fillStyle = '#ffd700';
+    ctx.fillText(`BEST: ${bestScore}`, W / 2, H * 0.68);
+  }
+
+  const p = 0.6 + 0.4 * Math.sin(Date.now() * 0.003);
+  ctx.fillStyle = `rgba(255,255,255,${p})`;
+  ctx.font = `bold ${Math.min(W * 0.055, 22)}px 'Courier New', monospace`;
+  ctx.fillText('TAP TO PLAY AGAIN', W / 2, H * 0.82);
+}
+
+// ── Game Loop ──────────────────────────────────────────────────────────────
+let lastTs = 0;
+function draw(ts = 0) {
+  requestAnimationFrame(draw);
+  const dt = Math.min(ts - lastTs, 50);
+  lastTs = ts;
+
+  ctx.clearRect(0, 0, W, H);
+  // Background
+  const bg = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W,H)*0.8);
+  bg.addColorStop(0, '#0c1422');
+  bg.addColorStop(1, '#040810');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  if (gs === 'start') drawStart();
+  else if (gs === 'play') drawPlay(dt);
+  else if (gs === 'over') drawOver();
+}
+
+// ── Input ──────────────────────────────────────────────────────────────────
+function tapChoice(word, correct) {
+  if (flashTimer > 0) return;
+
+  if (correct) {
+    sfx('correct');
+    chainIdx++;
+    flashWord = word;
+    flashColor = 'green';
+    flashTimer = 350;
+    spawnParticles(W / 2, H * 0.43, '#00ff88');
+
+    if (chainIdx >= chain.length - 1) {
+      // Chain complete!
+      chainsDone++;
+      score += 10 + Math.floor(timer);
+      timer = Math.min(timer + 10, timerMax);
+      bonusFlash = 1500;
+      sfx('chainwin');
+      setTimeout(() => {
+        loadChain();
+      }, 600);
+    } else {
+      score += 5;
+      buildChoices();
+    }
+  } else {
+    sfx('wrong');
+    flashWord = word;
+    flashColor = 'red';
+    flashTimer = 400;
+    timer = Math.max(1, timer - 5);
+  }
+}
+
+function tap(x, y) {
+  if (AC.state === 'suspended') AC.resume();
+  if (gs === 'start' || gs === 'over') { init(); return; }
+  if (gs !== 'play') return;
+  if (flashTimer > 200) return;
+
+  const layout = getButtonLayout();
+  choices.forEach((choice, i) => {
+    if (i >= layout.length) return;
+    const b = layout[i];
+    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
+      tapChoice(choice.word, choice.correct);
+    }
+  });
+}
+
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  tap(e.clientX, e.clientY);
+}, { passive: false });
+
+draw();
+</script>
+</body>
+</html>

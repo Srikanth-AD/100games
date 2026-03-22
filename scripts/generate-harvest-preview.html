@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Generate Harvest Preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&display=swap" rel="stylesheet">
+<style>body{margin:0;background:#222;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:14px;font-family:sans-serif;color:#fff;}button{padding:10px 28px;font-size:16px;background:#ffc107;color:#000;border:none;border-radius:8px;cursor:pointer;}</style>
+</head>
+<body>
+<canvas id="c" width="600" height="400"></canvas>
+<button onclick="dl()">Save harvest-preview.png</button>
+<script>
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const W=600,H=400;
+document.fonts.ready.then(draw);
+
+function draw(){
+  // Sky
+  const sky=ctx.createLinearGradient(0,0,0,H);
+  sky.addColorStop(0,'#b3dff5');sky.addColorStop(0.55,'#dff0d8');sky.addColorStop(1,'#8fbc5a');
+  ctx.fillStyle=sky;ctx.fillRect(0,0,W,H);
+  // Sun
+  ctx.fillStyle='rgba(255,240,100,0.9)';ctx.shadowColor='#ffe066';ctx.shadowBlur=22;
+  ctx.beginPath();ctx.arc(W*0.88,H*0.12,22,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
+  // Ground
+  ctx.fillStyle='#6a994e';ctx.fillRect(0,H*0.45,W,H*0.55);
+
+  // 3x2 grid of plots
+  const cols=3,rows=2,pw=110,ph=72,gx=12;
+  const gridX=(W-(cols*pw+(cols-1)*gx))/2;
+  const gridY=H*0.48;
+
+  const states=[['ripe','growing','ripe'],['overripe','ripe','growing']];
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const x=gridX+c*(pw+gx),y=gridY+r*(ph+10);
+      drawPlot(x,y,pw,ph,states[r][c]);
+    }
+  }
+
+  // Crow on middle plot
+  drawCrow(gridX+1*(pw+gx)+pw/2,gridY+ph*0.35);
+
+  // HUD
+  ctx.fillStyle='rgba(0,0,0,0.32)';ctx.fillRect(0,0,W,56);
+  ctx.textAlign='left';
+  ctx.font='bold 10px "Black Ops One",serif';ctx.fillStyle='rgba(255,255,255,0.38)';ctx.fillText('COINS',14,18);
+  ctx.font='bold 22px "Black Ops One",serif';ctx.fillStyle='#ffd740';ctx.fillText('340',14,44);
+  ctx.textAlign='center';
+  ctx.font='bold 10px "Black Ops One",serif';ctx.fillStyle='rgba(255,255,255,0.38)';ctx.fillText('LEVEL',W/2,18);
+  ctx.font='bold 22px "Black Ops One",serif';ctx.fillStyle='#fff';ctx.fillText('2',W/2,44);
+  ctx.font='18px sans-serif';
+  for(let i=0;i<3;i++){ctx.globalAlpha=1;ctx.fillText('❤️',W-80+(i-1)*26,42);}
+  ctx.globalAlpha=1;
+
+  // Title
+  ctx.textAlign='center';ctx.font='bold 52px "Black Ops One",serif';
+  ctx.shadowColor='#ffd740';ctx.shadowBlur=18;ctx.fillStyle='#fff';
+  ctx.fillText('HARVEST',W/2,H*0.24);ctx.shadowBlur=0;
+
+  // Sell bar
+  ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(0,H*0.88,W,H*0.12);
+  ctx.font='bold 14px "Black Ops One",serif';ctx.fillStyle='rgba(255,255,255,0.5)';
+  ctx.fillText('🌾 ×4',W*0.22,H*0.88+28);
+  ctx.fillStyle='#ffd740';ctx.fillText('SELL +40',W*0.7,H*0.88+28);
+}
+
+function drawPlot(x,y,w,h,state){
+  ctx.fillStyle='#5d4037';ctx.beginPath();ctx.roundRect(x,y,w,h,6);ctx.fill();
+  ctx.fillStyle='#6d4c41';ctx.beginPath();ctx.roundRect(x+2,y+2,w-4,h*0.35,4);ctx.fill();
+
+  const cx=x+w/2,cy=y+h*0.58,sz=Math.min(w,h)*0.36;
+  if(state==='growing'){
+    ctx.strokeStyle='#81c784';ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(cx,cy+sz*0.5);ctx.lineTo(cx,cy-sz*0.3);ctx.stroke();
+    ctx.fillStyle='#a5d6a7';
+    ctx.beginPath();ctx.ellipse(cx+sz*0.3,cy-sz*0.2,sz*0.28,sz*0.16,0.5,0,Math.PI*2);ctx.fill();
+  } else {
+    const wilt=state==='overripe';
+    ctx.strokeStyle=wilt?'#a5d6a7':'#558b2f';ctx.lineWidth=2.5;
+    ctx.beginPath();ctx.moveTo(cx,cy+sz*0.6);ctx.lineTo(cx,cy-sz*0.8);ctx.stroke();
+    ctx.fillStyle=wilt?'#c8e6c9':'#66bb6a';
+    ctx.beginPath();ctx.ellipse(cx+sz*0.5,cy-sz*0.1,sz*0.5,sz*0.2,0.4,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.ellipse(cx-sz*0.5,cy-sz*0.4,sz*0.5,sz*0.2,-0.4,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle=wilt?'#ffe082':'#ffc107';
+    ctx.beginPath();ctx.ellipse(cx,cy-sz*1.0,sz*0.22,sz*0.45,0,0,Math.PI*2);ctx.fill();
+    if(!wilt){
+      ctx.save();ctx.globalAlpha=0.2;ctx.fillStyle='#ffd740';
+      ctx.beginPath();ctx.arc(cx,cy-sz*0.5,sz*0.9,0,Math.PI*2);ctx.fill();ctx.restore();
+    }
+  }
+  // Progress bar
+  const prog=state==='growing'?0.45:state==='ripe'?0.8:0.95;
+  const barCol=state==='growing'?'#66bb6a':state==='ripe'?'#ffc107':'#ff5722';
+  ctx.fillStyle='rgba(0,0,0,0.22)';ctx.fillRect(x+5,y+h-9,w-10,5);
+  ctx.fillStyle=barCol;ctx.fillRect(x+5,y+h-9,(w-10)*prog,5);
+
+  if(state==='overripe'&&Math.sin(Date.now()/120)>0){
+    ctx.strokeStyle='#ff5722';ctx.lineWidth=2.5;
+    ctx.beginPath();ctx.roundRect(x,y,w,h,6);ctx.stroke();
+  }
+}
+
+function drawCrow(cx,cy){
+  ctx.save();ctx.translate(cx,cy);
+  ctx.fillStyle='#1a1a1a';
+  ctx.beginPath();ctx.ellipse(-12,4,12,6,-0.3,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.ellipse(12,4,12,6,0.3,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.ellipse(0,0,9,12,0,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(0,-11,6,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#888';ctx.beginPath();ctx.moveTo(4,-9);ctx.lineTo(12,-7);ctx.lineTo(4,-7);ctx.closePath();ctx.fill();
+  ctx.fillStyle='#ff1744';ctx.beginPath();ctx.arc(2,-12,2,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+
+function dl(){const a=document.createElement('a');a.download='harvest-preview.png';a.href=cv.toDataURL('image/png');a.click();}
+</script>
+</body>
+</html>

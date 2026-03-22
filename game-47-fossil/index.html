@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>FOSSIL</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+let W,H,scl;
+function resize(){
+  const vw=window.innerWidth,vh=window.innerHeight;
+  scl=Math.min(vw/375,vh/600);
+  W=Math.round(375*scl);H=Math.round(600*scl);
+  cv.width=W;cv.height=H;
+}
+resize();
+window.addEventListener('resize',()=>{resize();if(gs==='play')initRound();});
+
+// ── Dirt canvas ──────────────────────────────────────────
+const dirtCv=document.createElement('canvas');
+const dirtCtx=dirtCv.getContext('2d');
+
+// ── Audio ────────────────────────────────────────────────
+let ac;
+function initAC(){if(!ac)ac=new(window.AudioContext||window.webkitAudioContext)();}
+function snd(type){
+  if(!ac)return;
+  const t=ac.currentTime;
+  if(type==='brush'){
+    const o=ac.createOscillator(),g=ac.createGain();
+    o.type='triangle';o.connect(g);g.connect(ac.destination);
+    o.frequency.setValueAtTime(180+Math.random()*60,t);
+    g.gain.setValueAtTime(0.04,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.08);
+    o.start(t);o.stop(t+0.08);
+  }else if(type==='damage'){
+    const o=ac.createOscillator(),g=ac.createGain();
+    o.type='sawtooth';o.connect(g);g.connect(ac.destination);
+    o.frequency.setValueAtTime(320,t);o.frequency.exponentialRampToValueAtTime(60,t+0.3);
+    g.gain.setValueAtTime(0.3,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.3);
+    o.start(t);o.stop(t+0.3);
+  }else if(type==='win'){
+    [0,4,7,12].forEach((n,i)=>{
+      const o=ac.createOscillator(),g=ac.createGain();
+      o.type='sine';o.connect(g);g.connect(ac.destination);
+      const f=220*Math.pow(2,n/12);
+      o.frequency.setValueAtTime(f,t+i*0.08);
+      g.gain.setValueAtTime(0.18,t+i*0.08);g.gain.exponentialRampToValueAtTime(0.001,t+i*0.08+0.5);
+      o.start(t+i*0.08);o.stop(t+i*0.08+0.5);
+    });
+  }
+}
+
+// ── Fossil definitions (design coords 375×600) ───────────
+// Bones: {t:'line',x1,y1,x2,y2,w}, {t:'circle',x,y,r}, {t:'ellipse',x,y,rx,ry},
+//        {t:'arc',x,y,r,a1,a2,w}, {t:'rect',x,y,w,h}
+const FOSSILS=[
+  // 0: FISH
+  {name:'FISH',bones:(()=>{
+    const b=[];
+    // spine
+    b.push({t:'line',x1:80,y1:330,x2:310,y2:330,w:3});
+    // skull oval
+    b.push({t:'ellipse',x:90,y:330,rx:22,ry:14});
+    // ribs
+    for(let i=0;i<7;i++){
+      const x=130+i*22,off=i*2;
+      b.push({t:'line',x1:x,y1:330,x2:x-8,y2:330-26-off,w:2});
+      b.push({t:'line',x1:x,y1:330,x2:x-8,y2:330+26+off,w:2});
+    }
+    // tail fan
+    b.push({t:'line',x1:295,y1:330,x2:320,y2:298,w:2});
+    b.push({t:'line',x1:295,y1:330,x2:325,y2:315,w:2});
+    b.push({t:'line',x1:295,y1:330,x2:326,y2:330,w:2});
+    b.push({t:'line',x1:295,y1:330,x2:325,y2:345,w:2});
+    b.push({t:'line',x1:295,y1:330,x2:320,y2:362,w:2});
+    // dorsal fin
+    b.push({t:'line',x1:160,y1:330,x2:155,y2:296,w:2});
+    b.push({t:'line',x1:185,y1:330,x2:192,y2:292,w:2});
+    b.push({t:'line',x1:155,y1:296,x2:192,y2:292,w:2});
+    return b;
+  })()},
+  // 1: AMMONITE
+  {name:'AMMONITE',bones:(()=>{
+    const b=[];
+    const cx=188,cy=330;
+    [85,62,42,25,12].forEach(r=>{
+      b.push({t:'arc',x:cx,y:cy,r,a1:0.2,a2:Math.PI*1.85,w:3});
+    });
+    // radial ridges
+    for(let i=0;i<10;i++){
+      const a=0.3+i*(Math.PI*1.5/10);
+      b.push({t:'line',x1:cx+Math.cos(a)*14,y1:cy+Math.sin(a)*14,x2:cx+Math.cos(a)*82,y2:cy+Math.sin(a)*82,w:1.5});
+    }
+    // mouth/opening
+    b.push({t:'line',x1:cx+72,y1:cy-20,x2:cx+88,y2:cy-34,w:2});
+    b.push({t:'line',x1:cx+72,y1:cy+20,x2:cx+88,y2:cy+34,w:2});
+    return b;
+  })()},
+  // 2: TRILOBITE
+  {name:'TRILOBITE',bones:(()=>{
+    const b=[];
+    const cx=188,cy=330;
+    // center lobe
+    b.push({t:'ellipse',x:cx,y:cy,rx:22,ry:70});
+    // left lobe
+    b.push({t:'ellipse',x:cx-36,y:cy,rx:16,ry:60});
+    // right lobe
+    b.push({t:'ellipse',x:cx+36,y:cy,rx:16,ry:60});
+    // head shield
+    b.push({t:'ellipse',x:cx,y:cy-72,rx:46,ry:20});
+    // segment lines
+    for(let i=0;i<8;i++){
+      const y=cy-50+i*14;
+      b.push({t:'line',x1:cx-54,y1:y,x2:cx+54,y2:y,w:1.5});
+    }
+    // tail
+    b.push({t:'arc',x:cx,y:cy+70,r:28,a1:0,a2:Math.PI,w:2});
+    return b;
+  })()},
+  // 3: FERN
+  {name:'FERN',bones:(()=>{
+    const b=[];
+    const cx=188;
+    // main stem
+    b.push({t:'line',x1:cx,y1:460,x2:cx,y2:200,w:3});
+    // branches left and right
+    const n=10;
+    for(let i=0;i<n;i++){
+      const y=440-i*24;
+      const len=16+i*4;
+      // left
+      b.push({t:'line',x1:cx,y1:y,x2:cx-len,y2:y-len*0.7,w:2});
+      // sub-branches left
+      b.push({t:'line',x1:cx-len*0.4,y1:y-len*0.28,x2:cx-len*0.4-len*0.35,y2:y-len*0.28-len*0.4,w:1.2});
+      // right
+      b.push({t:'line',x1:cx,y1:y,x2:cx+len,y2:y-len*0.7,w:2});
+      // sub-branches right
+      b.push({t:'line',x1:cx+len*0.4,y1:y-len*0.28,x2:cx+len*0.4+len*0.35,y2:y-len*0.28-len*0.4,w:1.2});
+    }
+    return b;
+  })()},
+  // 4: DINO SKULL
+  {name:'DINO SKULL',bones:(()=>{
+    const b=[];
+    const cx=188,cy=315;
+    // cranium
+    b.push({t:'ellipse',x:cx,y:cy,rx:72,ry:54});
+    // snout
+    b.push({t:'ellipse',x:cx+80,y:cy+18,rx:40,ry:28});
+    // eye socket
+    b.push({t:'circle',x:cx+20,y:cy-14,r:20});
+    // nostril
+    b.push({t:'circle',x:cx+106,y:cy+6,r:8});
+    // teeth
+    const tx=cx+60,ty=cy+38;
+    for(let i=0;i<6;i++){
+      b.push({t:'rect',x:tx+i*16,y:ty,w:10,h:16});
+    }
+    // jaw line
+    b.push({t:'line',x1:cx+40,y1:ty+16,x2:cx+135,y2:ty+16,w:2});
+    // top skull ridge
+    b.push({t:'line',x1:cx-60,y1:cy-30,x2:cx+28,y2:cy-50,w:2});
+    // temporal fenestra
+    b.push({t:'ellipse',x:cx-20,y:cy+5,rx:20,ry:14});
+    return b;
+  })()}
+];
+
+// ── State ────────────────────────────────────────────────
+let gs='start'; // start | play | over
+let level=1,score=0,best=+localStorage.getItem('fossil_best')||0;
+let lives=3,dmg=0,reveal=0;
+const MAX_DMG=5;
+let brushing=false,brushX=0,brushY=0,brushPX=0,brushPY=0,brushT=0;
+let tooFastTimer=0,flashRed=0;
+let popups=[],revealCheckTimer=0;
+let brushSndTimer=0;
+let winAnim=0,winAnimActive=false;
+
+// ── Init round ───────────────────────────────────────────
+function initRound(){
+  dirtCv.width=W;dirtCv.height=H;
+  // fill dirt
+  dirtCtx.fillStyle='#5c3d1e';
+  dirtCtx.fillRect(0,0,W,H);
+  // texture dots
+  for(let i=0;i<600;i++){
+    const x=Math.random()*W,y=Math.random()*H;
+    const r=Math.random()*2+0.5;
+    const lum=Math.random()<0.5?40:80;
+    dirtCtx.fillStyle=`rgba(${lum},${lum*0.6},${lum*0.3},0.5)`;
+    dirtCtx.beginPath();dirtCtx.arc(x,y,r,0,Math.PI*2);dirtCtx.fill();
+  }
+  dmg=0;reveal=0;popups=[];tooFastTimer=0;flashRed=0;
+  brushing=false;winAnimActive=false;winAnim=0;
+}
+
+// ── Build sample points ───────────────────────────────────
+function buildSamples(bones){
+  const pts=[];
+  for(const b of bones){
+    if(b.t==='line'){
+      const dx=b.x2-b.x1,dy=b.y2-b.y1,len=Math.sqrt(dx*dx+dy*dy);
+      const steps=Math.max(2,Math.floor(len/10));
+      for(let i=0;i<=steps;i++){
+        pts.push({x:b.x1+dx*(i/steps),y:b.y1+dy*(i/steps)});
+      }
+    }else if(b.t==='circle'){
+      pts.push({x:b.x,y:b.y});
+      for(let i=0;i<8;i++){const a=i*Math.PI/4;pts.push({x:b.x+Math.cos(a)*b.r,y:b.y+Math.sin(a)*b.r});}
+    }else if(b.t==='ellipse'){
+      pts.push({x:b.x,y:b.y});
+      for(let i=0;i<8;i++){const a=i*Math.PI/4;pts.push({x:b.x+Math.cos(a)*b.rx,y:b.y+Math.sin(a)*b.ry});}
+    }else if(b.t==='arc'){
+      for(let i=0;i<=12;i++){const a=b.a1+(b.a2-b.a1)*(i/12);pts.push({x:b.x+Math.cos(a)*b.r,y:b.y+Math.sin(a)*b.r});}
+    }else if(b.t==='rect'){
+      pts.push({x:b.x+b.w/2,y:b.y+b.h/2});
+      pts.push({x:b.x,y:b.y});pts.push({x:b.x+b.w,y:b.y});
+      pts.push({x:b.x,y:b.y+b.h});pts.push({x:b.x+b.w,y:b.y+b.h});
+    }
+  }
+  return pts;
+}
+
+// ── Measure reveal ────────────────────────────────────────
+function measureReveal(){
+  const fi=(level-1)%FOSSILS.length;
+  const pts=buildSamples(FOSSILS[fi].bones);
+  if(!pts.length)return 0;
+  let revealed=0;
+  const id=dirtCtx.getImageData(0,0,dirtCv.width,dirtCv.height);
+  for(const p of pts){
+    const px=Math.round(p.x*scl),py=Math.round(p.y*scl);
+    if(px<0||py<0||px>=dirtCv.width||py>=dirtCv.height)continue;
+    const idx=(py*dirtCv.width+px)*4+3;
+    if(id.data[idx]<128)revealed++;
+  }
+  return revealed/pts.length;
+}
+
+// ── Draw fossil ───────────────────────────────────────────
+function drawFossil(bones){
+  ctx.save();
+  ctx.strokeStyle='#e8d5a0';
+  ctx.fillStyle='rgba(232,213,160,0.7)';
+  ctx.lineCap='round';ctx.lineJoin='round';
+  for(const b of bones){
+    if(b.t==='line'){
+      ctx.lineWidth=(b.w||2)*scl;
+      ctx.beginPath();ctx.moveTo(b.x1*scl,b.y1*scl);ctx.lineTo(b.x2*scl,b.y2*scl);ctx.stroke();
+    }else if(b.t==='circle'){
+      ctx.lineWidth=2*scl;
+      ctx.beginPath();ctx.arc(b.x*scl,b.y*scl,b.r*scl,0,Math.PI*2);ctx.stroke();
+    }else if(b.t==='ellipse'){
+      ctx.lineWidth=2*scl;
+      ctx.beginPath();ctx.ellipse(b.x*scl,b.y*scl,b.rx*scl,b.ry*scl,0,0,Math.PI*2);ctx.stroke();
+    }else if(b.t==='arc'){
+      ctx.lineWidth=(b.w||2)*scl;
+      ctx.beginPath();ctx.arc(b.x*scl,b.y*scl,b.r*scl,b.a1,b.a2);ctx.stroke();
+    }else if(b.t==='rect'){
+      ctx.lineWidth=2*scl;
+      ctx.strokeRect(b.x*scl,b.y*scl,b.w*scl,b.h*scl);
+    }
+  }
+  ctx.restore();
+}
+
+// ── Draw HUD ─────────────────────────────────────────────
+function drawHUD(){
+  const hh=68*scl;
+  ctx.fillStyle='rgba(10,6,2,0.85)';
+  ctx.fillRect(0,0,W,hh);
+
+  // Level / Score / Best
+  const fs=14*scl;
+  ctx.font=`bold ${fs}px monospace`;
+  ctx.textAlign='left';ctx.fillStyle='#ffd700';
+  ctx.fillText(`LV ${level}`,8*scl,18*scl);
+  ctx.textAlign='center';ctx.fillStyle='#fff';
+  ctx.font=`bold ${16*scl}px monospace`;
+  ctx.fillText(score,W/2,18*scl);
+  ctx.textAlign='right';ctx.fillStyle='rgba(255,215,0,0.6)';
+  ctx.font=`${12*scl}px monospace`;
+  ctx.fillText(`BEST ${best}`,W-8*scl,18*scl);
+
+  // Lives circles
+  for(let i=0;i<3;i++){
+    ctx.beginPath();
+    ctx.arc((16+i*20)*scl,40*scl,7*scl,0,Math.PI*2);
+    ctx.fillStyle=i<lives?'#e74c3c':'rgba(255,255,255,0.15)';
+    ctx.fill();
+  }
+
+  // Damage bar (left side)
+  const barW=90*scl,barH=10*scl,barY=50*scl;
+  ctx.fillStyle='rgba(255,255,255,0.1)';
+  ctx.fillRect(8*scl,barY,barW,barH);
+  const dfrac=dmg/MAX_DMG;
+  ctx.fillStyle=dfrac>0.6?'#e74c3c':dfrac>0.3?'#f39c12':'#2ecc71';
+  ctx.fillRect(8*scl,barY,barW*dfrac,barH);
+  ctx.fillStyle='rgba(255,255,255,0.4)';
+  ctx.font=`${9*scl}px monospace`;ctx.textAlign='left';
+  ctx.fillText('DMG',8*scl,barY-2);
+
+  // Reveal bar (right side)
+  ctx.fillStyle='rgba(255,255,255,0.1)';
+  ctx.fillRect(W-98*scl,barY,barW,barH);
+  ctx.fillStyle='#ffd700';
+  ctx.fillRect(W-98*scl,barY,barW*Math.min(1,reveal),barH);
+  ctx.fillStyle='rgba(255,255,255,0.4)';
+  ctx.font=`${9*scl}px monospace`;ctx.textAlign='right';
+  ctx.fillText('REVEAL',W-8*scl,barY-2);
+
+  ctx.textAlign='left';
+}
+
+// ── Draw start ───────────────────────────────────────────
+function drawStart(){
+  ctx.fillStyle='#1a0f05';ctx.fillRect(0,0,W,H);
+  // bg texture
+  ctx.fillStyle='rgba(92,61,30,0.3)';
+  for(let i=0;i<300;i++){ctx.fillRect(Math.random()*W,Math.random()*H,2,2);}
+
+  ctx.textAlign='center';
+  ctx.font=`bold ${52*scl}px monospace`;
+  ctx.shadowColor='#ffd700';ctx.shadowBlur=20*scl;
+  ctx.fillStyle='#ffd700';
+  ctx.fillText('FOSSIL',W/2,220*scl);
+  ctx.shadowBlur=0;
+
+  ctx.font=`${13*scl}px monospace`;
+  ctx.fillStyle='rgba(232,213,160,0.8)';
+  ctx.fillText('BRUSH SLOWLY TO REVEAL',W/2,270*scl);
+  ctx.fillText('THE ANCIENT FOSSIL',W/2,290*scl);
+  ctx.fillText('TOO FAST = DAMAGE!',W/2,318*scl);
+
+  const pulse=0.6+Math.sin(Date.now()/600)*0.4;
+  ctx.globalAlpha=pulse;
+  ctx.font=`bold ${18*scl}px monospace`;
+  ctx.fillStyle='#fff';
+  ctx.fillText('TAP TO BEGIN',W/2,390*scl);
+  ctx.globalAlpha=1;
+
+  if(best>0){
+    ctx.font=`${12*scl}px monospace`;
+    ctx.fillStyle='rgba(255,215,0,0.5)';
+    ctx.fillText(`BEST ${best}`,W/2,420*scl);
+  }
+}
+
+// ── Draw over ────────────────────────────────────────────
+function drawOver(){
+  ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';
+  ctx.font=`bold ${40*scl}px monospace`;
+  ctx.fillStyle='#e74c3c';
+  ctx.shadowColor='#e74c3c';ctx.shadowBlur=16*scl;
+  ctx.fillText('GAME OVER',W/2,240*scl);
+  ctx.shadowBlur=0;
+  ctx.font=`${18*scl}px monospace`;
+  ctx.fillStyle='#fff';
+  ctx.fillText(`SCORE  ${score}`,W/2,290*scl);
+  ctx.fillStyle='#ffd700';
+  ctx.fillText(`BEST   ${best}`,W/2,318*scl);
+  const pulse=0.6+Math.sin(Date.now()/600)*0.4;
+  ctx.globalAlpha=pulse;
+  ctx.font=`bold ${16*scl}px monospace`;
+  ctx.fillStyle='#fff';
+  ctx.fillText('TAP TO RETRY',W/2,380*scl);
+  ctx.globalAlpha=1;
+}
+
+// ── Draw win overlay ─────────────────────────────────────
+function drawWin(){
+  ctx.fillStyle=`rgba(255,215,0,${Math.min(0.3,winAnim*0.3)})`;
+  ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';
+  ctx.font=`bold ${36*scl}px monospace`;
+  ctx.shadowColor='#ffd700';ctx.shadowBlur=20*scl;
+  ctx.fillStyle='#ffd700';
+  ctx.fillText('FOSSIL REVEALED!',W/2,260*scl);
+  ctx.shadowBlur=0;
+  ctx.font=`${18*scl}px monospace`;
+  ctx.fillStyle='#fff';
+  ctx.fillText(`+${Math.floor((1-dmg/MAX_DMG)*100*level)} PTS`,W/2,300*scl);
+  ctx.font=`${13*scl}px monospace`;
+  ctx.fillStyle='rgba(255,255,255,0.7)';
+  ctx.fillText('NEXT FOSSIL...',W/2,330*scl);
+}
+
+// ── Main loop ─────────────────────────────────────────────
+let lastTs=0;
+function loop(ts){
+  const dt=Math.min(ts-lastTs,50);lastTs=ts;
+  requestAnimationFrame(loop);
+
+  if(gs==='start'){drawStart();return;}
+  if(gs==='over'){
+    // draw play area background first
+    ctx.fillStyle='#1a0f05';ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#2a1a08';ctx.fillRect(0,68*scl,W,H-68*scl);
+    drawOver();return;
+  }
+
+  // play state
+  const fi=(level-1)%FOSSILS.length;
+  const fossil=FOSSILS[fi];
+
+  // background
+  ctx.fillStyle='#1a0f05';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#2a1a08';ctx.fillRect(0,68*scl,W,H-68*scl);
+
+  // draw fossil underneath
+  drawFossil(fossil.bones);
+
+  // draw dirt on top
+  ctx.drawImage(dirtCv,0,0);
+
+  // brush cursor
+  if(brushing){
+    ctx.save();
+    ctx.strokeStyle='rgba(255,255,255,0.6)';
+    ctx.lineWidth=1.5*scl;
+    ctx.setLineDash([4*scl,4*scl]);
+    ctx.beginPath();ctx.arc(brushX,brushY,18*scl,0,Math.PI*2);ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // flash red overlay on damage
+  if(flashRed>0){
+    ctx.fillStyle=`rgba(180,0,0,${flashRed*0.35})`;
+    ctx.fillRect(0,0,W,H);
+    flashRed=Math.max(0,flashRed-dt/200);
+  }
+
+  // too fast popup
+  if(tooFastTimer>0){
+    tooFastTimer=Math.max(0,tooFastTimer-dt);
+    const alpha=Math.min(1,tooFastTimer/300);
+    ctx.save();ctx.globalAlpha=alpha;
+    ctx.textAlign='center';
+    ctx.font=`bold ${22*scl}px monospace`;
+    ctx.fillStyle='#e74c3c';
+    ctx.shadowColor='#e74c3c';ctx.shadowBlur=10*scl;
+    ctx.fillText('TOO FAST!',W/2,160*scl);
+    ctx.shadowBlur=0;ctx.restore();
+  }
+
+  // popups
+  for(const p of popups){
+    ctx.save();ctx.globalAlpha=Math.max(0,p.life);
+    ctx.textAlign='center';
+    ctx.font=`bold ${16*scl}px monospace`;
+    ctx.fillStyle=p.col;
+    ctx.fillText(p.txt,p.x,p.y);
+    ctx.restore();
+    p.y-=0.5;p.life-=dt/1200;
+  }
+  popups=popups.filter(p=>p.life>0);
+
+  // fossil name
+  ctx.textAlign='center';
+  ctx.font=`${11*scl}px monospace`;
+  ctx.fillStyle='rgba(232,213,160,0.4)';
+  ctx.fillText(fossil.name,W/2,86*scl);
+
+  // reveal check timer
+  revealCheckTimer-=dt;
+  if(revealCheckTimer<=0){
+    revealCheckTimer=500;
+    reveal=measureReveal();
+    if(reveal>=0.72&&!winAnimActive){
+      winAnimActive=true;winAnim=0;
+      snd('win');
+      const pts=Math.floor((1-dmg/MAX_DMG)*100*level);
+      score+=pts;
+      if(score>best){best=score;localStorage.setItem('fossil_best',best);}
+      setTimeout(()=>{
+        level++;
+        initRound();
+        winAnimActive=false;
+      },2200);
+    }
+  }
+
+  if(winAnimActive){
+    winAnim=Math.min(1,winAnim+dt/400);
+    drawWin();
+  }
+
+  drawHUD();
+}
+
+// ── Brush ─────────────────────────────────────────────────
+const SPEED_LIMIT=0.7; // design px per ms
+let lastBrushSnd=0;
+
+function applyBrush(x,y,px,py,dt){
+  if(dt<=0)return;
+  const dx=x-px,dy=y-py;
+  const dist=Math.sqrt(dx*dx+dy*dy);
+  // convert canvas px to design px
+  const designDist=dist/scl;
+  const speed=designDist/dt;
+
+  if(speed>SPEED_LIMIT){
+    if(flashRed<=0.1){
+      dmg++;
+      flashRed=1;
+      tooFastTimer=600;
+      snd('damage');
+      if(dmg>=MAX_DMG){
+        lives--;
+        if(lives<=0){setTimeout(()=>{gs='over';},600);}
+        else{setTimeout(()=>{initRound();},600);}
+      }
+    }
+    return;
+  }
+
+  // erase dirt at brush position
+  dirtCtx.save();
+  dirtCtx.globalCompositeOperation='destination-out';
+  const r=18*scl;
+  const g=dirtCtx.createRadialGradient(x,y,0,x,y,r);
+  g.addColorStop(0,'rgba(0,0,0,1)');
+  g.addColorStop(0.6,'rgba(0,0,0,0.7)');
+  g.addColorStop(1,'rgba(0,0,0,0)');
+  dirtCtx.fillStyle=g;
+  dirtCtx.beginPath();dirtCtx.arc(x,y,r,0,Math.PI*2);dirtCtx.fill();
+  dirtCtx.restore();
+
+  // brush sound throttle
+  const now=Date.now();
+  if(now-lastBrushSnd>120){lastBrushSnd=now;snd('brush');}
+}
+
+// ── Input ─────────────────────────────────────────────────
+function getPos(e){
+  const r=cv.getBoundingClientRect();
+  return {x:(e.clientX-r.left)*(W/r.width),y:(e.clientY-r.top)*(H/r.height)};
+}
+
+cv.addEventListener('pointerdown',e=>{
+  initAC();
+  if(gs==='start'){gs='play';initRound();return;}
+  if(gs==='over'){gs='play';score=0;level=1;lives=3;initRound();return;}
+  if(winAnimActive)return;
+  const p=getPos(e);
+  brushing=true;brushX=p.x;brushY=p.y;brushPX=p.x;brushPY=p.y;brushT=performance.now();
+},{passive:true});
+
+cv.addEventListener('pointermove',e=>{
+  if(!brushing||gs!=='play'||winAnimActive)return;
+  const p=getPos(e);
+  const now=performance.now();
+  const dt=now-brushT;
+  applyBrush(p.x,p.y,brushPX,brushPY,dt);
+  brushPX=brushX;brushPY=brushY;
+  brushX=p.x;brushY=p.y;brushT=now;
+},{passive:true});
+
+cv.addEventListener('pointerup',()=>{brushing=false;},{passive:true});
+cv.addEventListener('pointercancel',()=>{brushing=false;},{passive:true});
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

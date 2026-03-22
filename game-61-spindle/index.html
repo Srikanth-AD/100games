@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>SPINDLE</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  background:#0d0906;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden; touch-action:none; user-select:none;
+  -webkit-user-select:none;
+}
+canvas { display:block; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script>
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let W, H;
+function resize() {
+  W = cv.width = window.innerWidth;
+  H = cv.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function sfx(type) {
+  try {
+    const o = AC.createOscillator();
+    const g = AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    if (type === 'wind') {
+      o.type = 'sine';
+      o.frequency.setValueAtTime(660, AC.currentTime);
+      o.frequency.exponentialRampToValueAtTime(880, AC.currentTime + 0.08);
+      g.gain.setValueAtTime(0.1, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.12);
+      o.start(); o.stop(AC.currentTime + 0.12);
+    } else if (type === 'knot') {
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(300, AC.currentTime);
+      o.frequency.exponentialRampToValueAtTime(150, AC.currentTime + 0.2);
+      g.gain.setValueAtTime(0.2, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.22);
+      o.start(); o.stop(AC.currentTime + 0.22);
+    } else if (type === 'unwind') {
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(440, AC.currentTime);
+      o.frequency.exponentialRampToValueAtTime(220, AC.currentTime + 0.07);
+      g.gain.setValueAtTime(0.08, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.09);
+      o.start(); o.stop(AC.currentTime + 0.09);
+    } else if (type === 'gameover') {
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(440, AC.currentTime);
+      o.frequency.exponentialRampToValueAtTime(110, AC.currentTime + 0.7);
+      g.gain.setValueAtTime(0.2, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.7);
+      o.start(); o.stop(AC.currentTime + 0.7);
+    } else if (type === 'complete') {
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(523, AC.currentTime);
+      o.frequency.setValueAtTime(659, AC.currentTime + 0.12);
+      o.frequency.setValueAtTime(784, AC.currentTime + 0.24);
+      o.frequency.setValueAtTime(1047, AC.currentTime + 0.36);
+      g.gain.setValueAtTime(0.22, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.55);
+      o.start(); o.stop(AC.currentTime + 0.55);
+    }
+  } catch(e) {}
+}
+
+// --- Constants ---
+const MAX_THREAD = 300;
+const SPOOL_SIDES = 6;
+
+// --- State ---
+let gs = 'start';
+let score = 0, best = +localStorage.getItem('spindle_best') || 0;
+let timeLeft = 60, lastTick = 0;
+let threadLen = MAX_THREAD; // remaining unspooled
+let spoolAngle = 0;
+let frameCount = 0;
+let knots = [];
+let popups = [];
+let knotSlowTimer = 0; // frames of slow
+let windSfxTimer = 0;
+
+// Drag tracking
+let isDragging = false;
+let dragAngle = 0;
+let prevDragAngle = 0;
+let dragAngularVel = 0;
+let touchId = null;
+
+// Thread wave offset
+let waveOffset = 0;
+
+function spoolCX() { return W / 2; }
+function spoolCY() { return H * 0.46; }
+function spoolR() { return Math.min(W, H) * 0.1; }
+
+// Knot class
+class Knot {
+  constructor(threadFrac) {
+    // threadFrac: position along thread (0=spool, 1=far end)
+    this.frac = threadFrac;
+    this.hits = 0;
+    this.flash = 0;
+    this.alive = true;
+  }
+  getPos() {
+    // Thread extends from spool edge outward (downward for simplicity, with wave)
+    const sr = spoolR();
+    const cx = spoolCX(), cy = spoolCY();
+    const threadDir = Math.PI * 0.5 + 0.4; // angle thread hangs
+    const dist = sr + this.frac * threadLen;
+    const waveMag = 12 * Math.sin(this.frac * Math.PI * 3 + waveOffset);
+    const perpX = Math.cos(threadDir + Math.PI / 2) * waveMag;
+    const perpY = Math.sin(threadDir + Math.PI / 2) * waveMag;
+    return {
+      x: cx + Math.cos(threadDir) * dist + perpX,
+      y: cy + Math.sin(threadDir) * dist + perpY
+    };
+  }
+  draw() {
+    if (!this.alive) return;
+    const p = this.getPos();
+    const r = 9 + 3 * Math.sin(frameCount * 0.15);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = this.flash > 0 ? '#ff9900' : '#cc2200';
+    ctx.fill();
+    ctx.strokeStyle = '#ff6666';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // Knot symbol
+    ctx.fillStyle = '#fff';
+    ctx.font = `bold ${Math.floor(r)}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('✕', p.x, p.y);
+    ctx.textBaseline = 'alphabetic';
+    if (this.flash > 0) this.flash--;
+  }
+}
+
+class Popup {
+  constructor(x, y, text, color) {
+    this.x = x; this.y = y;
+    this.text = text; this.color = color;
+    this.life = 1; this.vy = -2;
+  }
+  update() { this.y += this.vy; this.life -= 0.018; }
+  draw() {
+    ctx.globalAlpha = Math.max(0, this.life);
+    ctx.font = `bold ${Math.max(16, Math.floor(W * 0.05))}px monospace`;
+    ctx.fillStyle = this.color;
+    ctx.textAlign = 'center';
+    ctx.fillText(this.text, this.x, this.y);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function spawnKnots() {
+  knots = [];
+  const count = 2 + Math.floor(Math.random() * 3); // 2-4
+  for (let i = 0; i < count; i++) {
+    knots.push(new Knot(0.15 + Math.random() * 0.75));
+  }
+}
+
+function drawSpool(cx, cy, sr, angle) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+  // Spool body (hexagon)
+  const woodColors = ['#8B5E3C', '#A0714F', '#8B5E3C', '#7A4F30', '#A0714F', '#7A4F30'];
+  ctx.beginPath();
+  for (let i = 0; i < SPOOL_SIDES; i++) {
+    const a = (i / SPOOL_SIDES) * Math.PI * 2 - Math.PI / 2;
+    const px = Math.cos(a) * sr, py = Math.sin(a) * sr;
+    i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  // Wood fill
+  const grad = ctx.createRadialGradient(0, 0, sr * 0.1, 0, 0, sr);
+  grad.addColorStop(0, '#C8956A');
+  grad.addColorStop(0.5, '#A0714F');
+  grad.addColorStop(1, '#6B3F1E');
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.strokeStyle = '#4a2a0a';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  // Inner hub
+  ctx.beginPath();
+  ctx.arc(0, 0, sr * 0.38, 0, Math.PI * 2);
+  ctx.fillStyle = '#6B3F1E';
+  ctx.fill();
+  ctx.strokeStyle = '#3a1a00';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  // Spokes
+  ctx.strokeStyle = 'rgba(200,149,106,0.4)';
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < SPOOL_SIDES; i++) {
+    const a = (i / SPOOL_SIDES) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a) * sr * 0.38, Math.sin(a) * sr * 0.38);
+    ctx.lineTo(Math.cos(a) * sr * 0.85, Math.sin(a) * sr * 0.85);
+    ctx.stroke();
+  }
+  // Center hole
+  ctx.beginPath();
+  ctx.arc(0, 0, sr * 0.14, 0, Math.PI * 2);
+  ctx.fillStyle = '#1a0900';
+  ctx.fill();
+  ctx.restore();
+  // Flanges (top and bottom plates)
+  ctx.save();
+  ctx.translate(cx, cy);
+  const fw = sr * 1.3;
+  const fh = sr * 0.22;
+  for (const fy of [-sr * 0.62, sr * 0.62]) {
+    ctx.beginPath();
+    ctx.ellipse(0, fy, fw, fh, 0, 0, Math.PI * 2);
+    const fg = ctx.createLinearGradient(-fw, fy - fh, fw, fy + fh);
+    fg.addColorStop(0, '#6B3F1E');
+    fg.addColorStop(0.5, '#A0714F');
+    fg.addColorStop(1, '#6B3F1E');
+    ctx.fillStyle = fg;
+    ctx.fill();
+    ctx.strokeStyle = '#3a1a00';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawThread(cx, cy, sr) {
+  if (threadLen <= 0) return;
+  const threadDir = Math.PI * 0.5 + 0.4;
+  const startX = cx + Math.cos(threadDir) * sr;
+  const startY = cy + Math.sin(threadDir) * sr;
+  const totalLen = threadLen;
+  const segments = 40;
+  ctx.beginPath();
+  ctx.moveTo(startX, startY);
+  const knotSlow = knotSlowTimer > 0;
+  const threadColor = knotSlow ? '#ff9900' : '#d4a06a';
+  for (let i = 1; i <= segments; i++) {
+    const t = i / segments;
+    const dist = sr + t * totalLen;
+    const waveMag = 10 * Math.sin(t * Math.PI * 3 + waveOffset);
+    const perpX = Math.cos(threadDir + Math.PI / 2) * waveMag;
+    const perpY = Math.sin(threadDir + Math.PI / 2) * waveMag;
+    const px = cx + Math.cos(threadDir) * dist + perpX;
+    const py = cy + Math.sin(threadDir) * dist + perpY;
+    ctx.lineTo(px, py);
+  }
+  ctx.strokeStyle = threadColor;
+  ctx.lineWidth = knotSlow ? 3 : 2;
+  ctx.stroke();
+  // Fuzzy thread end ball
+  const endDist = sr + totalLen;
+  const endWave = 10 * Math.sin(waveOffset);
+  const perpEnd = Math.cos(threadDir + Math.PI / 2) * endWave;
+  const perpEndY = Math.sin(threadDir + Math.PI / 2) * endWave;
+  const ex = cx + Math.cos(threadDir) * endDist + perpEnd;
+  const ey = cy + Math.sin(threadDir) * endDist + perpEndY;
+  ctx.beginPath();
+  ctx.arc(ex, ey, 5, 0, Math.PI * 2);
+  ctx.fillStyle = '#c8a060';
+  ctx.fill();
+}
+
+function drawWindArrows(cx, cy, sr, isClockwise) {
+  const arrowR = sr * 1.7;
+  const color = isClockwise ? '#44dd44' : '#dd4444';
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.5;
+  ctx.globalAlpha = 0.75;
+  // Draw 3 curved arrows around spool
+  for (let i = 0; i < 3; i++) {
+    const startAngle = (i / 3) * Math.PI * 2 + (isClockwise ? 0.2 : -0.2);
+    const endAngle = startAngle + (isClockwise ? 0.9 : -0.9);
+    ctx.beginPath();
+    ctx.arc(cx, cy, arrowR, startAngle, endAngle, !isClockwise);
+    ctx.stroke();
+    // Arrowhead
+    const tipA = endAngle;
+    const tipX = cx + Math.cos(tipA) * arrowR;
+    const tipY = cy + Math.sin(tipA) * arrowR;
+    const headA = tipA + (isClockwise ? Math.PI / 2 : -Math.PI / 2);
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(tipX + Math.cos(headA - 0.4) * 10, tipY + Math.sin(headA - 0.4) * 10);
+    ctx.lineTo(tipX + Math.cos(headA + 0.4) * 10, tipY + Math.sin(headA + 0.4) * 10);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawProgressBar() {
+  const barW = Math.min(W * 0.7, 280);
+  const barH = 18;
+  const bx = (W - barW) / 2;
+  const by = H * 0.83;
+  // BG
+  ctx.fillStyle = '#2a1a08';
+  ctx.beginPath();
+  ctx.roundRect ? ctx.roundRect(bx, by, barW, barH, 8) : ctx.rect(bx, by, barW, barH);
+  ctx.fill();
+  // Fill
+  const wound = MAX_THREAD - threadLen;
+  const frac = Math.max(0, Math.min(1, wound / MAX_THREAD));
+  if (frac > 0) {
+    const grad = ctx.createLinearGradient(bx, 0, bx + barW * frac, 0);
+    grad.addColorStop(0, '#c8a060');
+    grad.addColorStop(1, '#ffd700');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    if (ctx.roundRect) {
+      ctx.roundRect(bx, by, barW * frac, barH, frac >= 1 ? 8 : [8, 0, 0, 8]);
+    } else {
+      ctx.rect(bx, by, barW * frac, barH);
+    }
+    ctx.fill();
+  }
+  // Border
+  ctx.strokeStyle = '#6b3f1e';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(bx, by, barW, barH, 8);
+  } else {
+    ctx.rect(bx, by, barW, barH);
+  }
+  ctx.stroke();
+  // Label
+  const wound2 = Math.round(MAX_THREAD - threadLen);
+  ctx.font = `bold ${Math.max(11, Math.floor(W * 0.03))}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#fff8e7';
+  ctx.fillText(`Thread wound: ${wound2}/${MAX_THREAD} cm`, W / 2, by + barH + 18);
+}
+
+function drawHUD() {
+  const fs = Math.max(14, Math.floor(W * 0.04));
+  const pad = 14;
+  ctx.font = `bold ${fs}px monospace`;
+  // Score
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#ffd700';
+  ctx.fillText('SCORE: ' + Math.round(score), pad, pad + fs);
+  // Timer
+  ctx.textAlign = 'center';
+  const tc = timeLeft <= 10 ? '#ff4444' : '#e0c080';
+  ctx.fillStyle = tc;
+  ctx.fillText('TIME: ' + timeLeft, W / 2, pad + fs);
+  // Best
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#6b3f1e';
+  ctx.fillText('BEST: ' + Math.round(best), W - pad, pad + fs);
+  // Knot slow indicator
+  if (knotSlowTimer > 0) {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ff9900';
+    ctx.font = `bold ${Math.max(12, Math.floor(W * 0.038))}px monospace`;
+    const pulse = 0.7 + 0.3 * Math.sin(frameCount * 0.2);
+    ctx.globalAlpha = pulse;
+    ctx.fillText('KNOT! SLOWED!', W / 2, H * 0.14);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawStart() {
+  ctx.fillStyle = '#0d0906';
+  ctx.fillRect(0, 0, W, H);
+  // Draw decorative spool
+  drawSpool(spoolCX(), spoolCY() * 0.55, spoolR() * 0.8, frameCount * 0.01);
+  const ts = Math.max(36, Math.floor(W * 0.13));
+  ctx.textAlign = 'center';
+  ctx.font = `bold ${ts}px monospace`;
+  ctx.fillStyle = '#ffd700';
+  ctx.shadowColor = '#c8a060';
+  ctx.shadowBlur = 20;
+  ctx.fillText('SPINDLE', W / 2, H * 0.3);
+  ctx.shadowBlur = 0;
+  ctx.font = `${Math.max(12, Math.floor(W * 0.036))}px monospace`;
+  ctx.fillStyle = '#c8a060';
+  ctx.fillText('wind the thread onto the spool', W / 2, H * 0.39);
+  ctx.font = `bold ${Math.max(12, Math.floor(W * 0.032))}px monospace`;
+  const lines = [
+    'Drag CLOCKWISE around the spool',
+    'to wind thread → score points',
+    'Red KNOTS slow you down — avoid them!',
+    '60 seconds — wind as much as you can!'
+  ];
+  lines.forEach((l, i) => {
+    ctx.fillStyle = i < 2 ? '#ffd700' : '#a08050';
+    ctx.fillText(l, W / 2, H * 0.52 + i * Math.max(22, H * 0.055));
+  });
+  const pulse = 0.7 + 0.3 * Math.sin(frameCount * 0.08);
+  ctx.globalAlpha = pulse;
+  ctx.fillStyle = '#c8a060';
+  ctx.font = `bold ${Math.max(16, Math.floor(W * 0.055))}px monospace`;
+  ctx.fillText('TAP TO START', W / 2, H * 0.83);
+  ctx.globalAlpha = 1;
+  if (best > 0) {
+    ctx.font = `${Math.max(11, Math.floor(W * 0.028))}px monospace`;
+    ctx.fillStyle = '#3a2010';
+    ctx.fillText('BEST: ' + Math.round(best) + ' cm', W / 2, H * 0.9);
+  }
+}
+
+function drawOver() {
+  ctx.fillStyle = 'rgba(8,5,2,0.9)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  const ts = Math.max(36, Math.floor(W * 0.12));
+  ctx.font = `bold ${ts}px monospace`;
+  ctx.fillStyle = '#ffd700';
+  ctx.shadowColor = '#c8a060';
+  ctx.shadowBlur = 16;
+  ctx.fillText('SPINDLE', W / 2, H * 0.22);
+  ctx.shadowBlur = 0;
+  ctx.font = `bold ${Math.max(14, Math.floor(W * 0.04))}px monospace`;
+  ctx.fillStyle = '#c8a060';
+  ctx.fillText('TIME\'S UP!', W / 2, H * 0.32);
+  ctx.font = `bold ${Math.max(40, Math.floor(W * 0.14))}px monospace`;
+  ctx.fillStyle = '#fff';
+  ctx.fillText(Math.round(score), W / 2, H * 0.5);
+  ctx.font = `bold ${Math.max(11, Math.floor(W * 0.03))}px monospace`;
+  ctx.fillStyle = '#c8a060';
+  ctx.fillText('THREAD WOUND: ' + Math.round(MAX_THREAD - threadLen) + ' cm', W / 2, H * 0.57);
+  if (score >= best && best >= 0) {
+    ctx.fillStyle = '#ffd700';
+    ctx.fillText('NEW BEST!', W / 2, H * 0.64);
+  } else {
+    ctx.fillStyle = '#3a2010';
+    ctx.fillText('BEST: ' + Math.round(best) + ' cm', W / 2, H * 0.64);
+  }
+  const pulse = 0.7 + 0.3 * Math.sin(frameCount * 0.08);
+  ctx.globalAlpha = pulse;
+  ctx.fillStyle = '#c8a060';
+  ctx.font = `bold ${Math.max(16, Math.floor(W * 0.055))}px monospace`;
+  ctx.fillText('TAP TO PLAY AGAIN', W / 2, H * 0.82);
+  ctx.globalAlpha = 1;
+}
+
+function drawPlay() {
+  ctx.fillStyle = '#0d0906';
+  ctx.fillRect(0, 0, W, H);
+  // Background grain
+  ctx.fillStyle = 'rgba(40,25,10,0.5)';
+  for (let i = 0; i < 80; i++) {
+    const gx = (Math.sin(i * 127.1) * 0.5 + 0.5) * W;
+    const gy = (Math.sin(i * 311.7) * 0.5 + 0.5) * H;
+    ctx.fillRect(gx, gy, 1.5, 1.5);
+  }
+  const cx = spoolCX(), cy = spoolCY(), sr = spoolR();
+  // Wind direction arrows (only show when dragging)
+  if (isDragging && Math.abs(dragAngularVel) > 0.005) {
+    drawWindArrows(cx, cy, sr, dragAngularVel > 0);
+  }
+  // Thread (draw before spool so spool covers attachment point)
+  drawThread(cx, cy, sr);
+  // Knots
+  for (const k of knots) k.draw();
+  // Spool
+  drawSpool(cx, cy, sr, spoolAngle);
+  // Popups
+  for (const p of popups) p.draw();
+  drawProgressBar();
+  drawHUD();
+}
+
+function getAngle(px, py) {
+  return Math.atan2(py - spoolCY(), px - spoolCX());
+}
+
+function startGame() {
+  score = 0;
+  threadLen = MAX_THREAD;
+  timeLeft = 60;
+  lastTick = Date.now();
+  spoolAngle = 0;
+  dragAngularVel = 0;
+  knotSlowTimer = 0;
+  isDragging = false;
+  popups = [];
+  waveOffset = 0;
+  windSfxTimer = 0;
+  spawnKnots();
+  gs = 'play';
+}
+
+let sfxWindCooldown = 0;
+
+function update() {
+  frameCount++;
+  waveOffset += 0.05;
+  // Timer
+  const now = Date.now();
+  if (now - lastTick >= 1000) {
+    timeLeft--;
+    lastTick = now;
+    if (timeLeft <= 0) {
+      timeLeft = 0;
+      if (score > best) { best = score; localStorage.setItem('spindle_best', best); }
+      sfx('gameover');
+      gs = 'over';
+      return;
+    }
+  }
+  // Knot slow decay
+  if (knotSlowTimer > 0) knotSlowTimer--;
+  // Drag angular velocity decay when not dragging
+  if (!isDragging) {
+    dragAngularVel *= 0.85;
+  }
+  // Wind/unwind based on angular velocity
+  const slow = knotSlowTimer > 0 ? 0.5 : 1.0;
+  const windAmount = dragAngularVel * slow * 3.5;
+  if (windAmount > 0) {
+    // Clockwise = wind
+    const delta = Math.min(windAmount, threadLen);
+    threadLen -= delta;
+    score += delta;
+    spoolAngle += windAmount * 0.4;
+    if (sfxWindCooldown <= 0 && delta > 0.1) {
+      sfx('wind');
+      sfxWindCooldown = 18;
+    }
+  } else if (windAmount < 0) {
+    // Counter-clockwise = unwind
+    const delta = Math.min(-windAmount, MAX_THREAD - threadLen);
+    threadLen = Math.min(MAX_THREAD, threadLen + delta);
+    score = Math.max(0, score - delta);
+    spoolAngle += windAmount * 0.4;
+    if (sfxWindCooldown <= 0 && delta > 0.1) {
+      sfx('unwind');
+      sfxWindCooldown = 12;
+    }
+  }
+  if (sfxWindCooldown > 0) sfxWindCooldown--;
+  // Thread fully wound?
+  if (threadLen <= 0) {
+    threadLen = 0;
+    sfx('complete');
+    // Reset thread but keep score
+    setTimeout(() => {
+      if (gs === 'play') {
+        threadLen = MAX_THREAD;
+        spawnKnots();
+        popups.push(new Popup(W / 2, H * 0.3, 'BONUS!', '#ffd700'));
+        score += 50;
+      }
+    }, 600);
+  }
+  // Check knot collisions (only when dragging)
+  if (isDragging) {
+    const dx = lastDragX - spoolCX();
+    const dy = lastDragY - spoolCY();
+    const dragDistFromCenter = Math.sqrt(dx * dx + dy * dy);
+    for (const k of knots) {
+      if (!k.alive) continue;
+      const kp = k.getPos();
+      const kdx = lastDragX - kp.x;
+      const kdy = lastDragY - kp.y;
+      const kDist = Math.sqrt(kdx * kdx + kdy * kdy);
+      if (kDist < 22) {
+        k.hits++;
+        k.flash = 10;
+        if (k.hits >= 2) {
+          k.alive = false;
+          popups.push(new Popup(kp.x, kp.y - 20, 'CLEARED!', '#44dd44'));
+        } else {
+          knotSlowTimer = 120; // 2 seconds at 60fps
+          popups.push(new Popup(kp.x, kp.y - 20, 'KNOT!', '#ff6600'));
+          sfx('knot');
+        }
+      }
+    }
+  }
+  // Update popups
+  for (let i = popups.length - 1; i >= 0; i--) {
+    popups[i].update();
+    if (popups[i].life <= 0) popups.splice(i, 1);
+  }
+}
+
+let lastDragX = 0, lastDragY = 0;
+
+function loop() {
+  requestAnimationFrame(loop);
+  if (gs === 'start') {
+    frameCount++;
+    drawStart();
+  } else if (gs === 'play') {
+    update();
+    drawPlay();
+  } else if (gs === 'over') {
+    frameCount++;
+    drawPlay();
+    drawOver();
+  }
+}
+loop();
+
+// Input handling
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (AC.state === 'suspended') AC.resume();
+  if (gs === 'start') { startGame(); return; }
+  if (gs === 'over') { startGame(); return; }
+  if (gs === 'play') {
+    isDragging = true;
+    touchId = e.pointerId;
+    dragAngle = getAngle(e.clientX, e.clientY);
+    prevDragAngle = dragAngle;
+    dragAngularVel = 0;
+    lastDragX = e.clientX;
+    lastDragY = e.clientY;
+  }
+});
+
+cv.addEventListener('pointermove', e => {
+  e.preventDefault();
+  if (gs !== 'play' || !isDragging || e.pointerId !== touchId) return;
+  const newAngle = getAngle(e.clientX, e.clientY);
+  // Compute angular delta, normalize to [-PI, PI]
+  let delta = newAngle - prevDragAngle;
+  if (delta > Math.PI) delta -= Math.PI * 2;
+  if (delta < -Math.PI) delta += Math.PI * 2;
+  // Smooth angular velocity
+  dragAngularVel = dragAngularVel * 0.6 + delta * 0.4;
+  dragAngularVel = Math.max(-0.15, Math.min(0.15, dragAngularVel));
+  prevDragAngle = newAngle;
+  lastDragX = e.clientX;
+  lastDragY = e.clientY;
+});
+
+cv.addEventListener('pointerup', e => {
+  e.preventDefault();
+  if (e.pointerId === touchId) {
+    isDragging = false;
+    touchId = null;
+  }
+});
+
+cv.addEventListener('pointercancel', e => {
+  e.preventDefault();
+  isDragging = false;
+  touchId = null;
+});
+</script>
+</body>
+</html>

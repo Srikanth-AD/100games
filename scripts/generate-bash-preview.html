@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Generate Preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&display=swap" rel="stylesheet">
+<style>
+body { margin:0; background:#222; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; gap:16px; font-family:sans-serif; color:#fff; }
+canvas { border-radius:8px; }
+button { padding:10px 28px; font-size:16px; background:#c1440e; color:#fff; border:none; border-radius:8px; cursor:pointer; }
+</style>
+</head>
+<body>
+<canvas id="c" width="600" height="400"></canvas>
+<button onclick="download()">Save bash-preview.png</button>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// Wait for font
+document.fonts.ready.then(draw);
+
+function draw() {
+  const W=600, H=400;
+  const COLS=4, ROWS=3, GAP=8;
+  const bW=90, bH=50;
+  const gridX=(W-(COLS*bW+GAP*(COLS-1)))/2;
+  const gridY=90;
+
+  // Background
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#1a0800'); bg.addColorStop(1,'#0d0300');
+  ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+
+  // Subtle grid texture dots
+  ctx.fillStyle='rgba(255,100,0,0.04)';
+  for(let x=0;x<W;x+=20) for(let y=0;y<H;y+=20)
+    ctx.fillRect(x,y,1,1);
+
+  // Title
+  ctx.textAlign='left';
+  ctx.font='bold 64px "Black Ops One", serif';
+  ctx.shadowColor='#ff4400'; ctx.shadowBlur=24;
+  ctx.fillStyle='#fff';
+  ctx.fillText('BASH', 44, 66);
+  ctx.shadowBlur=0;
+
+  ctx.font='13px "Black Ops One", serif';
+  ctx.fillStyle='rgba(255,180,100,0.65)';
+  ctx.fillText("something's hiding...", 46, 86);
+
+  // Draw bricks — mix of states
+  const states = [
+    ['idle','idle','shaking','idle'],
+    ['idle','broken','idle','idle'],
+    ['idle','idle','idle','shaking'],
+  ];
+  const creatures=[
+    {color:'#6dff4f'}, {color:'#ff5252'}, {color:'#ffd740'},
+    {color:'#82cfff'}, {color:'#cf6fff'},
+  ];
+
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS;c++){
+      const x=gridX+c*(bW+GAP), y=gridY+r*(bH+GAP);
+      const st=states[r][c];
+      const creature=creatures[(r*COLS+c)%creatures.length];
+      drawBrick(ctx,x,y,bW,bH,st,creature,r,c);
+    }
+  }
+
+  // Score / lives
+  ctx.textAlign='right';
+  ctx.font='bold 22px "Black Ops One", serif';
+  ctx.fillStyle='#fff';
+  ctx.fillText('280', W-44, 56);
+  ctx.font='11px "Black Ops One", serif';
+  ctx.fillStyle='rgba(255,255,255,0.38)';
+  ctx.fillText('SCORE', W-44, 38);
+
+  ctx.textAlign='center';
+  ctx.font='22px sans-serif';
+  for(let i=0;i<3;i++) ctx.fillText('❤️', W/2+(i-1)*32, H-24);
+}
+
+function drawBrick(ctx,x,y,w,h,state,creature,r,c){
+  ctx.save();
+  ctx.translate(x+w/2, y+h/2);
+
+  const wobX = state==='shaking' ? Math.sin((r*3+c*7)*1.3)*4 : 0;
+  ctx.translate(wobX,0);
+
+  // Face
+  ctx.fillStyle = state==='shaking' ? '#e83300' : '#c1440e';
+  ctx.beginPath(); ctx.roundRect(-w/2,-h/2,w,h,5); ctx.fill();
+
+  // Highlight
+  ctx.fillStyle='rgba(255,255,255,0.16)';
+  ctx.beginPath(); ctx.roundRect(-w/2,-h/2,w,h*0.32,[5,5,0,0]); ctx.fill();
+
+  // Shadow
+  ctx.fillStyle='rgba(0,0,0,0.28)';
+  ctx.fillRect(-w/2,h/2-h*0.18,w,h*0.18);
+
+  // Cracks for shaking
+  if(state==='shaking'){
+    ctx.strokeStyle='rgba(0,0,0,0.5)'; ctx.lineWidth=1.5;
+    ctx.beginPath();
+    ctx.moveTo(w*0.05,-h*0.28); ctx.lineTo(w*0.18,h*0.1); ctx.lineTo(-w*0.06,h*0.32);
+    ctx.moveTo(0,0); ctx.lineTo(-w*0.28,-h*0.22);
+    ctx.stroke();
+    // eyes peeking
+    const col=creature.color, ey=h*0.06, ex=w*0.12, rad=w*0.07;
+    ctx.fillStyle=col;
+    ctx.beginPath(); ctx.arc(-ex,ey,rad,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc( ex,ey,rad,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#000';
+    ctx.beginPath(); ctx.arc(-ex+rad*0.2,ey,rad*0.5,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc( ex+rad*0.2,ey,rad*0.5,0,Math.PI*2); ctx.fill();
+    // timer bar
+    ctx.fillStyle='#ff2200';
+    ctx.globalAlpha=0.75;
+    ctx.fillRect(-w/2,h/2-5,w*0.4,4);
+    ctx.globalAlpha=1;
+    // glow outline
+    ctx.strokeStyle=creature.color; ctx.lineWidth=2;
+    ctx.shadowColor=creature.color; ctx.shadowBlur=10;
+    ctx.beginPath(); ctx.roundRect(-w/2,-h/2,w,h,5); ctx.stroke();
+    ctx.shadowBlur=0;
+  }
+
+  // Broken — creature revealed
+  if(state==='broken'){
+    ctx.fillStyle=creature.color;
+    ctx.beginPath(); ctx.ellipse(0,h*0.05,w*0.3,h*0.34,0,0,Math.PI*2); ctx.fill();
+    const ey=-h*0.08, ex=w*0.1, rad=w*0.065;
+    ctx.fillStyle='#000';
+    ctx.beginPath(); ctx.arc(-ex,ey,rad,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc( ex,ey,rad,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#fff';
+    ctx.beginPath(); ctx.arc(-ex+rad*0.3,ey,rad*0.4,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc( ex+rad*0.3,ey,rad*0.4,0,Math.PI*2); ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function download(){
+  const a=document.createElement('a');
+  a.download='bash-preview.png';
+  a.href=canvas.toDataURL('image/png');
+  a.click();
+}
+</script>
+</body>
+</html>
