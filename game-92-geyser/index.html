@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>GEYSER</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+let W,H;
+function resize(){
+  W=canvas.width=Math.min(window.innerWidth,window.innerHeight*0.6);
+  H=canvas.height=Math.min(window.innerHeight,window.innerWidth*1.6);
+  if(W/H>0.6){W=H*0.6;canvas.width=W;}
+  else{H=W/0.6;canvas.height=H;}
+}
+resize();
+window.addEventListener('resize',resize);
+
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playSound(freq,dur,type='sine',vol=0.15){
+  const o=audioCtx.createOscillator();
+  const g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(vol,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+  o.connect(g);g.connect(audioCtx.destination);
+  o.start();o.stop(audioCtx.currentTime+dur);
+}
+function playJump(){playSound(440,0.15,'square',0.1);playSound(660,0.15,'sine',0.08);}
+function playLand(){playSound(200,0.1,'triangle',0.1);}
+function playDeath(){playSound(150,0.4,'sawtooth',0.12);playSound(100,0.6,'sine',0.1);}
+function playGeyserBurst(){playSound(300+Math.random()*200,0.3,'sawtooth',0.06);}
+
+let state='menu'; // menu, play, over
+let score=0;
+let bestScore=0;
+let cameraX=0;
+let speed=2;
+let jumpPressed=false;
+
+const GROUND_Y_RATIO=0.75;
+const GEYSER_WIDTH_RATIO=0.08;
+const GAP_MIN_RATIO=0.12;
+const GAP_MAX_RATIO=0.22;
+
+let groundY,geyserW;
+
+class Player{
+  constructor(){this.reset();}
+  reset(){
+    groundY=H*GROUND_Y_RATIO;
+    geyserW=W*GEYSER_WIDTH_RATIO;
+    this.w=W*0.04;this.h=W*0.06;
+    this.x=W*0.2;this.y=groundY-this.h;
+    this.vy=0;this.onGround=true;this.alive=true;
+    this.onGeyser=false;this.geyserLift=0;
+    this.frame=0;
+  }
+  jump(){
+    if(!this.alive)return;
+    if(this.onGround||this.onGeyser){
+      this.vy=-H*0.018;
+      this.onGround=false;
+      this.onGeyser=false;
+      playJump();
+    }
+  }
+  update(){
+    if(!this.alive)return;
+    this.frame++;
+    const gravity=H*0.0006;
+    if(this.onGeyser&&this.geyserLift>0){
+      this.vy=-this.geyserLift*0.6;
+    }
+    this.vy+=gravity;
+    this.y+=this.vy;
+    this.onGeyser=false;
+    this.geyserLift=0;
+    // Check geyser collisions
+    let onAny=false;
+    for(let g of geysers){
+      const gx=g.x-cameraX;
+      const gy=groundY;
+      if(g.erupting&&g.eruptHeight>10){
+        const top=gy-g.eruptHeight;
+        const left=gx-geyserW/2;
+        const right=gx+geyserW/2;
+        const playerCX=this.x+this.w/2;
+        const playerBottom=this.y+this.h;
+        if(playerCX>left&&playerCX<right&&playerBottom>top&&playerBottom<gy+5&&this.vy>=0){
+          this.y=top-this.h;
+          this.vy=0;
+          this.onGeyser=true;
+          this.geyserLift=g.eruptHeight/H;
+          onAny=true;
+        }
+      }
+      // Platform base collision
+      const left=gx-geyserW/2;
+      const right=gx+geyserW/2;
+      const playerCX=this.x+this.w/2;
+      const playerBottom=this.y+this.h;
+      if(playerCX>left&&playerCX<right&&playerBottom>=groundY-4&&playerBottom<=groundY+10&&this.vy>=0){
+        this.y=groundY-this.h-4;
+        this.vy=0;
+        this.onGround=true;
+        onAny=true;
+      }
+    }
+    if(!onAny)this.onGround=false;
+    // Fall off screen
+    if(this.y>H+50){
+      this.alive=false;
+      playDeath();
+    }
+  }
+  draw(){
+    const blink=this.frame%60<3;
+    // Body
+    ctx.fillStyle='#FF6B35';
+    ctx.fillRect(this.x,this.y,this.w,this.h);
+    // Head
+    ctx.fillStyle='#FFD166';
+    const headS=this.w*0.9;
+    ctx.beginPath();
+    ctx.arc(this.x+this.w/2,this.y-headS*0.3,headS/2,0,Math.PI*2);
+    ctx.fill();
+    // Eyes
+    if(!blink){
+      ctx.fillStyle='#222';
+      ctx.fillRect(this.x+this.w*0.25,this.y-headS*0.4,3,3);
+      ctx.fillRect(this.x+this.w*0.6,this.y-headS*0.4,3,3);
+    }
+    // Legs animation
+    ctx.fillStyle='#FF6B35';
+    const legOff=Math.sin(this.frame*0.3)*3;
+    ctx.fillRect(this.x+2,this.y+this.h,3,6+legOff);
+    ctx.fillRect(this.x+this.w-5,this.y+this.h,3,6-legOff);
+  }
+}
+
+class Geyser{
+  constructor(x,period,offset,maxH){
+    this.x=x;
+    this.period=period;
+    this.offset=offset;
+    this.maxHeight=maxH;
+    this.erupting=false;
+    this.eruptHeight=0;
+    this.eruptTimer=offset;
+    this.phase='waiting';
+    this.particles=[];
+    this.burstPlayed=false;
+  }
+  update(dt){
+    this.eruptTimer+=dt;
+    const cycle=this.eruptTimer%this.period;
+    const eruptDuration=this.period*0.4;
+    if(cycle<eruptDuration){
+      this.erupting=true;
+      const t=cycle/eruptDuration;
+      if(t<0.2)this.eruptHeight=this.maxHeight*(t/0.2);
+      else if(t<0.7)this.eruptHeight=this.maxHeight;
+      else this.eruptHeight=this.maxHeight*(1-(t-0.7)/0.3);
+      if(!this.burstPlayed&&t>0.05){this.burstPlayed=true;
+        const gx=this.x-cameraX;
+        if(gx>-100&&gx<W+100)playGeyserBurst();
+      }
+    }else{
+      this.erupting=false;
+      this.eruptHeight=0;
+      this.burstPlayed=false;
+    }
+    // Particles
+    if(this.erupting&&this.eruptHeight>20&&Math.random()<0.4){
+      this.particles.push({
+        x:this.x+(Math.random()-0.5)*geyserW*0.6,
+        y:groundY-this.eruptHeight+Math.random()*20,
+        vx:(Math.random()-0.5)*2,
+        vy:-Math.random()*3-1,
+        life:30+Math.random()*20,
+        maxLife:50,
+        size:2+Math.random()*4
+      });
+    }
+    for(let i=this.particles.length-1;i>=0;i--){
+      const p=this.particles[i];
+      p.x+=p.vx;p.y+=p.vy;p.vy+=0.1;p.life--;
+      if(p.life<=0)this.particles.splice(i,1);
+    }
+  }
+  draw(){
+    const gx=this.x-cameraX;
+    if(gx<-100||gx>W+100)return;
+    // Base rock
+    ctx.fillStyle='#5C4033';
+    ctx.beginPath();
+    ctx.moveTo(gx-geyserW/2-8,groundY);
+    ctx.lineTo(gx-geyserW/2+2,groundY-15);
+    ctx.lineTo(gx+geyserW/2-2,groundY-15);
+    ctx.lineTo(gx+geyserW/2+8,groundY);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle='#7B5B3A';
+    ctx.fillRect(gx-geyserW/2+2,groundY-15,geyserW-4,12);
+    // Water column
+    if(this.erupting&&this.eruptHeight>5){
+      const grad=ctx.createLinearGradient(gx,groundY,gx,groundY-this.eruptHeight);
+      grad.addColorStop(0,'rgba(100,180,255,0.9)');
+      grad.addColorStop(0.5,'rgba(150,210,255,0.7)');
+      grad.addColorStop(1,'rgba(220,240,255,0.3)');
+      ctx.fillStyle=grad;
+      const wobble=Math.sin(Date.now()*0.01)*3;
+      ctx.beginPath();
+      ctx.moveTo(gx-geyserW*0.3+wobble,groundY-10);
+      ctx.quadraticCurveTo(gx-geyserW*0.4,groundY-this.eruptHeight*0.5,gx-geyserW*0.15,groundY-this.eruptHeight);
+      ctx.lineTo(gx+geyserW*0.15,groundY-this.eruptHeight);
+      ctx.quadraticCurveTo(gx+geyserW*0.4,groundY-this.eruptHeight*0.5,gx+geyserW*0.3-wobble,groundY-10);
+      ctx.closePath();
+      ctx.fill();
+      // Steam at top
+      ctx.fillStyle='rgba(255,255,255,0.3)';
+      for(let i=0;i<3;i++){
+        const sx=gx+(Math.sin(Date.now()*0.003+i*2))*geyserW*0.3;
+        const sy=groundY-this.eruptHeight-10-i*12;
+        ctx.beginPath();
+        ctx.arc(sx,sy,8+i*3,0,Math.PI*2);
+        ctx.fill();
+      }
+    }
+    // Particles
+    for(const p of this.particles){
+      const px=p.x-cameraX;
+      const alpha=p.life/p.maxLife;
+      ctx.fillStyle=`rgba(180,220,255,${alpha*0.6})`;
+      ctx.beginPath();
+      ctx.arc(px,p.y,p.size,0,Math.PI*2);
+      ctx.fill();
+    }
+  }
+}
+
+let player=new Player();
+let geysers=[];
+let bgClouds=[];
+let bgMountains=[];
+
+function initGame(){
+  state='play';
+  score=0;speed=2;cameraX=0;
+  player.reset();
+  groundY=H*GROUND_Y_RATIO;
+  geyserW=W*GEYSER_WIDTH_RATIO;
+  geysers=[];
+  // Generate initial geysers
+  let gx=W*0.15;
+  for(let i=0;i<30;i++){
+    const gap=W*(GAP_MIN_RATIO+Math.random()*GAP_MAX_RATIO);
+    gx+=gap;
+    const period=120+Math.random()*120;
+    const offset=Math.random()*period;
+    const maxH=H*0.15+Math.random()*H*0.25;
+    geysers.push(new Geyser(gx,period,offset,maxH));
+  }
+  // Clouds
+  bgClouds=[];
+  for(let i=0;i<15;i++){
+    bgClouds.push({x:Math.random()*W*5,y:H*0.05+Math.random()*H*0.25,w:40+Math.random()*80,h:15+Math.random()*25,speed:0.2+Math.random()*0.5});
+  }
+  // Mountains
+  bgMountains=[];
+  for(let i=0;i<20;i++){
+    bgMountains.push({x:i*W*0.5,h:H*0.1+Math.random()*H*0.15,w:W*0.3+Math.random()*W*0.3});
+  }
+}
+
+function generateMoreGeysers(){
+  const lastG=geysers[geysers.length-1];
+  if(!lastG)return;
+  const screenEnd=cameraX+W*3;
+  if(lastG.x<screenEnd){
+    let gx=lastG.x;
+    for(let i=0;i<10;i++){
+      const gap=W*(GAP_MIN_RATIO+Math.random()*GAP_MAX_RATIO);
+      gx+=gap;
+      const period=Math.max(60,120-score*0.3+Math.random()*100);
+      const offset=Math.random()*period;
+      const maxH=H*0.15+Math.random()*H*0.25;
+      geysers.push(new Geyser(gx,period,offset,maxH));
+    }
+  }
+  // Remove far behind geysers
+  while(geysers.length>0&&geysers[0].x<cameraX-W){
+    geysers.shift();
+  }
+}
+
+let lastTime=0;
+function update(ts){
+  const dt=Math.min((ts-lastTime)/16.67,3);
+  lastTime=ts;
+
+  if(state==='play'){
+    speed=2+score*0.003;
+    cameraX+=speed*dt;
+    score=Math.floor(cameraX/10);
+    player.update();
+    for(const g of geysers)g.update(dt);
+    generateMoreGeysers();
+    if(!player.alive){
+      state='over';
+      if(score>bestScore)bestScore=score;
+    }
+  }
+
+  draw();
+  requestAnimationFrame(update);
+}
+
+function draw(){
+  // Sky gradient
+  const skyGrad=ctx.createLinearGradient(0,0,0,H);
+  skyGrad.addColorStop(0,'#1a0533');
+  skyGrad.addColorStop(0.4,'#2d1b69');
+  skyGrad.addColorStop(0.7,'#e8735a');
+  skyGrad.addColorStop(1,'#ffb347');
+  ctx.fillStyle=skyGrad;
+  ctx.fillRect(0,0,W,H);
+
+  // Mountains
+  ctx.fillStyle='#1a1a3a';
+  for(const m of bgMountains){
+    const mx=m.x-cameraX*0.2;
+    if(mx>-m.w&&mx<W+m.w){
+      ctx.beginPath();
+      ctx.moveTo(mx,groundY);
+      ctx.lineTo(mx+m.w/2,groundY-m.h);
+      ctx.lineTo(mx+m.w,groundY);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // Clouds
+  ctx.fillStyle='rgba(255,200,150,0.15)';
+  for(const c of bgClouds){
+    const cx=((c.x-cameraX*c.speed)%(W*2+200))-100;
+    ctx.beginPath();
+    ctx.ellipse(cx,c.y,c.w/2,c.h/2,0,0,Math.PI*2);
+    ctx.fill();
+  }
+
+  // Ground
+  ctx.fillStyle='#3d2b1f';
+  ctx.fillRect(0,groundY,W,H-groundY);
+  ctx.fillStyle='#5c4033';
+  ctx.fillRect(0,groundY,W,6);
+
+  // Lava/magma hint at bottom
+  const lavaGrad=ctx.createLinearGradient(0,H*0.9,0,H);
+  lavaGrad.addColorStop(0,'#3d2b1f');
+  lavaGrad.addColorStop(1,'#8b2500');
+  ctx.fillStyle=lavaGrad;
+  ctx.fillRect(0,H*0.9,W,H*0.1);
+
+  // Geysers
+  for(const g of geysers)g.draw();
+
+  // Player
+  if(state==='play'||state==='over')player.draw();
+
+  // Score
+  if(state==='play'){
+    ctx.fillStyle='rgba(0,0,0,0.4)';
+    ctx.fillRect(W*0.02,8,W*0.35,30);
+    ctx.fillStyle='#fff';
+    ctx.font=`bold ${Math.floor(W*0.05)}px monospace`;
+    ctx.textAlign='left';
+    ctx.fillText(`${score}m`,W*0.04,30);
+  }
+
+  // Menu
+  if(state==='menu'){
+    ctx.fillStyle='rgba(0,0,0,0.5)';
+    ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#FF6B35';
+    ctx.font=`bold ${Math.floor(W*0.12)}px monospace`;
+    ctx.textAlign='center';
+    ctx.fillText('GEYSER',W/2,H*0.3);
+    ctx.fillStyle='#FFD166';
+    ctx.font=`${Math.floor(W*0.04)}px monospace`;
+    ctx.fillText('Ride the eruptions!',W/2,H*0.38);
+    ctx.fillText('Tap to jump between geysers',W/2,H*0.44);
+    ctx.fillStyle='#fff';
+    ctx.font=`${Math.floor(W*0.05)}px monospace`;
+    const pulse=0.8+Math.sin(Date.now()*0.004)*0.2;
+    ctx.globalAlpha=pulse;
+    ctx.fillText('TAP TO START',W/2,H*0.6);
+    ctx.globalAlpha=1;
+    // Draw decorative geyser
+    ctx.fillStyle='rgba(100,180,255,0.5)';
+    const dh=H*0.15+Math.sin(Date.now()*0.003)*H*0.05;
+    ctx.beginPath();
+    ctx.moveTo(W/2-15,groundY-10);
+    ctx.quadraticCurveTo(W/2-20,groundY-dh*0.5,W/2-8,groundY-dh);
+    ctx.lineTo(W/2+8,groundY-dh);
+    ctx.quadraticCurveTo(W/2+20,groundY-dh*0.5,W/2+15,groundY-10);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Game over
+  if(state==='over'){
+    ctx.fillStyle='rgba(0,0,0,0.6)';
+    ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#FF4444';
+    ctx.font=`bold ${Math.floor(W*0.1)}px monospace`;
+    ctx.textAlign='center';
+    ctx.fillText('GAME OVER',W/2,H*0.3);
+    ctx.fillStyle='#FFD166';
+    ctx.font=`${Math.floor(W*0.06)}px monospace`;
+    ctx.fillText(`Distance: ${score}m`,W/2,H*0.42);
+    ctx.fillStyle='#aaa';
+    ctx.font=`${Math.floor(W*0.04)}px monospace`;
+    ctx.fillText(`Best: ${bestScore}m`,W/2,H*0.5);
+    ctx.fillStyle='#fff';
+    ctx.font=`${Math.floor(W*0.045)}px monospace`;
+    const pulse=0.8+Math.sin(Date.now()*0.004)*0.2;
+    ctx.globalAlpha=pulse;
+    ctx.fillText('TAP TO RETRY',W/2,H*0.65);
+    ctx.globalAlpha=1;
+  }
+}
+
+function handleTap(){
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  if(state==='menu'){initGame();return;}
+  if(state==='over'){initGame();return;}
+  if(state==='play'){player.jump();}
+}
+
+canvas.addEventListener('pointerdown',e=>{e.preventDefault();handleTap();});
+canvas.addEventListener('touchstart',e=>{e.preventDefault();},{passive:false});
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>COMET</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+let W,H,scl;
+function resize(){
+  const vw=window.innerWidth,vh=window.innerHeight;
+  scl=Math.min(vw/375,vh/600);
+  W=Math.round(375*scl);H=Math.round(600*scl);
+  cv.width=W;cv.height=H;
+}
+resize();
+window.addEventListener('resize',resize);
+const AC=new(window.AudioContext||window.webkitAudioContext)();
+
+function playTone(freq,type,dur,vol=0.2,ramp=true){
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.connect(g);g.connect(AC.destination);
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(vol,AC.currentTime);
+  if(ramp)g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+dur);
+  o.start();o.stop(AC.currentTime+dur);
+}
+function playWhoosh(rising=true){
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.connect(g);g.connect(AC.destination);
+  o.type='sine';
+  o.frequency.setValueAtTime(rising?100:400,AC.currentTime);
+  o.frequency.linearRampToValueAtTime(rising?500:80,AC.currentTime+0.4);
+  g.gain.setValueAtTime(0.2,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+0.4);
+  o.start();o.stop(AC.currentTime+0.4);
+}
+function playDing(){
+  playTone(880,'sine',0.3,0.25);
+  setTimeout(()=>playTone(1100,'sine',0.2,0.15),80);
+}
+function playCrash(){
+  const buf=AC.createBuffer(1,AC.sampleRate*0.3,AC.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.exp(-i/(AC.sampleRate*0.1));
+  const src=AC.createBufferSource(),g=AC.createGain();
+  src.buffer=buf;src.connect(g);g.connect(AC.destination);
+  g.gain.setValueAtTime(0.4,AC.currentTime);
+  src.start();
+}
+function playLevelUp(){
+  [330,440,550,660].forEach((f,i)=>setTimeout(()=>playTone(f,'sine',0.3,0.15),i*100));
+}
+// Continuous comet hum
+let cometHum=null,cometHumGain=null;
+function startCometHum(){
+  if(cometHum)return;
+  cometHum=AC.createOscillator();
+  cometHumGain=AC.createGain();
+  cometHum.type='sine';cometHum.frequency.value=60;
+  cometHum.connect(cometHumGain);cometHumGain.connect(AC.destination);
+  cometHumGain.gain.value=0.05;
+  cometHum.start();
+}
+function stopCometHum(){
+  if(!cometHum)return;
+  cometHumGain.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+0.2);
+  cometHum.stop(AC.currentTime+0.2);cometHum=null;cometHumGain=null;
+}
+
+let gs='start',level=1,score=0,best=parseInt(localStorage.getItem('comet_best')||'0');
+let lives=3,popups=[];
+let comet={x:0,y:0,vx:0,vy:0,trail:[]};
+let planets=[],gates=[],activeGate=0;
+let pulsedPlanet=-1,pulseTimer=0;
+let stars=[];
+let gateFlash=[];
+let respawnTimer=0;
+let levelUpFlash=0;
+
+const PLANET_COLORS=['#ff7043','#7c4dff','#26c6da','#ffca28','#66bb6a'];
+const PLANET_GLOWS=['#ff3d00','#651fff','#00acc1','#ffab00','#388e3c'];
+
+function initStars(){
+  stars=[];
+  for(let i=0;i<120;i++){
+    stars.push({x:Math.random()*375,y:Math.random()*600,r:Math.random()*1.5+0.3,twinkle:Math.random()*Math.PI*2,speed:Math.random()*2+1});
+  }
+}
+
+function setupLevel(){
+  const np=Math.min(3+Math.floor(level/2),6);
+  planets=[];
+  const cx=375/2,cy=600/2;
+  for(let i=0;i<np;i++){
+    let px,py,ok;
+    let tries=0;
+    do{
+      px=50+Math.random()*275;py=80+Math.random()*440;ok=true;
+      for(const p of planets){const dx=px-p.x,dy=py-p.y;if(Math.sqrt(dx*dx+dy*dy)<60)ok=false;}
+      tries++;
+    }while(!ok&&tries<50);
+    const mass=30+Math.random()*50+level*5;
+    const r=(mass/10+8)*scl;
+    planets.push({x:px,y:py,r,mass,col:PLANET_COLORS[i%PLANET_COLORS.length],glow:PLANET_GLOWS[i%PLANET_GLOWS.length],influenceR:r*3.5});
+  }
+  // comet start
+  comet.x=30*scl;comet.y=100*scl;
+  const ang=Math.random()*0.5+0.2;
+  const spd=(2+level*0.3)*scl;
+  comet.vx=spd*Math.cos(ang);comet.vy=spd*Math.sin(ang);
+  comet.trail=[];
+  // gates
+  buildGates();
+  pulsedPlanet=-1;pulseTimer=0;
+  respawnTimer=0;
+}
+
+function buildGates(){
+  gates=[];
+  const ng=3+level;
+  for(let i=0;i<ng;i++){
+    let gx,gy,ok;let tries=0;
+    do{
+      gx=60+Math.random()*255;gy=100+Math.random()*400;ok=true;
+      for(const p of planets){const dx=gx-p.x,dy=gy-p.y;if(Math.sqrt(dx*dx+dy*dy)<p.r*2+30)ok=false;}
+      for(const g2 of gates){const dx=gx-g2.x,dy=gy-g2.y;if(Math.sqrt(dx*dx+dy*dy)<80)ok=false;}
+      tries++;
+    }while(!ok&&tries<50);
+    const ang=Math.random()*Math.PI;
+    const gw=(25+Math.random()*15)*scl;
+    gates.push({x:gx,y:gy,ang,w:gw,passed:false,active:false});
+  }
+  gates[0].active=true;
+  activeGate=0;
+  gateFlash=gates.map(()=>0);
+}
+
+function startGame(){
+  level=1;score=0;lives=3;popups=[];
+  initStars();
+  setupLevel();
+  gs='play';
+  startCometHum();
+}
+
+function getXY(e){
+  const r=cv.getBoundingClientRect();
+  const t=e.touches?e.touches[0]:e;
+  return{x:(t.clientX-r.left)/scl,y:(t.clientY-r.top)/scl};
+}
+
+cv.addEventListener('pointerdown',e=>{
+  if(AC.state==='suspended')AC.resume();
+  if(gs==='start'){gs='play';startGame();return;}
+  if(gs==='over'){gs='play';startGame();return;}
+  if(gs!=='play')return;
+  const{x,y}=getXY(e);
+  // find closest planet in influence radius
+  let closest=-1,closestD=Infinity;
+  for(let i=0;i<planets.length;i++){
+    const p=planets[i];
+    const dx=x-p.x,dy=y-p.y;
+    const d=Math.sqrt(dx*dx+dy*dy)*scl;
+    if(d<p.influenceR&&d<closestD){closestD=d;closest=i;}
+  }
+  if(closest>=0){
+    pulsedPlanet=closest;pulseTimer=0.5;
+    playWhoosh(true);
+  }
+});
+
+const TRAIL_LEN=35;
+function updateComet(dt){
+  if(respawnTimer>0){respawnTimer-=dt;return;}
+  const sec=dt/1000;
+  let fx=0,fy=0;
+  for(let i=0;i<planets.length;i++){
+    const p=planets[i];
+    const dx=p.x*scl-comet.x,dy=p.y*scl-comet.y;
+    const dist=Math.sqrt(dx*dx+dy*dy);
+    if(dist<1)continue;
+    const norm=dx*dx+dy*dy;
+    const mul=(i===pulsedPlanet&&pulseTimer>0)?4:1;
+    const force=p.mass*mul/(norm+200);
+    fx+=dx/dist*force;
+    fy+=dy/dist*force;
+  }
+  comet.vx+=fx*dt/16;
+  comet.vy+=fy*dt/16;
+  // speed cap
+  const spd=Math.sqrt(comet.vx*comet.vx+comet.vy*comet.vy);
+  const maxSpd=10*scl;
+  if(spd>maxSpd){comet.vx*=maxSpd/spd;comet.vy*=maxSpd/spd;}
+  comet.x+=comet.vx*dt/16;
+  comet.y+=comet.vy*dt/16;
+  // wrap
+  if(comet.x<0)comet.x+=W;if(comet.x>W)comet.x-=W;
+  if(comet.y<0)comet.y+=H;if(comet.y>H)comet.y-=H;
+  // trail
+  comet.trail.push({x:comet.x,y:comet.y});
+  if(comet.trail.length>TRAIL_LEN)comet.trail.shift();
+  // pulse
+  if(pulseTimer>0)pulseTimer-=sec;else pulsedPlanet=-1;
+  // collision with planets
+  for(const p of planets){
+    const dx=comet.x-p.x*scl,dy=comet.y-p.y*scl;
+    if(Math.sqrt(dx*dx+dy*dy)<p.r+4*scl){
+      playCrash();
+      addPopup(comet.x,comet.y,'CRASH!','#f44336');
+      lives--;
+      if(lives<=0){if(score>best){best=score;localStorage.setItem('comet_best',best);}gs='over';stopCometHum();return;}
+      respawnComet();return;
+    }
+  }
+  // check gate collision
+  if(gates[activeGate]){
+    const g=gates[activeGate];
+    const gx=g.x*scl,gy=g.y*scl;
+    const dx=comet.x-gx,dy=comet.y-gy;
+    const dist=Math.sqrt(dx*dx+dy*dy);
+    if(dist<g.w*0.6){
+      // check if within gate width (perpendicular)
+      const ax=Math.cos(g.ang+Math.PI/2),ay=Math.sin(g.ang+Math.PI/2);
+      const perp=Math.abs(dx*ax+dy*ay);
+      if(perp<g.w*0.5){
+        // passed through gate
+        g.passed=true;gateFlash[activeGate]=30;
+        score+=10*level;
+        if(score>best){best=score;localStorage.setItem('comet_best',best);}
+        addPopup(gx,gy-20*scl,'+'+10*level,'#ffd740');
+        playDing();
+        activeGate++;
+        if(activeGate<gates.length){gates[activeGate].active=true;}
+        else{
+          // all gates done, level up
+          level++;levelUpFlash=60;
+          playLevelUp();
+          addPopup(W/2,H/2,'LEVEL '+level,'#7c4dff');
+          setTimeout(()=>setupLevel(),1500);
+        }
+      }
+    }
+    // gate edge collision
+    const a1={x:gx+Math.cos(g.ang)*g.w,y:gy+Math.sin(g.ang)*g.w};
+    const a2={x:gx-Math.cos(g.ang)*g.w,y:gy-Math.sin(g.ang)*g.w};
+    for(const ast of[a1,a2]){
+      const adx=comet.x-ast.x,ady=comet.y-ast.y;
+      if(Math.sqrt(adx*adx+ady*ady)<12*scl){
+        playCrash();
+        addPopup(comet.x,comet.y,'HIT!','#f44336');
+        lives--;
+        if(lives<=0){if(score>best){best=score;localStorage.setItem('comet_best',best);}gs='over';stopCometHum();return;}
+        respawnComet();return;
+      }
+    }
+  }
+}
+
+function respawnComet(){
+  comet.x=30*scl;comet.y=80*scl;
+  const ang=0.3+Math.random()*0.4;
+  const spd=(2+level*0.3)*scl;
+  comet.vx=spd*Math.cos(ang);comet.vy=spd*Math.sin(ang);
+  comet.trail=[];
+  respawnTimer=1000;
+}
+
+function addPopup(x,y,text,col){popups.push({x,y,text,life:1.2,col:col||'#fff'});}
+
+let last=0;
+function update(ts){
+  requestAnimationFrame(update);
+  const dt=Math.min(ts-last,50);last=ts;
+  ctx.fillStyle='#040412';
+  ctx.fillRect(0,0,W,H);
+  drawStars(ts);
+  if(gs==='start'){drawStart(ts);return;}
+  if(gs==='over'){drawOver();return;}
+  updateComet(dt);
+  gateFlash=gateFlash.map(f=>Math.max(0,f-dt/16));
+  drawPlanets(ts);
+  drawGates();
+  drawComet();
+  drawHUD();
+  drawPopups(dt);
+  if(levelUpFlash>0){
+    ctx.fillStyle=`rgba(124,77,255,${levelUpFlash/120})`;
+    ctx.fillRect(0,0,W,H);
+    levelUpFlash=Math.max(0,levelUpFlash-dt/16);
+  }
+}
+
+function drawStars(ts){
+  for(const s of stars){
+    const twinkle=0.5+0.5*Math.sin(ts*0.001*s.speed+s.twinkle);
+    ctx.beginPath();ctx.arc(s.x*scl,s.y*scl,s.r*scl*twinkle,0,Math.PI*2);
+    ctx.fillStyle=`rgba(255,255,255,${0.3+twinkle*0.7})`;ctx.fill();
+  }
+}
+
+function drawPlanets(ts){
+  for(let i=0;i<planets.length;i++){
+    const p=planets[i];
+    const px=p.x*scl,py=p.y*scl;
+    const pulsing=i===pulsedPlanet&&pulseTimer>0;
+    // influence ring
+    const ringAlpha=pulsing?0.3+0.2*Math.sin(ts*0.01):0.1;
+    ctx.beginPath();ctx.arc(px,py,p.influenceR,0,Math.PI*2);
+    ctx.strokeStyle=`rgba(${hexToRgb(p.col)},${ringAlpha})`;
+    ctx.lineWidth=1*scl;
+    if(pulsing){ctx.setLineDash([4*scl,4*scl]);}
+    ctx.stroke();ctx.setLineDash([]);
+    // glow ring pulsing outward
+    if(pulsing){
+      const pulseR=p.r+(1-pulseTimer/0.5)*p.influenceR*0.5;
+      ctx.beginPath();ctx.arc(px,py,pulseR,0,Math.PI*2);
+      ctx.strokeStyle=`rgba(${hexToRgb(p.glow)},${pulseTimer})`;
+      ctx.lineWidth=2*scl;ctx.stroke();
+    }
+    // planet body
+    ctx.shadowColor=p.glow;ctx.shadowBlur=(pulsing?25:12)*scl;
+    const pg=ctx.createRadialGradient(px-p.r*0.3,py-p.r*0.3,p.r*0.1,px,py,p.r);
+    pg.addColorStop(0,'#fff');
+    pg.addColorStop(0.3,p.col);
+    pg.addColorStop(1,p.glow);
+    ctx.beginPath();ctx.arc(px,py,p.r,0,Math.PI*2);
+    ctx.fillStyle=pg;ctx.fill();ctx.shadowBlur=0;
+    // gravity pull lines when pulsing
+    if(pulsing&&comet.trail.length>0){
+      const cx=comet.x,cy=comet.y;
+      const steps=5;
+      for(let j=0;j<steps;j++){
+        const t=j/steps;
+        const lx=cx+(px-cx)*t,ly=cy+(py-cy)*t;
+        ctx.beginPath();ctx.arc(lx,ly,1.5*scl,0,Math.PI*2);
+        ctx.fillStyle=`rgba(${hexToRgb(p.col)},${(1-t)*0.5*pulseTimer*2})`;ctx.fill();
+      }
+    }
+  }
+}
+
+function hexToRgb(hex){
+  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  return`${r},${g},${b}`;
+}
+
+function drawGates(){
+  for(let i=0;i<gates.length;i++){
+    const g=gates[i];
+    const gx=g.x*scl,gy=g.y*scl;
+    const cos=Math.cos(g.ang),sin=Math.sin(g.ang);
+    // asteroid rocks
+    const a1x=gx+cos*g.w,a1y=gy+sin*g.w;
+    const a2x=gx-cos*g.w,a2y=gy-sin*g.w;
+    for(const[ax,ay] of[[a1x,a1y],[a2x,a2y]]){
+      ctx.beginPath();
+      for(let k=0;k<8;k++){
+        const a=k/8*Math.PI*2;
+        const rr=(9+Math.sin(k*2.5)*3)*scl;
+        const px=ax+Math.cos(a)*rr,py=ay+Math.sin(a)*rr;
+        k===0?ctx.moveTo(px,py):ctx.lineTo(px,py);
+      }
+      ctx.closePath();ctx.fillStyle='#555';ctx.fill();
+      ctx.strokeStyle='#888';ctx.lineWidth=1*scl;ctx.stroke();
+    }
+    if(g.passed)continue;
+    // gate gap
+    const glowCol=gateFlash[i]>0?'#ffd740':g.active?'#00e5ff':'rgba(100,200,255,0.3)';
+    ctx.strokeStyle=glowCol;
+    ctx.shadowColor=glowCol;ctx.shadowBlur=(g.active?12:4)*scl;
+    ctx.lineWidth=2*scl;
+    ctx.beginPath();ctx.moveTo(a1x,a1y);ctx.lineTo(a2x,a2y);ctx.stroke();
+    ctx.shadowBlur=0;
+    // approach arrow if active
+    if(g.active&&respawnTimer<=0){
+      const cx=comet.x,cy=comet.y;
+      const dx=gx-cx/scl,dy=gy-cy/scl;
+      const d=Math.sqrt(dx*dx+dy*dy);
+      if(d>30){
+        const nx=dx/d,ny=dy/d;
+        const ax2=cx+nx*20*scl,ay2=cy+ny*20*scl;
+        ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(ax2,ay2);
+        ctx.strokeStyle='rgba(0,229,255,0.3)';ctx.lineWidth=1*scl;ctx.stroke();
+      }
+    }
+  }
+}
+
+function drawComet(){
+  if(respawnTimer>500)return;
+  const alpha=respawnTimer>0?Math.sin(respawnTimer/500*Math.PI*4)*0.5+0.5:1;
+  // trail
+  for(let i=1;i<comet.trail.length;i++){
+    const t=i/comet.trail.length;
+    const a=comet.trail[i-1],b=comet.trail[i];
+    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);
+    ctx.strokeStyle=`rgba(180,220,255,${t*0.7*alpha})`;
+    ctx.lineWidth=Math.max(1,t*3)*scl;ctx.lineCap='round';ctx.stroke();
+  }
+  // comet body
+  ctx.shadowColor='#fff';ctx.shadowBlur=12*scl;
+  ctx.beginPath();ctx.arc(comet.x,comet.y,5*scl,0,Math.PI*2);
+  ctx.fillStyle=`rgba(255,255,255,${alpha})`;ctx.fill();ctx.shadowBlur=0;
+}
+
+function drawHUD(){
+  ctx.fillStyle='#fff';ctx.font=`bold ${13*scl}px monospace`;
+  ctx.textAlign='left';ctx.fillText('LV '+level,10*scl,22*scl);
+  ctx.textAlign='center';ctx.fillText(score,W/2,22*scl);
+  ctx.textAlign='right';ctx.fillText('BEST '+best,W-10*scl,22*scl);
+  for(let i=0;i<3;i++){
+    ctx.fillStyle=i<lives?'#f44336':'#333';
+    drawHeart(10*scl+i*20*scl,38*scl,7*scl);
+  }
+  // gates counter
+  const passed=gates.filter(g=>g.passed).length;
+  ctx.fillStyle='#00e5ff';ctx.font=`${11*scl}px monospace`;
+  ctx.textAlign='left';
+  ctx.fillText('GATES: '+passed+'/'+gates.length,10*scl,60*scl);
+  // speed
+  const spd=Math.round(Math.sqrt(comet.vx*comet.vx+comet.vy*comet.vy)/scl*10);
+  ctx.fillStyle='#aaa';
+  ctx.fillText('SPD: '+spd,10*scl,73*scl);
+}
+
+function drawHeart(x,y,r){
+  ctx.beginPath();
+  ctx.moveTo(x,y+r*0.3);
+  ctx.bezierCurveTo(x,y-r*0.3,x-r,y-r*0.3,x-r,y+r*0.3);
+  ctx.bezierCurveTo(x-r,y+r*0.8,x,y+r*1.3,x,y+r*1.5);
+  ctx.bezierCurveTo(x,y+r*1.3,x+r,y+r*0.8,x+r,y+r*0.3);
+  ctx.bezierCurveTo(x+r,y-r*0.3,x,y-r*0.3,x,y+r*0.3);
+  ctx.fill();
+}
+
+function drawPopups(dt){
+  for(let i=popups.length-1;i>=0;i--){
+    const p=popups[i];
+    p.y-=dt/30;p.life-=dt/1200;
+    if(p.life<=0){popups.splice(i,1);continue;}
+    ctx.globalAlpha=Math.min(p.life,1);
+    ctx.fillStyle=p.col||'#fff';
+    ctx.font=`bold ${14*scl}px monospace`;
+    ctx.textAlign='center';
+    ctx.fillText(p.text,p.x,p.y);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Animated start screen
+let startCometX=30,startCometY=100,startCometVX=1.8,startCometVY=1.2;
+let startTrail=[];
+let startPlanets=[];
+function initStartPlanets(){
+  startPlanets=[
+    {x:120,y:200,r:18,col:'#ff7043',glow:'#ff3d00',influenceR:60},
+    {x:250,y:350,r:22,col:'#7c4dff',glow:'#651fff',influenceR:70},
+    {x:80,y:420,r:14,col:'#26c6da',glow:'#00acc1',influenceR:50},
+  ];
+  initStars();
+}
+initStartPlanets();
+
+function drawStart(ts){
+  // animate comet
+  startTrail.push({x:startCometX*scl,y:startCometY*scl});
+  if(startTrail.length>25)startTrail.shift();
+  // gravity from start planets
+  let fx=0,fy=0;
+  for(const p of startPlanets){
+    const dx=p.x-startCometX,dy=p.y-startCometY;
+    const dist=Math.sqrt(dx*dx+dy*dy)+0.1;
+    const force=p.r*2/(dist*dist+300);
+    fx+=dx/dist*force;fy+=dy/dist*force;
+  }
+  startCometVX+=fx*0.5;startCometVY+=fy*0.5;
+  const spd=Math.sqrt(startCometVX**2+startCometVY**2);
+  if(spd>4){startCometVX*=4/spd;startCometVY*=4/spd;}
+  startCometX+=startCometVX;startCometY+=startCometVY;
+  if(startCometX<0)startCometX+=375;if(startCometX>375)startCometX-=375;
+  if(startCometY<0)startCometY+=600;if(startCometY>600)startCometY-=600;
+  // draw planets
+  for(const p of startPlanets){
+    ctx.shadowColor=p.glow;ctx.shadowBlur=12*scl;
+    const pg=ctx.createRadialGradient(p.x*scl-p.r*scl*0.3,p.y*scl-p.r*scl*0.3,p.r*scl*0.1,p.x*scl,p.y*scl,p.r*scl);
+    pg.addColorStop(0,'#fff');pg.addColorStop(0.3,p.col);pg.addColorStop(1,p.glow);
+    ctx.beginPath();ctx.arc(p.x*scl,p.y*scl,p.r*scl,0,Math.PI*2);
+    ctx.fillStyle=pg;ctx.fill();ctx.shadowBlur=0;
+    ctx.beginPath();ctx.arc(p.x*scl,p.y*scl,p.influenceR*scl,0,Math.PI*2);
+    ctx.strokeStyle=`rgba(${hexToRgb(p.col)},0.15)`;ctx.lineWidth=1*scl;ctx.stroke();
+  }
+  // draw comet trail
+  for(let i=1;i<startTrail.length;i++){
+    const t=i/startTrail.length;
+    const a=startTrail[i-1],b=startTrail[i];
+    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);
+    ctx.strokeStyle=`rgba(180,220,255,${t*0.8})`;
+    ctx.lineWidth=Math.max(1,t*3)*scl;ctx.lineCap='round';ctx.stroke();
+  }
+  ctx.shadowColor='#fff';ctx.shadowBlur=12*scl;
+  ctx.beginPath();ctx.arc(startCometX*scl,startCometY*scl,5*scl,0,Math.PI*2);
+  ctx.fillStyle='#fff';ctx.fill();ctx.shadowBlur=0;
+  // fake gate
+  const gx=200*scl,gy=150*scl,gw=25*scl;
+  ctx.beginPath();ctx.arc(gx-gw,gy,8*scl,0,Math.PI*2);ctx.fillStyle='#555';ctx.fill();
+  ctx.beginPath();ctx.arc(gx+gw,gy,8*scl,0,Math.PI*2);ctx.fillStyle='#555';ctx.fill();
+  ctx.strokeStyle='#00e5ff';ctx.shadowColor='#00e5ff';ctx.shadowBlur=10*scl;
+  ctx.lineWidth=2*scl;ctx.beginPath();ctx.moveTo(gx-gw,gy);ctx.lineTo(gx+gw,gy);ctx.stroke();ctx.shadowBlur=0;
+  // title
+  ctx.fillStyle='#7c4dff';ctx.shadowColor='#7c4dff';ctx.shadowBlur=18*scl;
+  ctx.font=`bold ${56*scl}px monospace`;ctx.textAlign='center';
+  ctx.fillText('COMET',W/2,85*scl);ctx.shadowBlur=0;
+  ctx.fillStyle='#aaa';ctx.font=`${13*scl}px monospace`;
+  ctx.fillText('Tap planets to bend the comet',W/2,108*scl);
+  ctx.fillText('through asteroid gates',W/2,124*scl);
+  ctx.fillStyle='rgba(255,255,255,0.15)';
+  ctx.fillRect(W/2-80*scl,495*scl,160*scl,44*scl);
+  ctx.strokeStyle='#7c4dff';ctx.lineWidth=2*scl;
+  ctx.strokeRect(W/2-80*scl,495*scl,160*scl,44*scl);
+  ctx.fillStyle='#fff';ctx.font=`bold ${16*scl}px monospace`;
+  ctx.fillText('TAP TO START',W/2,522*scl);
+  ctx.fillStyle='#ffd740';ctx.font=`${12*scl}px monospace`;
+  ctx.fillText('BEST: '+best,W/2,475*scl);
+}
+
+function drawOver(){
+  ctx.fillStyle='rgba(4,4,18,0.9)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#7c4dff';ctx.shadowColor='#7c4dff';ctx.shadowBlur=15*scl;
+  ctx.font=`bold ${44*scl}px monospace`;ctx.textAlign='center';
+  ctx.fillText('GAME OVER',W/2,200*scl);ctx.shadowBlur=0;
+  ctx.fillStyle='#fff';ctx.font=`${18*scl}px monospace`;
+  ctx.fillText('SCORE: '+score,W/2,270*scl);
+  ctx.fillStyle='#ffd740';ctx.fillText('BEST: '+best,W/2,300*scl);
+  ctx.fillStyle='rgba(255,255,255,0.15)';
+  ctx.fillRect(W/2-80*scl,360*scl,160*scl,44*scl);
+  ctx.strokeStyle='#7c4dff';ctx.lineWidth=2*scl;
+  ctx.strokeRect(W/2-80*scl,360*scl,160*scl,44*scl);
+  ctx.fillStyle='#fff';ctx.font=`bold ${16*scl}px monospace`;
+  ctx.fillText('TAP TO RETRY',W/2,387*scl);
+}
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

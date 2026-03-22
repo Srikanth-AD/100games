@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>PICKPOCKET</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H;
+function resize(){W=canvas.width=Math.min(window.innerWidth,480);H=canvas.height=Math.min(window.innerHeight,720);}
+resize();window.addEventListener('resize',resize);
+
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playSound(freq,dur,type='sine',vol=0.12){
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(vol,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+  o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+dur);
+}
+function sndSteal(){playSound(600,0.1);setTimeout(()=>playSound(900,0.15),80);}
+function sndCaught(){playSound(200,0.4,'sawtooth',0.15);playSound(150,0.3,'square',0.1);}
+function sndFail(){playSound(300,0.15,'square',0.08);}
+function sndTick(){playSound(1200,0.03,'sine',0.05);}
+
+const ITEMS=[
+  {name:'wallet',icon:'W',color:'#853',value:30,stealTime:50},
+  {name:'watch',icon:'O',color:'#cc8',value:50,stealTime:65},
+  {name:'phone',icon:'P',color:'#4af',value:40,stealTime:55},
+  {name:'ring',icon:'R',color:'#fd0',value:80,stealTime:80},
+  {name:'keys',icon:'K',color:'#aaa',value:20,stealTime:35},
+];
+
+const ALERTNESS=[
+  {name:'relaxed',color:'#5a5',headColor:'#a85',noticeTime:70,speed:0.8},
+  {name:'normal',color:'#aa5',headColor:'#a75',noticeTime:55,speed:1.2},
+  {name:'alert',color:'#a55',headColor:'#a65',noticeTime:40,speed:1.6},
+  {name:'paranoid',color:'#f33',headColor:'#a55',noticeTime:28,speed:1.0},
+];
+
+let state='menu',score=0,catches=0,maxCatches=3,npcs=[],activeNPC=null;
+let stealProgress=0,holding=false,holdX=0,holdY=0;
+let notifications=[],lastTime=0,spawnTimer=0,difficulty=0;
+let totalSteals=0,bestStreak=0,currentStreak=0;
+
+function spawnNPC(){
+  const alert=ALERTNESS[Math.min(Math.floor(Math.random()*(1+difficulty*0.5)),ALERTNESS.length-1)];
+  const item=ITEMS[Math.floor(Math.random()*ITEMS.length)];
+  const fromRight=Math.random()>0.5;
+  const lane=Math.floor(Math.random()*3);
+  const y=H*0.35+lane*100;
+  const npc={
+    x:fromRight?W+40:-40,
+    y,dir:fromRight?-1:1,
+    speed:alert.speed*(0.8+Math.random()*0.4),
+    alert,item,
+    bodyH:50+Math.random()*15,
+    headR:12+Math.random()*4,
+    hatStyle:Math.floor(Math.random()*3),
+    shirtColor:`hsl(${Math.random()*360},${40+Math.random()*30}%,${40+Math.random()*20}%)`,
+    pantsColor:`hsl(${Math.random()*60+200},${20+Math.random()*20}%,${25+Math.random()*15}%)`,
+    noticed:false,noticeTimer:0,
+    stolen:false,walkPhase:Math.random()*Math.PI*2,
+    itemX:0,itemY:0,
+    exclamation:0
+  };
+  npcs.push(npc);
+}
+
+function initGame(){
+  score=0;catches=0;npcs=[];notifications=[];stealProgress=0;holding=false;
+  activeNPC=null;difficulty=0;spawnTimer=0;
+  totalSteals=0;bestStreak=0;currentStreak=0;
+  for(let i=0;i<3;i++)spawnNPC();
+}
+
+function getPos(e){
+  const rect=canvas.getBoundingClientRect();
+  return{x:(e.touches?e.touches[0].clientX:e.clientX)-rect.left,
+         y:(e.touches?e.touches[0].clientY:e.clientY)-rect.top};
+}
+
+function findNPCItem(x,y){
+  for(const npc of npcs){
+    if(npc.stolen||npc.noticed)continue;
+    const ix=npc.x+(npc.dir===1?15:-15);
+    const iy=npc.y-10;
+    if(Math.abs(x-ix)<25&&Math.abs(y-iy)<25)return npc;
+  }
+  return null;
+}
+
+canvas.addEventListener('mousedown',e=>{handleDown(getPos(e));});
+canvas.addEventListener('mousemove',e=>{handleMove(getPos(e));});
+canvas.addEventListener('mouseup',e=>{handleUp();});
+canvas.addEventListener('touchstart',e=>{e.preventDefault();if(audioCtx.state==='suspended')audioCtx.resume();handleDown(getPos(e));},{passive:false});
+canvas.addEventListener('touchmove',e=>{e.preventDefault();handleMove(getPos(e));},{passive:false});
+canvas.addEventListener('touchend',e=>{e.preventDefault();handleUp();},{passive:false});
+
+function handleDown(p){
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  if(state==='menu'){state='play';initGame();return;}
+  if(state==='over'){state='menu';return;}
+  holdX=p.x;holdY=p.y;
+  const npc=findNPCItem(p.x,p.y);
+  if(npc){
+    holding=true;activeNPC=npc;stealProgress=0;
+  }
+}
+
+function handleMove(p){holdX=p.x;holdY=p.y;}
+
+function handleUp(){
+  if(!holding||!activeNPC)return;
+  if(stealProgress<1){
+    // Released too early
+    sndFail();
+    notifications.push({x:activeNPC.x,y:activeNPC.y-60,text:'Too early!',color:'#fa0',life:1});
+  }
+  holding=false;activeNPC=null;stealProgress=0;
+}
+
+function notify(x,y,text,color){
+  notifications.push({x,y,text,color,life:1});
+}
+
+function update(dt){
+  if(state!=='play')return;
+
+  difficulty+=dt*0.001;
+  spawnTimer-=dt;
+  if(spawnTimer<=0){
+    spawnNPC();
+    spawnTimer=Math.max(40,100-difficulty*15);
+  }
+
+  // Stealing
+  if(holding&&activeNPC&&!activeNPC.noticed&&!activeNPC.stolen){
+    stealProgress+=dt/activeNPC.item.stealTime;
+    if(Math.floor(stealProgress*10)!==Math.floor((stealProgress-dt/activeNPC.item.stealTime)*10))sndTick();
+
+    // Check if NPC notices
+    activeNPC.noticeTimer+=dt;
+    if(activeNPC.noticeTimer>=activeNPC.alert.noticeTime){
+      activeNPC.noticed=true;activeNPC.exclamation=1;
+      activeNPC.speed=0;
+      sndCaught();
+      catches++;
+      currentStreak=0;
+      holding=false;stealProgress=0;activeNPC=null;
+      notify(0,0,'CAUGHT!','#f33');
+      if(catches>=maxCatches){
+        state='over';
+        playSound(150,0.5,'sawtooth',0.15);
+      }
+      return;
+    }
+
+    if(stealProgress>=1){
+      // Successful steal!
+      activeNPC.stolen=true;
+      const pts=activeNPC.item.value;
+      score+=pts;totalSteals++;currentStreak++;
+      if(currentStreak>bestStreak)bestStreak=currentStreak;
+      sndSteal();
+      notify(activeNPC.x,activeNPC.y-60,'+'+pts,'#0f0');
+      if(currentStreak>=3)notify(activeNPC.x,activeNPC.y-80,'Streak: '+currentStreak+'!','#ff0');
+      holding=false;activeNPC=null;stealProgress=0;
+    }
+  }
+
+  // Update NPCs
+  for(let i=npcs.length-1;i>=0;i--){
+    const npc=npcs[i];
+    npc.walkPhase+=npc.speed*0.08*dt;
+    npc.x+=npc.dir*npc.speed*dt;
+    if(npc.noticed)npc.exclamation=Math.max(0,npc.exclamation-0.005*dt);
+
+    // Update item position
+    npc.itemX=npc.x+(npc.dir===1?15:-15);
+    npc.itemY=npc.y-10;
+
+    // Remove off screen
+    if((npc.dir===1&&npc.x>W+60)||(npc.dir===-1&&npc.x<-60)){
+      if(npc===activeNPC){holding=false;activeNPC=null;stealProgress=0;}
+      npcs.splice(i,1);
+    }
+  }
+
+  // Notifications
+  for(let i=notifications.length-1;i>=0;i--){
+    notifications[i].life-=0.015*dt;
+    if(notifications[i].life<=0)notifications.splice(i,1);
+  }
+}
+
+function drawNPC(npc){
+  const x=npc.x,y=npc.y;
+  const bob=Math.sin(npc.walkPhase)*3;
+  const legPhase=Math.sin(npc.walkPhase)*8;
+
+  ctx.save();
+  if(npc.noticed){ctx.globalAlpha=0.9;}
+
+  // Legs
+  ctx.strokeStyle=npc.pantsColor;ctx.lineWidth=5;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(x-6,y+15);ctx.lineTo(x-6+legPhase,y+35+bob);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(x+6,y+15);ctx.lineTo(x+6-legPhase,y+35+bob);ctx.stroke();
+
+  // Body
+  ctx.fillStyle=npc.noticed?'#f44':npc.shirtColor;
+  ctx.fillRect(x-12,y-20+bob,24,38);
+
+  // Alertness indicator stripe
+  ctx.fillStyle=npc.alert.color;
+  ctx.fillRect(x-12,y-20+bob,4,38);
+
+  // Head
+  ctx.fillStyle=npc.noticed?'#f66':npc.alert.headColor;
+  ctx.beginPath();ctx.arc(x,y-28+bob,npc.headR,0,Math.PI*2);ctx.fill();
+
+  // Face direction
+  const eyeX=npc.dir===1?3:-3;
+  ctx.fillStyle='#000';
+  ctx.beginPath();ctx.arc(x+eyeX-2,y-30+bob,1.5,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(x+eyeX+3,y-30+bob,1.5,0,Math.PI*2);ctx.fill();
+
+  // Hat
+  if(npc.hatStyle===1){
+    ctx.fillStyle='#345';
+    ctx.fillRect(x-14,y-40+bob,28,6);
+    ctx.fillRect(x-8,y-48+bob,16,10);
+  }else if(npc.hatStyle===2){
+    ctx.fillStyle='#543';
+    ctx.beginPath();ctx.arc(x,y-38+bob,10,Math.PI,0);ctx.fill();
+  }
+
+  // Item (if not stolen)
+  if(!npc.stolen){
+    const ix=npc.itemX,iy=npc.itemY+bob;
+    ctx.fillStyle=npc.item.color;
+    ctx.fillRect(ix-8,iy-6,16,12);
+    ctx.fillStyle='#fff';ctx.font='bold 10px Arial';ctx.textAlign='center';
+    ctx.fillText(npc.item.icon,ix,iy+4);
+
+    // Glow if near pointer and holding
+    if(npc===activeNPC&&holding){
+      ctx.strokeStyle='rgba(255,255,0,0.6)';
+      ctx.lineWidth=2;
+      ctx.strokeRect(ix-10,iy-8,20,16);
+    }
+  }
+
+  // Exclamation
+  if(npc.noticed&&npc.exclamation>0){
+    ctx.globalAlpha=npc.exclamation;
+    ctx.fillStyle='#f00';ctx.font='bold 24px Arial';ctx.textAlign='center';
+    ctx.fillText('!',x,y-52+bob);
+    ctx.globalAlpha=1;
+  }
+
+  ctx.restore();
+}
+
+function drawStealCircle(){
+  if(!holding||!activeNPC)return;
+  const npc=activeNPC;
+  const ix=npc.itemX,iy=npc.itemY;
+  const r=20;
+
+  // Background circle
+  ctx.strokeStyle='rgba(255,255,255,0.3)';
+  ctx.lineWidth=3;ctx.beginPath();ctx.arc(ix,iy,r,0,Math.PI*2);ctx.stroke();
+
+  // Progress
+  const dangerPct=npc.noticeTimer/npc.alert.noticeTime;
+  const col=dangerPct<0.5?'#0f0':dangerPct<0.8?'#ff0':'#f00';
+  ctx.strokeStyle=col;
+  ctx.lineWidth=4;ctx.beginPath();
+  ctx.arc(ix,iy,r,-Math.PI/2,-Math.PI/2+stealProgress*Math.PI*2);ctx.stroke();
+
+  // Danger bar
+  ctx.fillStyle='rgba(255,0,0,'+dangerPct*0.5+')';
+  ctx.fillRect(ix-r,iy+r+5,r*2*dangerPct,4);
+
+  // Pulsing finger icon
+  const pulse=Math.sin(Date.now()*0.01)*2;
+  ctx.fillStyle='rgba(255,255,255,0.4)';
+  ctx.beginPath();ctx.arc(ix,iy,6+pulse,0,Math.PI*2);ctx.fill();
+}
+
+function draw(){
+  // Background - street scene
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#2a3040');bg.addColorStop(0.3,'#3a4050');bg.addColorStop(1,'#555');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+
+  // Sidewalk
+  ctx.fillStyle='#666';ctx.fillRect(0,H*0.75,W,H*0.25);
+  ctx.fillStyle='#777';
+  for(let i=0;i<W;i+=40)ctx.fillRect(i,H*0.75,38,2);
+
+  // Buildings in back
+  ctx.fillStyle='#2a2a3a';
+  ctx.fillRect(0,H*0.05,80,H*0.7);
+  ctx.fillRect(W-90,H*0.1,90,H*0.65);
+  ctx.fillRect(W*0.4,H*0.15,70,H*0.6);
+  // Windows
+  ctx.fillStyle='#554';
+  for(let bx of[10,30,50]){
+    for(let by=H*0.1;by<H*0.6;by+=30){
+      if(Math.random()>0.3)ctx.fillStyle='#ff9';else ctx.fillStyle='#443';
+      ctx.fillRect(bx,by,15,12);
+    }
+  }
+
+  if(state==='menu'){
+    ctx.fillStyle='#e44';
+    ctx.font='bold 40px Arial';ctx.textAlign='center';
+    ctx.fillText('PICKPOCKET',W/2,H*0.25);
+    ctx.font='16px Arial';ctx.fillStyle='#ccc';
+    ctx.fillText('Tap & hold on items to steal them',W/2,H*0.35);
+    ctx.fillText('Release when the circle fills up',W/2,H*0.40);
+    ctx.fillText('Hold too long = CAUGHT!',W/2,H*0.45);
+    ctx.fillText('Color stripe = alertness level',W/2,H*0.50);
+    ctx.fillStyle='#5a5';ctx.fillText('Green = relaxed',W/3,H*0.57);
+    ctx.fillStyle='#f55';ctx.fillText('Red = alert!',W*2/3,H*0.57);
+    ctx.font='14px Arial';ctx.fillStyle='#999';
+    ctx.fillText('3 catches and you are done!',W/2,H*0.64);
+    ctx.font='22px Arial';ctx.fillStyle='#fff';
+    ctx.fillText('Tap to Start',W/2,H*0.75);
+    return;
+  }
+
+  // NPC lanes
+  ctx.strokeStyle='rgba(255,255,255,0.05)';ctx.lineWidth=1;
+  for(let l=0;l<3;l++){
+    const ly=H*0.35+l*100+40;
+    ctx.beginPath();ctx.moveTo(0,ly);ctx.lineTo(W,ly);ctx.stroke();
+  }
+
+  // NPCs
+  for(const npc of npcs)drawNPC(npc);
+
+  // Steal progress
+  drawStealCircle();
+
+  // HUD
+  ctx.fillStyle='rgba(0,0,0,0.65)';ctx.fillRect(0,0,W,40);
+  ctx.font='bold 16px Arial';ctx.textAlign='left';
+  ctx.fillStyle='#0f0';ctx.fillText('$'+score,10,27);
+  ctx.textAlign='center';ctx.fillStyle='#fff';
+  ctx.fillText('Steals: '+totalSteals,W/2,27);
+  ctx.textAlign='right';
+  // Show catches
+  for(let i=0;i<maxCatches;i++){
+    ctx.fillStyle=i<catches?'#f33':'#555';
+    ctx.beginPath();ctx.arc(W-20-i*22,22,8,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#fff';ctx.font='bold 10px Arial';
+    ctx.fillText('X',W-20-i*22,26);
+  }
+
+  // Notifications
+  for(const n of notifications){
+    ctx.globalAlpha=n.life;
+    ctx.fillStyle=n.color;ctx.font='bold 20px Arial';ctx.textAlign='center';
+    const nx=n.x||W/2,ny=(n.y||H*0.45)-(1-n.life)*30;
+    ctx.fillText(n.text,nx,ny);
+  }
+  ctx.globalAlpha=1;
+
+  if(state==='over'){
+    ctx.fillStyle='rgba(0,0,0,0.8)';ctx.fillRect(0,0,W,H);
+    ctx.font='bold 40px Arial';ctx.textAlign='center';
+    ctx.fillStyle='#f44';ctx.fillText('BUSTED!',W/2,H*0.28);
+    ctx.font='26px Arial';ctx.fillStyle='#fff';
+    ctx.fillText('Loot: $'+score,W/2,H*0.39);
+    ctx.font='18px Arial';ctx.fillStyle='#aaa';
+    ctx.fillText('Items stolen: '+totalSteals,W/2,H*0.48);
+    ctx.fillText('Best streak: '+bestStreak,W/2,H*0.54);
+    ctx.font='20px Arial';ctx.fillStyle='#fff';
+    ctx.fillText('Tap to Continue',W/2,H*0.68);
+  }
+}
+
+function gameLoop(ts){
+  const dt=Math.min((ts-lastTime)/16.67,3);lastTime=ts;
+  update(dt);draw();
+  requestAnimationFrame(gameLoop);
+}
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>FREEFALL</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W, H;
+function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Audio
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playSound(freq, dur, type = 'sine', vol = 0.3) {
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(vol, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    o.connect(g);
+    g.connect(audioCtx.destination);
+    o.start();
+    o.stop(audioCtx.currentTime + dur);
+}
+
+// State
+let state = 'menu';
+let score = 0;
+let bestScore = 0;
+let round = 1;
+let roundScore = 0;
+
+// Player
+let px, py, pvx, pvy;
+let altitude; // how high above ground
+let fallSpeed;
+let parachuteOpen = false;
+let parachuteDrag = 0;
+let windDrift = 0;
+let playerAngle = 0;
+
+// World
+let clouds = [];
+let birds = [];
+let collectibles = [];
+let collected = 0;
+let groundY; // altitude where ground is
+let targetX, targetWidth;
+let landed = false;
+let crashed = false;
+
+// Particles
+let particles = [];
+
+// Input
+let dragX = null;
+let playerTargetX = 0;
+
+function initRound() {
+    px = W / 2;
+    py = H * 0.15;
+    pvx = 0;
+    pvy = 0;
+    altitude = 10000;
+    fallSpeed = 0;
+    parachuteOpen = false;
+    parachuteDrag = 0;
+    windDrift = (Math.random() - 0.5) * 0.3;
+    playerAngle = 0;
+    landed = false;
+    crashed = false;
+    playerTargetX = W / 2;
+    roundScore = 0;
+    collected = 0;
+
+    // Generate clouds
+    clouds = [];
+    for (let i = 0; i < 25; i++) {
+        clouds.push({
+            x: Math.random() * W * 1.5 - W * 0.25,
+            alt: Math.random() * 9000 + 500,
+            w: Math.random() * 120 + 60,
+            h: Math.random() * 30 + 15,
+            speed: Math.random() * 0.5 + 0.2
+        });
+    }
+
+    // Generate birds
+    birds = [];
+    for (let i = 0; i < 8; i++) {
+        birds.push({
+            x: Math.random() * W,
+            alt: Math.random() * 7000 + 1000,
+            speed: (Math.random() - 0.5) * 3,
+            wingPhase: Math.random() * Math.PI * 2
+        });
+    }
+
+    // Collectibles
+    collectibles = [];
+    const numItems = 10 + round * 3;
+    for (let i = 0; i < numItems; i++) {
+        collectibles.push({
+            x: Math.random() * (W - 80) + 40,
+            alt: Math.random() * 8000 + 1000,
+            type: Math.random() > 0.3 ? 'coin' : 'star',
+            collected: false,
+            angle: Math.random() * Math.PI * 2
+        });
+    }
+
+    // Target landing zone
+    targetWidth = Math.max(120 - round * 10, 40);
+    targetX = W * 0.2 + Math.random() * (W * 0.6 - targetWidth);
+    groundY = 0;
+}
+
+function initGame() {
+    score = 0;
+    round = 1;
+    initRound();
+}
+
+function altToScreenY(alt) {
+    // Map altitude to screen Y position
+    // Player stays mostly centered, world scrolls
+    const relAlt = alt - altitude;
+    return py - relAlt * (H / 2000);
+}
+
+function spawnParticles(x, y, color, count) {
+    for (let i = 0; i < count; i++) {
+        particles.push({
+            x, y,
+            vx: (Math.random() - 0.5) * 6,
+            vy: (Math.random() - 0.5) * 6,
+            life: 1,
+            color,
+            size: Math.random() * 4 + 2
+        });
+    }
+}
+
+function update() {
+    if (state !== 'play') return;
+    if (landed || crashed) return;
+
+    // Fall
+    if (!parachuteOpen) {
+        fallSpeed = Math.min(fallSpeed + 0.5, 60);
+    } else {
+        parachuteDrag = Math.min(parachuteDrag + 0.05, 1);
+        fallSpeed = Math.max(fallSpeed - 2 * parachuteDrag, 8);
+    }
+    altitude -= fallSpeed;
+
+    // Horizontal movement
+    const moveSpeed = parachuteOpen ? 1.5 : 3;
+    pvx += (playerTargetX - px) * 0.02;
+    pvx *= 0.92;
+    if (parachuteOpen) {
+        pvx += windDrift;
+    }
+    px += pvx;
+    px = Math.max(15, Math.min(W - 15, px));
+
+    // Player visual tilt
+    playerAngle = pvx * 0.03;
+
+    // Check collectible pickup
+    collectibles.forEach(c => {
+        if (c.collected) return;
+        const altDiff = Math.abs(c.alt - altitude);
+        const xDiff = Math.abs(c.x - px);
+        if (altDiff < 80 && xDiff < 30) {
+            c.collected = true;
+            collected++;
+            const pts = c.type === 'star' ? 50 : 20;
+            roundScore += pts;
+            playSound(c.type === 'star' ? 880 : 660, 0.12, 'sine', 0.2);
+            spawnParticles(px, py, c.type === 'star' ? '#ffcc00' : '#ffaa00', 8);
+        }
+    });
+
+    // Check landing
+    if (altitude <= 0) {
+        altitude = 0;
+        if (!parachuteOpen || fallSpeed > 25) {
+            // CRASH
+            crashed = true;
+            playSound(100, 0.5, 'sawtooth', 0.3);
+            spawnParticles(px, H - 80, '#ff4444', 30);
+            setTimeout(() => {
+                state = 'over';
+                bestScore = Math.max(bestScore, score);
+            }, 1500);
+        } else {
+            // LANDING
+            landed = true;
+            const landDist = Math.abs(px - (targetX + targetWidth / 2));
+            const accuracy = Math.max(0, 1 - landDist / (targetWidth * 2));
+            const landingBonus = Math.floor(accuracy * 200);
+            roundScore += landingBonus;
+            score += roundScore;
+
+            let msg = '';
+            if (accuracy > 0.9) { msg = 'PERFECT LANDING!'; playSound(880, 0.3, 'sine', 0.3); }
+            else if (accuracy > 0.5) { msg = 'GOOD LANDING'; playSound(660, 0.2, 'sine', 0.25); }
+            else { msg = 'LANDED'; playSound(440, 0.15, 'triangle', 0.2); }
+
+            landingMsg = msg;
+            landingAccuracy = accuracy;
+            landingBonus2 = landingBonus;
+            spawnParticles(px, H - 80, '#00ff88', 15);
+
+            setTimeout(() => {
+                round++;
+                initRound();
+            }, 2500);
+        }
+    }
+
+    // Update clouds
+    clouds.forEach(c => {
+        c.x += c.speed;
+        if (c.x > W + 100) c.x = -c.w;
+    });
+
+    // Update birds
+    birds.forEach(b => {
+        b.x += b.speed;
+        b.wingPhase += 0.1;
+        if (b.x > W + 50) b.x = -50;
+        if (b.x < -50) b.x = W + 50;
+    });
+
+    // Update collectibles rotation
+    collectibles.forEach(c => c.angle += 0.05);
+
+    // Particles
+    particles.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= 0.02;
+    });
+    particles = particles.filter(p => p.life > 0);
+}
+
+let landingMsg = '';
+let landingAccuracy = 0;
+let landingBonus2 = 0;
+
+function draw() {
+    // Sky gradient based on altitude
+    const skyT = Math.min(altitude / 10000, 1);
+    const r = Math.floor(20 + skyT * 10);
+    const g = Math.floor(30 + skyT * 20);
+    const b = Math.floor(80 + skyT * 120);
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.fillRect(0, 0, W, H);
+
+    if (state === 'menu') { drawMenu(); return; }
+    if (state === 'over') { drawGameplay(); drawGameOver(); return; }
+
+    drawGameplay();
+}
+
+function drawGameplay() {
+    // Clouds
+    clouds.forEach(c => {
+        const sy = altToScreenY(c.alt);
+        if (sy < -50 || sy > H + 50) return;
+        ctx.fillStyle = 'rgba(255,255,255,0.25)';
+        ctx.beginPath();
+        ctx.ellipse(c.x, sy, c.w / 2, c.h / 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(c.x - c.w * 0.2, sy + 5, c.w * 0.35, c.h * 0.4, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(c.x + c.w * 0.2, sy + 3, c.w * 0.3, c.h * 0.35, 0, 0, Math.PI * 2);
+        ctx.fill();
+    });
+
+    // Birds
+    birds.forEach(brd => {
+        const sy = altToScreenY(brd.alt);
+        if (sy < -30 || sy > H + 30) return;
+        const wing = Math.sin(brd.wingPhase) * 8;
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(brd.x - 10, sy + wing);
+        ctx.quadraticCurveTo(brd.x - 3, sy - 3, brd.x, sy);
+        ctx.quadraticCurveTo(brd.x + 3, sy - 3, brd.x + 10, sy + wing);
+        ctx.stroke();
+    });
+
+    // Collectibles
+    collectibles.forEach(c => {
+        if (c.collected) return;
+        const sy = altToScreenY(c.alt);
+        if (sy < -30 || sy > H + 30) return;
+
+        ctx.save();
+        ctx.translate(c.x, sy);
+        ctx.rotate(c.angle);
+
+        if (c.type === 'coin') {
+            ctx.beginPath();
+            ctx.arc(0, 0, 12, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffaa00';
+            ctx.fill();
+            ctx.strokeStyle = '#ffcc44';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.fillStyle = '#ffcc44';
+            ctx.font = 'bold 12px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('$', 0, 4);
+        } else {
+            // Star
+            ctx.fillStyle = '#ffcc00';
+            ctx.beginPath();
+            for (let i = 0; i < 5; i++) {
+                const a = (i * 4 * Math.PI) / 5 - Math.PI / 2;
+                const r = i === 0 ? 14 : 14;
+                ctx.lineTo(Math.cos(a) * 14, Math.sin(a) * 14);
+                const a2 = a + Math.PI / 5;
+                ctx.lineTo(Math.cos(a2) * 6, Math.sin(a2) * 6);
+            }
+            ctx.closePath();
+            ctx.fill();
+        }
+        ctx.restore();
+    });
+
+    // Ground
+    const groundScreenY = altToScreenY(0);
+    if (groundScreenY < H + 10) {
+        // Ground
+        ctx.fillStyle = '#2a5a2a';
+        ctx.fillRect(0, groundScreenY, W, H - groundScreenY + 10);
+
+        // Target zone
+        const tLeft = targetX;
+        const tRight = targetX + targetWidth;
+        ctx.fillStyle = 'rgba(255,255,0,0.3)';
+        ctx.fillRect(tLeft, groundScreenY - 5, targetWidth, 10);
+        ctx.strokeStyle = '#ffcc00';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(tLeft, groundScreenY - 5, targetWidth, 10);
+
+        // X markers
+        ctx.fillStyle = '#ffcc00';
+        ctx.font = 'bold 16px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('\u2716', tLeft + targetWidth / 2, groundScreenY - 12);
+    }
+
+    // Player
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(playerAngle);
+
+    if (parachuteOpen) {
+        // Parachute
+        const chuteDeploy = Math.min(parachuteDrag * 2, 1);
+        const chuteW = 50 * chuteDeploy;
+        const chuteH = 30 * chuteDeploy;
+        ctx.fillStyle = '#ff4488';
+        ctx.beginPath();
+        ctx.ellipse(0, -35 * chuteDeploy, chuteW, chuteH, 0, Math.PI, 0);
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        // Strings
+        ctx.strokeStyle = '#aaa';
+        ctx.beginPath();
+        ctx.moveTo(-chuteW + 5, -35 * chuteDeploy);
+        ctx.lineTo(-5, -5);
+        ctx.moveTo(chuteW - 5, -35 * chuteDeploy);
+        ctx.lineTo(5, -5);
+        ctx.moveTo(0, -35 * chuteDeploy - chuteH + 5);
+        ctx.lineTo(0, -5);
+        ctx.stroke();
+    }
+
+    // Body
+    ctx.fillStyle = '#ff6644';
+    ctx.fillRect(-8, -10, 16, 20);
+    // Head
+    ctx.beginPath();
+    ctx.arc(0, -16, 8, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffcc88';
+    ctx.fill();
+    // Goggles
+    ctx.fillStyle = '#333';
+    ctx.fillRect(-6, -19, 12, 4);
+    // Legs
+    ctx.fillStyle = '#336';
+    if (!parachuteOpen) {
+        ctx.fillRect(-7, 10, 5, 10);
+        ctx.fillRect(2, 10, 5, 10);
+    } else {
+        ctx.fillRect(-10, 8, 5, 12);
+        ctx.fillRect(5, 8, 5, 12);
+    }
+
+    ctx.restore();
+
+    // Particles
+    particles.forEach(p => {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.life;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+    });
+
+    // HUD
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 22px monospace';
+    ctx.fillText(`ALT: ${Math.max(0, Math.floor(altitude))}m`, W / 2, 30);
+
+    ctx.font = '16px monospace';
+    ctx.fillText(`SPEED: ${Math.floor(fallSpeed * 3)} km/h`, W / 2, 52);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ffcc00';
+    ctx.font = '18px monospace';
+    ctx.fillText(`ITEMS: ${collected}`, 15, 30);
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(`SCORE: ${score}`, W - 15, 30);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '14px monospace';
+    ctx.fillText(`ROUND ${round}`, W - 15, 50);
+
+    // Parachute hint
+    if (!parachuteOpen && altitude < 3000 && altitude > 500 && !landed && !crashed) {
+        const pulse = 0.5 + Math.sin(Date.now() * 0.008) * 0.4;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = `rgba(255,100,100,${pulse})`;
+        ctx.font = 'bold 20px monospace';
+        ctx.fillText('TAP TO OPEN CHUTE!', W / 2, H - 40);
+    }
+
+    // Landing message
+    if (landed) {
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#00ff88';
+        ctx.font = 'bold 32px monospace';
+        ctx.fillText(landingMsg, W / 2, H * 0.35);
+        ctx.fillStyle = '#ffcc00';
+        ctx.font = '20px monospace';
+        ctx.fillText(`+${landingBonus2} landing bonus`, W / 2, H * 0.35 + 35);
+        ctx.fillText(`Round score: ${roundScore}`, W / 2, H * 0.35 + 65);
+    }
+
+    if (crashed) {
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#ff3344';
+        ctx.font = 'bold 36px monospace';
+        ctx.fillText('CRASH!', W / 2, H * 0.4);
+    }
+
+    // Altitude bar
+    const barH = H - 80;
+    const barX = W - 8;
+    ctx.fillStyle = 'rgba(255,255,255,0.1)';
+    ctx.fillRect(barX, 60, 5, barH);
+    const altPct = Math.min(altitude / 10000, 1);
+    ctx.fillStyle = altitude < 1000 ? '#ff4444' : '#00ccff';
+    ctx.fillRect(barX, 60 + barH * (1 - altPct), 5, barH * altPct);
+}
+
+function drawMenu() {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#00ccff';
+    ctx.font = 'bold 50px monospace';
+    ctx.fillText('FREEFALL', W / 2, H * 0.25);
+
+    ctx.fillStyle = '#aaa';
+    ctx.font = '18px monospace';
+    ctx.fillText('Collect items & land on target', W / 2, H * 0.25 + 40);
+    ctx.fillText('Drag to move, tap to open chute', W / 2, H * 0.25 + 65);
+
+    // Animated diver
+    const t = Date.now() * 0.002;
+    const dy = Math.sin(t) * 30;
+    ctx.save();
+    ctx.translate(W / 2, H * 0.55 + dy);
+    ctx.fillStyle = '#ff6644';
+    ctx.fillRect(-8, -10, 16, 20);
+    ctx.beginPath();
+    ctx.arc(0, -16, 8, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffcc88';
+    ctx.fill();
+    ctx.restore();
+
+    // Coins floating around
+    for (let i = 0; i < 5; i++) {
+        const cx = W * 0.3 + Math.sin(t + i * 1.5) * W * 0.2;
+        const cy = H * 0.5 + Math.cos(t * 0.7 + i * 2) * 40;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffaa00';
+        ctx.fill();
+    }
+
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.5 + Math.sin(Date.now() * 0.004) * 0.3) + ')';
+    ctx.font = '22px monospace';
+    ctx.fillText('TAP TO START', W / 2, H * 0.8);
+}
+
+function drawGameOver() {
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ff4466';
+    ctx.font = 'bold 42px monospace';
+    ctx.fillText('CRASHED!', W / 2, H * 0.25);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 30px monospace';
+    ctx.fillText(`SCORE: ${score}`, W / 2, H * 0.4);
+
+    ctx.fillStyle = '#ffcc00';
+    ctx.font = '22px monospace';
+    ctx.fillText(`ROUNDS: ${round}`, W / 2, H * 0.5);
+    ctx.fillText(`BEST: ${bestScore}`, W / 2, H * 0.57);
+
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.5 + Math.sin(Date.now() * 0.004) * 0.3) + ')';
+    ctx.font = '20px monospace';
+    ctx.fillText('TAP TO RETRY', W / 2, H * 0.75);
+}
+
+// Input
+function handleTapStart(x) {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+
+    if (state === 'menu') {
+        state = 'play';
+        initGame();
+        return;
+    }
+    if (state === 'over') {
+        state = 'play';
+        initGame();
+        return;
+    }
+    if (state === 'play') {
+        if (!parachuteOpen && !landed && !crashed) {
+            if (altitude < 4000) {
+                parachuteOpen = true;
+                playSound(200, 0.3, 'triangle', 0.2);
+                playSound(300, 0.2, 'sine', 0.15);
+            }
+        }
+        dragX = x;
+    }
+}
+
+function handleMove(x) {
+    if (state !== 'play' || dragX === null) return;
+    playerTargetX = x;
+}
+
+function handleEnd() {
+    dragX = null;
+}
+
+canvas.addEventListener('mousedown', e => { handleTapStart(e.clientX); });
+canvas.addEventListener('mousemove', e => { handleMove(e.clientX); });
+canvas.addEventListener('mouseup', handleEnd);
+
+canvas.addEventListener('touchstart', e => {
+    e.preventDefault();
+    handleTapStart(e.touches[0].clientX);
+});
+canvas.addEventListener('touchmove', e => {
+    e.preventDefault();
+    handleMove(e.touches[0].clientX);
+});
+canvas.addEventListener('touchend', e => {
+    e.preventDefault();
+    handleEnd();
+});
+
+function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>

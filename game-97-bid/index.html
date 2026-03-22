@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>BID</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H;
+function resize(){
+  const r=Math.min(window.innerWidth/480,window.innerHeight/720);
+  W=480;H=720;canvas.width=W;canvas.height=H;
+  canvas.style.width=(W*r)+'px';canvas.style.height=(H*r)+'px';
+}
+resize();window.addEventListener('resize',resize);
+
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playSound(f,d,t='sine'){
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type=t;o.frequency.value=f;g.gain.setValueAtTime(0.12,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+d);
+  o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+d);
+}
+function bidSound(){playSound(440,0.1,'square');}
+function winSound(){playSound(523,0.1);setTimeout(()=>playSound(659,0.1),100);setTimeout(()=>playSound(784,0.2),200);}
+function loseSound(){playSound(300,0.3,'sawtooth');}
+function hammerSound(){playSound(150,0.15,'triangle');setTimeout(()=>playSound(100,0.2,'triangle'),100);}
+
+const STATE={MENU:0,PLAY:1,BIDDING:2,RESULT:3,OVER:4};
+let state=STATE.MENU;
+
+const items=[
+  {name:'Vintage Watch',icon:'watch',minVal:50,maxVal:300},
+  {name:'Oil Painting',icon:'painting',minVal:100,maxVal:500},
+  {name:'Diamond Ring',icon:'ring',minVal:200,maxVal:800},
+  {name:'Antique Vase',icon:'vase',minVal:80,maxVal:400},
+  {name:'Gold Coin',icon:'coin',minVal:150,maxVal:600},
+  {name:'Rare Book',icon:'book',minVal:60,maxVal:250},
+  {name:'Silk Rug',icon:'rug',minVal:120,maxVal:450},
+  {name:'Jade Statue',icon:'statue',minVal:180,maxVal:700},
+  {name:'Silver Locket',icon:'locket',minVal:40,maxVal:200},
+  {name:'Crystal Globe',icon:'globe',minVal:100,maxVal:350},
+  {name:'Porcelain Set',icon:'set',minVal:90,maxVal:380},
+  {name:'Bronze Sword',icon:'sword',minVal:200,maxVal:650},
+  {name:'Pearl Necklace',icon:'pearl',minVal:250,maxVal:900},
+  {name:'Marble Bust',icon:'bust',minVal:130,maxVal:500},
+  {name:'Emerald Brooch',icon:'brooch',minVal:300,maxVal:1000},
+];
+
+let currentItem,trueValue,currentBid,playerBid,ai1Bid,ai2Bid;
+let playerTotal=0,itemIndex=0,totalItems=10;
+let turnOrder=[],turnIdx=0;
+let aiTimer=0,resultTimer=0;
+let bidHistory=[];
+let passCount=0;
+let playerPassed=false,ai1Passed=false,ai2Passed=false;
+let winner='';
+let itemResults=[];
+let sparkles=[];
+
+// AI personalities
+const ai1Name='Rex',ai2Name='Penny';
+// Rex = aggressive, Penny = cautious
+
+function newItem(){
+  const it=items[Math.floor(Math.random()*items.length)];
+  currentItem=it;
+  trueValue=it.minVal+Math.floor(Math.random()*(it.maxVal-it.minVal));
+  currentBid=0;playerBid=0;ai1Bid=0;ai2Bid=0;
+  playerPassed=false;ai1Passed=false;ai2Passed=false;
+  passCount=0;
+  bidHistory=[];
+  turnOrder=['player','ai1','ai2'];
+  // Shuffle turn order
+  for(let i=turnOrder.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[turnOrder[i],turnOrder[j]]=[turnOrder[j],turnOrder[i]];}
+  turnIdx=0;
+  state=STATE.BIDDING;
+  aiTimer=0;
+  advanceToNextActive();
+}
+
+function advanceToNextActive(){
+  let loops=0;
+  while(loops<4){
+    const who=turnOrder[turnIdx%3];
+    if(who==='player'&&!playerPassed) return;
+    if(who==='ai1'&&!ai1Passed) return;
+    if(who==='ai2'&&!ai2Passed) return;
+    turnIdx++;
+    loops++;
+  }
+  // Everyone passed
+  endBidding();
+}
+
+function getCurrentBidder(){return turnOrder[turnIdx%3];}
+
+function aiDecide(aiName){
+  const isRex=aiName==='ai1';
+  const aggression=isRex?0.9:0.5;
+  const maxWilling=trueValue*aggression+Math.random()*50-25;
+  const nextBid=currentBid+(Math.random()<0.5?10:50);
+  if(nextBid<=maxWilling&&currentBid<trueValue*1.2){
+    const raise=Math.random()<0.3?100:(Math.random()<0.5?50:10);
+    return Math.min(raise,Math.floor(maxWilling-currentBid));
+  }
+  return 0; // pass
+}
+
+function doBid(who,amount){
+  if(amount<=0){
+    if(who==='player') playerPassed=true;
+    if(who==='ai1') ai1Passed=true;
+    if(who==='ai2') ai2Passed=true;
+    passCount++;
+    bidHistory.push({who,action:'passed'});
+  } else {
+    currentBid+=amount;
+    if(who==='player') playerBid=currentBid;
+    if(who==='ai1') ai1Bid=currentBid;
+    if(who==='ai2') ai2Bid=currentBid;
+    bidHistory.push({who,action:'bid $'+currentBid});
+    bidSound();
+    passCount=0;
+  }
+
+  // Check if all passed or only one active
+  let active=0;
+  if(!playerPassed) active++;
+  if(!ai1Passed) active++;
+  if(!ai2Passed) active++;
+
+  if(active<=1||passCount>=3){
+    endBidding();
+    return;
+  }
+
+  turnIdx++;
+  advanceToNextActive();
+}
+
+function endBidding(){
+  // Determine winner: highest bidder
+  let maxBid=0;winner='none';
+  if(playerBid>maxBid){maxBid=playerBid;winner='player';}
+  if(ai1Bid>maxBid){maxBid=ai1Bid;winner='ai1';}
+  if(ai2Bid>maxBid){maxBid=ai2Bid;winner='ai2';}
+
+  if(winner==='player'){
+    const profit=trueValue-playerBid;
+    playerTotal+=profit;
+    itemResults.push({item:currentItem.name,paid:playerBid,value:trueValue,profit});
+    if(profit>=0) winSound(); else loseSound();
+  } else {
+    itemResults.push({item:currentItem.name,paid:0,value:trueValue,profit:0,lost:true});
+  }
+  hammerSound();
+  resultTimer=3;
+  state=STATE.RESULT;
+}
+
+function playerBidAction(amount){
+  if(state!==STATE.BIDDING||getCurrentBidder()!=='player') return;
+  doBid('player',amount);
+}
+
+function getCanvasPos(e){
+  const rect=canvas.getBoundingClientRect();
+  const sx=W/rect.width,sy=H/rect.height;
+  const t=e.touches?e.touches[0]:e;
+  return {x:(t.clientX-rect.left)*sx,y:(t.clientY-rect.top)*sy};
+}
+
+const buttons=[
+  {x:30,y:560,w:100,h:55,label:'+$10',val:10},
+  {x:140,y:560,w:100,h:55,label:'+$50',val:50},
+  {x:250,y:560,w:100,h:55,label:'+$100',val:100},
+  {x:360,y:560,w:100,h:55,label:'PASS',val:0},
+];
+
+canvas.addEventListener('mousedown',handleDown);
+canvas.addEventListener('touchstart',handleDown);
+
+function handleDown(e){
+  e.preventDefault();audioCtx.resume();
+  const p=getCanvasPos(e);
+
+  if(state===STATE.MENU){state=STATE.PLAY;playerTotal=0;itemIndex=0;itemResults=[];newItem();return;}
+  if(state===STATE.OVER){state=STATE.MENU;return;}
+
+  if(state===STATE.BIDDING&&getCurrentBidder()==='player'){
+    for(const b of buttons){
+      if(p.x>b.x&&p.x<b.x+b.w&&p.y>b.y&&p.y<b.y+b.h){
+        playerBidAction(b.val);
+        return;
+      }
+    }
+  }
+
+  if(state===STATE.RESULT){
+    resultTimer=0;
+  }
+}
+
+function drawItem(){
+  // Item display
+  ctx.fillStyle='#2c3e50';
+  ctx.beginPath();ctx.roundRect(40,80,400,180,15);ctx.fill();
+  ctx.strokeStyle='#f1c40f';ctx.lineWidth=3;
+  ctx.beginPath();ctx.roundRect(40,80,400,180,15);ctx.stroke();
+
+  // Item icon (abstract shapes)
+  ctx.fillStyle='#f39c12';
+  ctx.beginPath();ctx.arc(120,170,40,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#e67e22';
+  ctx.beginPath();ctx.arc(120,170,25,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#f1c40f';
+  ctx.font='30px Arial';ctx.textAlign='center';
+  ctx.fillText('?',120,180);
+
+  ctx.fillStyle='#ecf0f1';
+  ctx.font='bold 24px Arial';ctx.textAlign='left';
+  ctx.fillText(currentItem.name,180,150);
+  ctx.font='16px Arial';ctx.fillStyle='#95a5a6';
+  ctx.fillText('Item '+(itemIndex+1)+' of '+totalItems,180,180);
+  ctx.fillText('Est. $'+currentItem.minVal+' - $'+currentItem.maxVal,180,205);
+}
+
+function drawBidders(){
+  const bidders=[
+    {name:'YOU',bid:playerBid,passed:playerPassed,color:'#3498db',x:60},
+    {name:ai1Name,bid:ai1Bid,passed:ai1Passed,color:'#e74c3c',x:190},
+    {name:ai2Name,bid:ai2Bid,passed:ai2Passed,color:'#2ecc71',x:320},
+  ];
+
+  const curr=getCurrentBidder();
+  for(let i=0;i<3;i++){
+    const b=bidders[i];
+    const isActive=(state===STATE.BIDDING)&&(turnOrder[turnIdx%3]===['player','ai1','ai2'][i]);
+    ctx.fillStyle=isActive?'#34495e':'#1a252f';
+    ctx.beginPath();ctx.roundRect(b.x,280,130,100,10);ctx.fill();
+    if(isActive){ctx.strokeStyle=b.color;ctx.lineWidth=2;ctx.beginPath();ctx.roundRect(b.x,280,130,100,10);ctx.stroke();}
+
+    ctx.fillStyle=b.color;ctx.font='bold 16px Arial';ctx.textAlign='center';
+    ctx.fillText(b.name,b.x+65,305);
+    ctx.fillStyle=b.passed?'#7f8c8d':'#ecf0f1';
+    ctx.font='bold 24px Arial';
+    ctx.fillText(b.passed?'OUT':'$'+b.bid,b.x+65,345);
+  }
+}
+
+function drawCurrentBid(){
+  ctx.fillStyle='#f1c40f';ctx.font='bold 20px Arial';ctx.textAlign='center';
+  ctx.fillText('Current Bid: $'+currentBid,W/2,410);
+
+  // Bid history (last 4)
+  ctx.font='14px Arial';ctx.fillStyle='#95a5a6';
+  const start=Math.max(0,bidHistory.length-4);
+  for(let i=start;i<bidHistory.length;i++){
+    const bh=bidHistory[i];
+    const name=bh.who==='player'?'You':bh.who==='ai1'?ai1Name:ai2Name;
+    ctx.fillText(name+' '+bh.action,W/2,440+(i-start)*20);
+  }
+}
+
+function drawButtons(){
+  if(state!==STATE.BIDDING||getCurrentBidder()!=='player') return;
+  for(const b of buttons){
+    ctx.fillStyle=b.val===0?'#7f8c8d':'#27ae60';
+    ctx.beginPath();ctx.roundRect(b.x,b.y,b.w,b.h,8);ctx.fill();
+    ctx.fillStyle='#fff';ctx.font='bold 20px Arial';ctx.textAlign='center';
+    ctx.fillText(b.label,b.x+b.w/2,b.y+35);
+  }
+}
+
+function drawHUD(){
+  ctx.fillStyle='#ecf0f1';ctx.font='bold 16px Arial';ctx.textAlign='left';
+  ctx.fillText('Total: $'+playerTotal,15,30);
+  ctx.textAlign='right';
+  ctx.fillText('Item '+(itemIndex+1)+'/'+totalItems,W-15,30);
+
+  // Waiting indicator for AI
+  if(state===STATE.BIDDING&&getCurrentBidder()!=='player'){
+    const name=getCurrentBidder()==='ai1'?ai1Name:ai2Name;
+    ctx.fillStyle='#f39c12';ctx.font='bold 20px Arial';ctx.textAlign='center';
+    const dots='.'.repeat(Math.floor(Date.now()/400)%4);
+    ctx.fillText(name+' is thinking'+dots,W/2,540);
+  }
+}
+
+function drawResult(){
+  ctx.fillStyle='rgba(0,0,0,0.7)';ctx.fillRect(0,0,W,H);
+
+  ctx.fillStyle='#f1c40f';ctx.font='bold 28px Arial';ctx.textAlign='center';
+  ctx.fillText('SOLD!',W/2,200);
+
+  ctx.font='22px Arial';ctx.fillStyle='#ecf0f1';
+  ctx.fillText('True Value: $'+trueValue,W/2,260);
+
+  const winnerName=winner==='player'?'YOU':winner==='ai1'?ai1Name:winner==='ai2'?ai2Name:'Nobody';
+  const winBid=winner==='player'?playerBid:winner==='ai1'?ai1Bid:ai2Bid;
+  ctx.fillText('Winner: '+winnerName+' ($'+winBid+')',W/2,300);
+
+  if(winner==='player'){
+    const profit=trueValue-playerBid;
+    ctx.fillStyle=profit>=0?'#2ecc71':'#e74c3c';
+    ctx.font='bold 36px Arial';
+    ctx.fillText((profit>=0?'+':'')+profit,W/2,370);
+    ctx.font='18px Arial';ctx.fillStyle='#95a5a6';
+    ctx.fillText(profit>=0?'Nice deal!':'Overpaid!',W/2,400);
+  } else {
+    ctx.fillStyle='#95a5a6';ctx.font='20px Arial';
+    ctx.fillText('You didn\'t win this item',W/2,370);
+  }
+
+  ctx.fillStyle='#7f8c8d';ctx.font='16px Arial';
+  ctx.fillText('Tap to continue',W/2,500);
+}
+
+function drawMenu(){
+  ctx.fillStyle='#0d1117';ctx.fillRect(0,0,W,H);
+
+  // Gavel
+  const t=Date.now()/1000;
+  ctx.save();ctx.translate(W/2,280);ctx.rotate(Math.sin(t*3)*0.3);
+  ctx.fillStyle='#8B4513';ctx.fillRect(-8,-80,16,80);
+  ctx.fillStyle='#5D3A1A';ctx.fillRect(-25,-100,50,25);
+  ctx.restore();
+
+  ctx.fillStyle='#f1c40f';ctx.font='bold 72px Arial';ctx.textAlign='center';
+  ctx.fillText('BID',W/2,150);
+  ctx.fillStyle='#ecf0f1';ctx.font='20px Arial';
+  ctx.fillText('Auction House Strategy',W/2,185);
+  ctx.font='16px Arial';ctx.fillStyle='#95a5a6';
+  ctx.fillText('Buy items for less than their true value',W/2,370);
+  ctx.fillText('Compete against AI bidders',W/2,395);
+  ctx.fillStyle='#f39c12';ctx.font='bold 28px Arial';
+  ctx.fillText('TAP TO START',W/2,H-100);
+}
+
+function drawGameOver(){
+  ctx.fillStyle='#0d1117';ctx.fillRect(0,0,W,H);
+
+  ctx.fillStyle='#f1c40f';ctx.font='bold 48px Arial';ctx.textAlign='center';
+  ctx.fillText('AUCTION OVER',W/2,80);
+
+  ctx.fillStyle=playerTotal>=0?'#2ecc71':'#e74c3c';
+  ctx.font='bold 64px Arial';
+  ctx.fillText((playerTotal>=0?'+$':'- $')+Math.abs(playerTotal),W/2,160);
+  ctx.fillStyle='#ecf0f1';ctx.font='18px Arial';
+  ctx.fillText('Total Profit',W/2,190);
+
+  // Item breakdown
+  ctx.font='14px Arial';ctx.textAlign='left';
+  const startY=230;
+  for(let i=0;i<Math.min(itemResults.length,10);i++){
+    const ir=itemResults[i];
+    const y=startY+i*38;
+    ctx.fillStyle='#2c3e50';
+    ctx.fillRect(30,y-12,420,32);
+    ctx.fillStyle='#ecf0f1';
+    ctx.fillText(ir.item,40,y+8);
+    if(ir.lost){
+      ctx.fillStyle='#7f8c8d';ctx.textAlign='right';
+      ctx.fillText('- missed -',450,y+8);
+    } else {
+      ctx.fillStyle=ir.profit>=0?'#2ecc71':'#e74c3c';
+      ctx.textAlign='right';
+      ctx.fillText((ir.profit>=0?'+':'')+ir.profit+' (paid $'+ir.paid+', worth $'+ir.value+')',450,y+8);
+    }
+    ctx.textAlign='left';
+  }
+
+  ctx.fillStyle='#f39c12';ctx.font='bold 24px Arial';ctx.textAlign='center';
+  ctx.fillText('TAP TO PLAY AGAIN',W/2,H-60);
+}
+
+let lastTime=0;
+function update(ts){
+  const dt=(ts-lastTime)/1000;lastTime=ts;
+
+  ctx.fillStyle='#0d1117';ctx.fillRect(0,0,W,H);
+
+  if(state===STATE.MENU){drawMenu();}
+  else if(state===STATE.OVER){drawGameOver();}
+  else if(state===STATE.RESULT){
+    drawItem();drawBidders();drawCurrentBid();drawHUD();
+    drawResult();
+    resultTimer-=dt;
+    if(resultTimer<=0){
+      itemIndex++;
+      if(itemIndex>=totalItems){state=STATE.OVER;}
+      else newItem();
+    }
+  }
+  else if(state===STATE.BIDDING){
+    drawItem();drawBidders();drawCurrentBid();drawButtons();drawHUD();
+
+    // AI turn
+    const curr=getCurrentBidder();
+    if(curr!=='player'){
+      aiTimer+=dt;
+      if(aiTimer>1){
+        aiTimer=0;
+        const raise=aiDecide(curr);
+        doBid(curr,raise);
+      }
+    }
+  }
+
+  requestAnimationFrame(update);
+}
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>AVALANCHE</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H,scale;
+function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight;scale=Math.min(W/375,H/667)}
+resize();window.addEventListener('resize',resize);
+
+let audioCtx;
+function initAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)()}
+function playSound(freq,dur,type='sine',vol=0.12){
+if(!audioCtx)return;
+const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+o.type=type;o.frequency.value=freq;
+g.gain.setValueAtTime(vol,audioCtx.currentTime);
+g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+dur);
+}
+function collectSound(){playSound(880,0.1);playSound(1200,0.08)}
+function hitSound(){playSound(100,0.4,'sawtooth',0.2);playSound(80,0.3,'square',0.15)}
+function nearMissSound(){playSound(400,0.08,'triangle',0.06)}
+function tickSound(){playSound(600,0.03,'sine',0.04)}
+
+let state='menu';
+let player,rocks,gems,particles,dustParticles;
+let score,gemScore,timeScore,gameTime,speed,shakeX,shakeY,shakeTimer;
+let cliffLeft,cliffRight,cliffSegments;
+let moveDir=0; // -1 left, 0 none, 1 right
+
+function init(){
+  player={x:W/2,y:H*0.75,w:24*scale,h:32*scale,alive:true};
+  rocks=[];gems=[];particles=[];dustParticles=[];
+  score=0;gemScore=0;timeScore=0;gameTime=0;speed=2*scale;
+  shakeX=0;shakeY=0;shakeTimer=0;moveDir=0;
+  cliffSegments=[];
+  cliffLeft=60*scale;cliffRight=W-60*scale;
+  // Initial cliff segments
+  for(let y=0;y<H;y+=20*scale){
+    const wobble=Math.sin(y*0.01)*20*scale;
+    cliffSegments.push({y,left:cliffLeft+wobble,right:cliffRight-wobble*0.7});
+  }
+}
+
+function spawnRock(){
+  const size=(20+Math.random()*30)*scale;
+  const x=cliffLeft+40*scale+Math.random()*(cliffRight-cliffLeft-80*scale);
+  const spd=speed*(1+Math.random()*0.5);
+  const type=Math.random()<0.3?'boulder':'rock';
+  rocks.push({x,y:-size,w:size,h:size*0.8,vy:spd,vx:(Math.random()-0.5)*1.5*scale,rot:0,rotSpeed:(Math.random()-0.5)*0.08,type,passed:false});
+}
+
+function spawnGem(){
+  const x=cliffLeft+50*scale+Math.random()*(cliffRight-cliffLeft-100*scale);
+  gems.push({x,y:-20*scale,r:10*scale,vy:speed*0.8,collected:false,sparkle:0});
+}
+
+function spawnParticles(x,y,color,n){
+  for(let i=0;i<n;i++){
+    particles.push({x,y,vx:(Math.random()-0.5)*8,vy:(Math.random()-0.5)*8,life:1,color,r:Math.random()*4+1});
+  }
+}
+
+// Input
+let touching=false,touchX=0;
+canvas.addEventListener('mousedown',e=>{initAudio();touching=true;touchX=e.clientX;handleTap()});
+canvas.addEventListener('mousemove',e=>{if(touching)touchX=e.clientX});
+canvas.addEventListener('mouseup',()=>{touching=false;moveDir=0});
+canvas.addEventListener('touchstart',e=>{e.preventDefault();initAudio();touching=true;touchX=e.touches[0].clientX;handleTap()},{passive:false});
+canvas.addEventListener('touchmove',e=>{e.preventDefault();if(e.touches.length)touchX=e.touches[0].clientX},{passive:false});
+canvas.addEventListener('touchend',e=>{e.preventDefault();touching=false;moveDir=0},{passive:false});
+
+function handleTap(){
+  if(state==='menu'){state='play';init();return}
+  if(state==='gameover'){state='play';init();return}
+}
+
+function update(){
+  if(state!=='play')return;
+  const p=player;
+  gameTime+=1/60;
+  timeScore=Math.floor(gameTime*10);
+  score=timeScore+gemScore;
+
+  // Speed increases over time
+  speed=2*scale+gameTime*0.03*scale;
+
+  // Movement via touch position
+  if(touching){
+    if(touchX<W/2)moveDir=-1;
+    else moveDir=1;
+  }
+
+  const moveSpeed=5*scale;
+  p.x+=moveDir*moveSpeed;
+
+  // Cliff boundaries
+  const playerCliffY=cliffSegments.find(s=>s.y>=p.y);
+  const leftBound=playerCliffY?playerCliffY.left+10*scale:cliffLeft+10*scale;
+  const rightBound=playerCliffY?playerCliffY.right-10*scale:cliffRight-10*scale;
+  if(p.x-p.w/2<leftBound)p.x=leftBound+p.w/2;
+  if(p.x+p.w/2>rightBound)p.x=rightBound-p.w/2;
+
+  // Spawn rocks
+  if(Math.random()<0.02+gameTime*0.002)spawnRock();
+  if(Math.random()<0.008)spawnGem();
+
+  // Update rocks
+  rocks.forEach(r=>{
+    r.y+=r.vy;r.x+=r.vx;r.rot+=r.rotSpeed;
+    // Bounce off cliffs
+    const seg=cliffSegments.find(s=>s.y>=r.y);
+    if(seg){
+      if(r.x-r.w/2<seg.left){r.x=seg.left+r.w/2;r.vx=Math.abs(r.vx)}
+      if(r.x+r.w/2>seg.right){r.x=seg.right-r.w/2;r.vx=-Math.abs(r.vx)}
+    }
+
+    // Check collision with player
+    if(p.alive){
+      const dx=p.x-r.x,dy=p.y-r.y;
+      const dist=Math.sqrt(dx*dx+dy*dy);
+      const hitDist=(r.w+p.w)/2*0.7;
+      if(dist<hitDist){
+        p.alive=false;hitSound();
+        spawnParticles(p.x,p.y,'#FF4444',25);
+        spawnParticles(p.x,p.y,'#FFAA44',15);
+        shakeTimer=30;
+        setTimeout(()=>{score=timeScore+gemScore;state='gameover'},1000);
+      }
+      // Near miss
+      if(!r.passed&&dist<hitDist*2.5&&dy<0){
+        r.passed=true;
+        if(dist<hitDist*1.8){
+          nearMissSound();
+          shakeTimer=Math.max(shakeTimer,5);
+          // Dust effect
+          for(let i=0;i<3;i++){
+            dustParticles.push({x:r.x+(Math.random()-0.5)*r.w,y:r.y,vx:(Math.random()-0.5)*2,vy:-Math.random()*2,life:0.8,r:3+Math.random()*3});
+          }
+        }
+      }
+    }
+  });
+  rocks=rocks.filter(r=>r.y<H+100);
+
+  // Update gems
+  gems.forEach(g=>{
+    g.y+=g.vy;g.sparkle+=0.1;
+    if(!g.collected&&p.alive){
+      const dx=p.x-g.x,dy=p.y-g.y;
+      if(Math.sqrt(dx*dx+dy*dy)<g.r+p.w/2){
+        g.collected=true;gemScore+=50;collectSound();
+        spawnParticles(g.x,g.y,'#00FF88',10);
+        spawnParticles(g.x,g.y,'#44FFAA',5);
+      }
+    }
+  });
+  gems=gems.filter(g=>!g.collected&&g.y<H+50);
+
+  // Screen shake
+  if(shakeTimer>0){
+    shakeTimer--;
+    shakeX=(Math.random()-0.5)*shakeTimer*0.5;
+    shakeY=(Math.random()-0.5)*shakeTimer*0.5;
+  }else{shakeX=0;shakeY=0}
+
+  // Update cliff segments (scroll and regenerate)
+  cliffSegments.forEach(s=>s.y+=speed*0.3);
+  cliffSegments=cliffSegments.filter(s=>s.y<H+30*scale);
+  while(cliffSegments.length<H/(20*scale)+2){
+    const topY=cliffSegments.length?Math.min(...cliffSegments.map(s=>s.y)):0;
+    const newY=topY-20*scale;
+    const wobble=Math.sin(newY*0.008+gameTime)*25*scale;
+    const narrow=Math.min(gameTime*0.5,40)*scale; // Cliffs narrow over time
+    cliffSegments.push({y:newY,left:cliffLeft+narrow+wobble,right:cliffRight-narrow-wobble*0.7});
+  }
+
+  // Tick sound every second
+  if(Math.floor(gameTime)!==Math.floor(gameTime-1/60)&&gameTime>1)tickSound();
+
+  // Particles
+  particles.forEach(pt=>{pt.x+=pt.vx;pt.y+=pt.vy;pt.vy+=0.15;pt.life-=0.025});
+  particles=particles.filter(pt=>pt.life>0);
+  dustParticles.forEach(d=>{d.x+=d.vx;d.y+=d.vy;d.life-=0.02});
+  dustParticles=dustParticles.filter(d=>d.life>0);
+}
+
+function drawRock(r){
+  ctx.save();ctx.translate(r.x,r.y);ctx.rotate(r.rot);
+  if(r.type==='boulder'){
+    ctx.fillStyle='#8B7355';
+    ctx.beginPath();
+    ctx.moveTo(-r.w/2,0);ctx.lineTo(-r.w/3,-r.h/2);ctx.lineTo(r.w/3,-r.h/2);
+    ctx.lineTo(r.w/2,0);ctx.lineTo(r.w/3,r.h/2);ctx.lineTo(-r.w/3,r.h/2);
+    ctx.closePath();ctx.fill();
+    ctx.fillStyle='#6B5335';
+    ctx.beginPath();ctx.moveTo(-r.w/4,-r.h/4);ctx.lineTo(r.w/4,-r.h/4);
+    ctx.lineTo(r.w/5,r.h/4);ctx.lineTo(-r.w/5,r.h/4);ctx.closePath();ctx.fill();
+  }else{
+    ctx.fillStyle='#9E8E7E';
+    ctx.beginPath();ctx.arc(0,0,r.w/2,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#7E6E5E';
+    ctx.beginPath();ctx.arc(-r.w/6,-r.h/6,r.w/4,0,Math.PI*2);ctx.fill();
+  }
+  ctx.restore();
+}
+
+function draw(){
+  ctx.save();ctx.translate(shakeX,shakeY);
+
+  // Background gradient - mountain sky
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#1a0a2e');bg.addColorStop(0.5,'#2d1b4e');bg.addColorStop(1,'#4a2a5e');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+
+  // Snow particles in background
+  for(let i=0;i<30;i++){
+    const sx=(i*89.3+gameTime*20)%W;
+    const sy=(i*67.7+gameTime*40+i*100)%H;
+    ctx.fillStyle='rgba(255,255,255,0.2)';
+    ctx.fillRect(sx,sy,2*scale,2*scale);
+  }
+
+  // Cliff walls
+  ctx.fillStyle='#3a3a4a';
+  // Left cliff
+  ctx.beginPath();ctx.moveTo(0,0);
+  cliffSegments.sort((a,b)=>a.y-b.y);
+  cliffSegments.forEach(s=>{ctx.lineTo(s.left,s.y)});
+  ctx.lineTo(0,H);ctx.closePath();ctx.fill();
+  // Right cliff
+  ctx.beginPath();ctx.moveTo(W,0);
+  cliffSegments.forEach(s=>{ctx.lineTo(s.right,s.y)});
+  ctx.lineTo(W,H);ctx.closePath();ctx.fill();
+
+  // Cliff edges highlight
+  ctx.strokeStyle='#5a5a6a';ctx.lineWidth=2*scale;
+  ctx.beginPath();
+  cliffSegments.forEach((s,i)=>{i===0?ctx.moveTo(s.left,s.y):ctx.lineTo(s.left,s.y)});
+  ctx.stroke();
+  ctx.beginPath();
+  cliffSegments.forEach((s,i)=>{i===0?ctx.moveTo(s.right,s.y):ctx.lineTo(s.right,s.y)});
+  ctx.stroke();
+
+  // Cliff texture lines
+  ctx.strokeStyle='rgba(255,255,255,0.03)';ctx.lineWidth=1;
+  for(let i=0;i<10;i++){
+    const cx=i*15*scale;
+    ctx.beginPath();ctx.moveTo(cx,0);ctx.lineTo(cx,H);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(W-cx,0);ctx.lineTo(W-cx,H);ctx.stroke();
+  }
+
+  // Gems
+  gems.forEach(g=>{
+    if(g.collected)return;
+    ctx.save();ctx.translate(g.x,g.y);
+    // Glow
+    ctx.globalAlpha=0.3+Math.sin(g.sparkle)*0.15;
+    ctx.fillStyle='#00FF88';
+    ctx.beginPath();ctx.arc(0,0,g.r*1.8,0,Math.PI*2);ctx.fill();
+    ctx.globalAlpha=1;
+    // Diamond shape
+    ctx.fillStyle='#00FF88';
+    ctx.beginPath();ctx.moveTo(0,-g.r);ctx.lineTo(g.r,0);ctx.lineTo(0,g.r);ctx.lineTo(-g.r,0);ctx.closePath();ctx.fill();
+    ctx.fillStyle='#44FFAA';
+    ctx.beginPath();ctx.moveTo(0,-g.r*0.5);ctx.lineTo(g.r*0.5,0);ctx.lineTo(0,g.r*0.5);ctx.lineTo(-g.r*0.5,0);ctx.closePath();ctx.fill();
+    // Sparkle
+    const sa=g.sparkle;
+    ctx.strokeStyle='rgba(255,255,255,0.6)';ctx.lineWidth=1.5*scale;
+    ctx.beginPath();ctx.moveTo(Math.cos(sa)*g.r*1.3,Math.sin(sa)*g.r*1.3);
+    ctx.lineTo(Math.cos(sa+Math.PI)*g.r*1.3,Math.sin(sa+Math.PI)*g.r*1.3);ctx.stroke();
+    ctx.restore();
+  });
+
+  // Rocks
+  rocks.forEach(r=>drawRock(r));
+
+  // Player
+  if(player.alive){
+    const p=player;
+    ctx.save();ctx.translate(p.x,p.y);
+    // Body
+    ctx.fillStyle='#FF6644';
+    ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h);
+    // Head
+    ctx.fillStyle='#FFCC88';
+    ctx.beginPath();ctx.arc(0,-p.h/2-8*scale,10*scale,0,Math.PI*2);ctx.fill();
+    // Hard hat
+    ctx.fillStyle='#FFDD00';
+    ctx.beginPath();ctx.arc(0,-p.h/2-12*scale,11*scale,Math.PI,0);ctx.fill();
+    ctx.fillRect(-12*scale,-p.h/2-12*scale,24*scale,4*scale);
+    // Eyes
+    ctx.fillStyle='#333';
+    ctx.fillRect(-5*scale,-p.h/2-10*scale,3*scale,3*scale);
+    ctx.fillRect(2*scale,-p.h/2-10*scale,3*scale,3*scale);
+    // Legs animation
+    const legAnim=moveDir!==0?Math.sin(gameTime*15)*5*scale:0;
+    ctx.fillStyle='#3355AA';
+    ctx.fillRect(-p.w/2+2,p.h/2-2,p.w/2-3,8*scale+legAnim);
+    ctx.fillRect(2,p.h/2-2,p.w/2-3,8*scale-legAnim);
+    ctx.restore();
+  }
+
+  // Dust particles
+  dustParticles.forEach(d=>{
+    ctx.globalAlpha=d.life*0.5;ctx.fillStyle='#CCBBAA';
+    ctx.beginPath();ctx.arc(d.x,d.y,d.r*scale,0,Math.PI*2);ctx.fill();
+  });
+  ctx.globalAlpha=1;
+
+  // Explosion particles
+  particles.forEach(pt=>{
+    ctx.globalAlpha=pt.life;ctx.fillStyle=pt.color;
+    ctx.beginPath();ctx.arc(pt.x,pt.y,pt.r*scale,0,Math.PI*2);ctx.fill();
+  });
+  ctx.globalAlpha=1;
+
+  ctx.restore(); // shake
+
+  // HUD
+  ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(0,0,W,55*scale);
+  ctx.fillStyle='#FFF';ctx.font=`bold ${18*scale}px monospace`;ctx.textAlign='center';
+  ctx.fillText(`${score}`,W/2,22*scale);
+  ctx.fillStyle='#AAA';ctx.font=`${13*scale}px monospace`;
+  ctx.textAlign='left';ctx.fillText(`TIME: ${timeScore}`,10,45*scale);
+  ctx.textAlign='right';ctx.fillText(`GEMS: ${gemScore}`,W-10,45*scale);
+
+  // Speed indicator
+  const speedPct=Math.min((speed/(2*scale)-1)/3,1);
+  ctx.fillStyle='rgba(255,255,255,0.15)';ctx.fillRect(15,50*scale,100*scale,4*scale);
+  ctx.fillStyle=`hsl(${120-speedPct*120},100%,50%)`;
+  ctx.fillRect(15,50*scale,100*scale*speedPct,4*scale);
+
+  // Direction indicators
+  if(state==='play'){
+    if(!touching){
+      ctx.globalAlpha=0.15+Math.sin(Date.now()*0.003)*0.1;
+      ctx.fillStyle='#FFF';ctx.font=`${30*scale}px monospace`;
+      ctx.textAlign='center';
+      ctx.fillText('<',40*scale,H*0.75);
+      ctx.fillText('>',W-40*scale,H*0.75);
+      ctx.globalAlpha=1;
+    }else{
+      const side=touchX<W/2?'left':'right';
+      ctx.globalAlpha=0.2;ctx.fillStyle='#FFF';
+      if(side==='left')ctx.fillRect(0,0,W/2,H);
+      else ctx.fillRect(W/2,0,W/2,H);
+      ctx.globalAlpha=1;
+    }
+  }
+
+  // Menu
+  if(state==='menu'){
+    ctx.fillStyle='rgba(0,0,0,0.8)';ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#FF6644';ctx.font=`bold ${42*scale}px monospace`;ctx.textAlign='center';
+    ctx.fillText('AVALANCHE',W/2,H*0.25);
+    ctx.fillStyle='#FFF';ctx.font=`${18*scale}px monospace`;
+    ctx.fillText('Dodge the falling rocks!',W/2,H*0.37);
+    ctx.fillStyle='#00FF88';ctx.font=`${16*scale}px monospace`;
+    ctx.fillText('Collect gems for bonus',W/2,H*0.44);
+    ctx.fillStyle='#AAA';ctx.font=`${14*scale}px monospace`;
+    ctx.fillText('Tap LEFT side = move left',W/2,H*0.54);
+    ctx.fillText('Tap RIGHT side = move right',W/2,H*0.60);
+    ctx.fillText('Speed increases over time!',W/2,H*0.66);
+    ctx.fillStyle='#FFF';ctx.font=`bold ${22*scale}px monospace`;
+    const pulse=0.8+Math.sin(Date.now()*0.005)*0.2;ctx.globalAlpha=pulse;
+    ctx.fillText('TAP TO START',W/2,H*0.8);ctx.globalAlpha=1;
+
+    // Decorative falling rocks on menu
+    const t=Date.now()*0.001;
+    for(let i=0;i<5;i++){
+      const rx=(i*W/5+t*30)%W;
+      const ry=(i*137+t*60)%H;
+      ctx.fillStyle='rgba(139,115,85,0.3)';
+      ctx.beginPath();ctx.arc(rx,ry,12*scale,0,Math.PI*2);ctx.fill();
+    }
+  }
+
+  if(state==='gameover'){
+    ctx.fillStyle='rgba(0,0,0,0.8)';ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#FF4444';ctx.font=`bold ${38*scale}px monospace`;ctx.textAlign='center';
+    ctx.fillText('CRUSHED!',W/2,H*0.25);
+    ctx.fillStyle='#FFF';ctx.font=`bold ${28*scale}px monospace`;
+    ctx.fillText(`SCORE: ${score}`,W/2,H*0.38);
+    ctx.fillStyle='#AAA';ctx.font=`${16*scale}px monospace`;
+    ctx.fillText(`Survived: ${timeScore/10}s`,W/2,H*0.47);
+    ctx.fillText(`Gems: ${gemScore}`,W/2,H*0.53);
+    ctx.fillStyle='#FFF';ctx.font=`bold ${20*scale}px monospace`;
+    const pulse=0.8+Math.sin(Date.now()*0.005)*0.2;ctx.globalAlpha=pulse;
+    ctx.fillText('TAP TO RETRY',W/2,H*0.67);ctx.globalAlpha=1;
+  }
+}
+
+function loop(){update();draw();requestAnimationFrame(loop)}
+init();loop();
+</script>
+</body>
+</html>

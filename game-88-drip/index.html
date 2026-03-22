@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>DRIP</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H;
+function resize(){W=canvas.width=Math.min(window.innerWidth,480);H=canvas.height=Math.min(window.innerHeight,720);}
+resize();window.addEventListener('resize',resize);
+
+// Audio
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playSound(freq,dur,type='sine',vol=0.15){
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(vol,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+  o.connect(g);g.connect(audioCtx.destination);
+  o.start();o.stop(audioCtx.currentTime+dur);
+}
+function sndCatch(){playSound(600,0.15);playSound(800,0.1);}
+function sndOil(){playSound(150,0.3,'sawtooth',0.1);}
+function sndLevelUp(){playSound(523,0.1);setTimeout(()=>playSound(659,0.1),100);setTimeout(()=>playSound(784,0.15),200);}
+function sndGameOver(){playSound(300,0.3,'sawtooth',0.1);setTimeout(()=>playSound(200,0.4,'sawtooth',0.1),200);}
+
+// Game state
+let state='menu'; // menu, play, over
+let bucket,drops,pipes,score,level,waterLevel,targetWater,lives,maxLives;
+let particles=[];
+let dragOffset=0,dragging=false;
+let lastTime=0,dropTimer=0;
+
+function initGame(){
+  level=1;score=0;lives=3;maxLives=3;
+  waterLevel=0;targetWater=100;
+  bucket={x:W/2,y:H-80,w:80,h:60,waterH:0};
+  drops=[];pipes=[];particles=[];
+  dropTimer=0;
+  setupPipes();
+}
+
+function setupPipes(){
+  pipes=[];
+  const count=Math.min(3+Math.floor(level/2),7);
+  for(let i=0;i<count;i++){
+    pipes.push({x:W*(i+1)/(count+1),timer:Math.random()*60,interval:Math.max(30,80-level*5),phase:Math.random()*Math.PI*2});
+  }
+}
+
+function spawnDrop(px){
+  const isOil=Math.random()<Math.min(0.15+level*0.03,0.4);
+  const speed=2+level*0.3+Math.random()*1.5;
+  const wobble=Math.random()<0.3?1:0;
+  drops.push({x:px,y:30,r:isOil?6:7,speed,isOil,wobble,wobblePhase:Math.random()*Math.PI*2,alpha:1});
+}
+
+// Input
+let pointerX=W/2,pointerDown=false;
+function getX(e){return e.touches?e.touches[0].clientX:e.clientX;}
+function getRel(e){
+  const rect=canvas.getBoundingClientRect();
+  return (e.touches?e.touches[0].clientX:e.clientX)-rect.left;
+}
+
+canvas.addEventListener('mousedown',e=>{
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  if(state==='menu'){state='play';initGame();return;}
+  if(state==='over'){state='menu';return;}
+  pointerDown=true;pointerX=getRel(e);
+});
+canvas.addEventListener('mousemove',e=>{if(pointerDown)pointerX=getRel(e);});
+canvas.addEventListener('mouseup',()=>pointerDown=false);
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  if(state==='menu'){state='play';initGame();return;}
+  if(state==='over'){state='menu';return;}
+  pointerDown=true;pointerX=getRel(e);
+},{passive:false});
+canvas.addEventListener('touchmove',e=>{e.preventDefault();if(pointerDown)pointerX=getRel(e);},{passive:false});
+canvas.addEventListener('touchend',e=>{e.preventDefault();pointerDown=false;},{passive:false});
+
+function addParticles(x,y,color,count){
+  for(let i=0;i<count;i++){
+    particles.push({x,y,vx:(Math.random()-0.5)*4,vy:-Math.random()*3-1,life:1,color,r:Math.random()*3+1});
+  }
+}
+
+function update(dt){
+  if(state!=='play')return;
+
+  // Move bucket
+  if(pointerDown){
+    bucket.x+=(pointerX-bucket.x)*0.15;
+  }
+  bucket.x=Math.max(bucket.w/2,Math.min(W-bucket.w/2,bucket.x));
+
+  // Water level visual
+  const targetH=(waterLevel/targetWater)*bucket.h*0.85;
+  bucket.waterH+=(targetH-bucket.waterH)*0.1;
+
+  // Pipes drop
+  dropTimer++;
+  for(const p of pipes){
+    p.timer--;
+    if(p.timer<=0){
+      const offsetX=Math.sin(p.phase+dropTimer*0.02)*20;
+      spawnDrop(p.x+offsetX);
+      p.timer=p.interval+Math.random()*20;
+    }
+  }
+
+  // Update drops
+  for(let i=drops.length-1;i>=0;i--){
+    const d=drops[i];
+    d.y+=d.speed;
+    if(d.wobble)d.x+=Math.sin(d.wobblePhase+d.y*0.05)*1.5;
+
+    // Check bucket collision
+    if(d.y+d.r>bucket.y&&d.y-d.r<bucket.y+bucket.h&&
+       d.x>bucket.x-bucket.w/2&&d.x<bucket.x+bucket.w/2){
+      if(d.isOil){
+        waterLevel=Math.max(0,waterLevel-15);
+        score=Math.max(0,score-5);
+        sndOil();
+        addParticles(d.x,d.y,'#333',6);
+      }else{
+        waterLevel+=5;
+        score+=10;
+        sndCatch();
+        addParticles(d.x,d.y,'#4af',8);
+      }
+      drops.splice(i,1);
+      continue;
+    }
+
+    // Miss - water drop off screen
+    if(d.y>H+20){
+      if(!d.isOil){
+        // Missed water
+      }
+      drops.splice(i,1);
+    }
+  }
+
+  // Level complete
+  if(waterLevel>=targetWater){
+    level++;
+    score+=level*50;
+    waterLevel=0;
+    targetWater=100+level*20;
+    sndLevelUp();
+    setupPipes();
+    drops=[];
+    addParticles(W/2,H/2,'#ff0',30);
+  }
+
+  // Particles
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];
+    p.x+=p.vx;p.y+=p.vy;p.vy+=0.1;
+    p.life-=0.02;
+    if(p.life<=0)particles.splice(i,1);
+  }
+}
+
+function drawPipe(x){
+  ctx.fillStyle='#555';
+  ctx.fillRect(x-15,0,30,25);
+  ctx.fillStyle='#777';
+  ctx.fillRect(x-10,20,20,12);
+  // Drip effect
+  ctx.fillStyle='rgba(100,180,255,0.5)';
+  ctx.beginPath();
+  ctx.ellipse(x,35+Math.sin(Date.now()*0.005)*2,4,6,0,0,Math.PI*2);
+  ctx.fill();
+}
+
+function drawBucket(){
+  const b=bucket;
+  const bx=b.x-b.w/2,by=b.y;
+
+  // Bucket body
+  ctx.fillStyle='#666';
+  ctx.beginPath();
+  ctx.moveTo(bx+5,by);ctx.lineTo(bx+b.w-5,by);
+  ctx.lineTo(bx+b.w-10,by+b.h);ctx.lineTo(bx+10,by+b.h);
+  ctx.closePath();ctx.fill();
+
+  // Bucket rim
+  ctx.fillStyle='#888';
+  ctx.fillRect(bx,by-4,b.w,8);
+
+  // Water inside
+  if(b.waterH>0){
+    const wy=by+b.h-b.waterH;
+    const grad=ctx.createLinearGradient(0,wy,0,by+b.h);
+    grad.addColorStop(0,'rgba(80,180,255,0.8)');
+    grad.addColorStop(1,'rgba(30,100,200,0.9)');
+    ctx.fillStyle=grad;
+    ctx.beginPath();
+    const shrinkTop=10*(1-b.waterH/b.h)*0.5;
+    const shrinkBot=10;
+    ctx.moveTo(bx+5+shrinkTop,wy);
+    // Wavy top
+    for(let wx=0;wx<=b.w-10-shrinkTop*2;wx+=4){
+      ctx.lineTo(bx+5+shrinkTop+wx,wy+Math.sin(Date.now()*0.004+wx*0.1)*2);
+    }
+    ctx.lineTo(bx+b.w-5-shrinkTop,wy);
+    ctx.lineTo(bx+b.w-shrinkBot,by+b.h);
+    ctx.lineTo(bx+shrinkBot,by+b.h);
+    ctx.closePath();ctx.fill();
+  }
+
+  // Handle
+  ctx.strokeStyle='#999';ctx.lineWidth=3;
+  ctx.beginPath();
+  ctx.arc(b.x,by-10,b.w*0.35,Math.PI,0);
+  ctx.stroke();
+}
+
+function drawDrop(d){
+  if(d.isOil){
+    ctx.fillStyle=`rgba(30,30,30,${d.alpha})`;
+    ctx.beginPath();
+    ctx.arc(d.x,d.y,d.r,0,Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle=`rgba(60,60,60,${d.alpha*0.5})`;
+    ctx.beginPath();
+    ctx.arc(d.x-1,d.y-2,d.r*0.4,0,Math.PI*2);
+    ctx.fill();
+  }else{
+    // Water drop shape
+    ctx.fillStyle=`rgba(80,170,255,${d.alpha})`;
+    ctx.beginPath();
+    ctx.moveTo(d.x,d.y-d.r*1.3);
+    ctx.quadraticCurveTo(d.x+d.r*1.2,d.y,d.x,d.y+d.r);
+    ctx.quadraticCurveTo(d.x-d.r*1.2,d.y,d.x,d.y-d.r*1.3);
+    ctx.fill();
+    // Shine
+    ctx.fillStyle=`rgba(200,230,255,${d.alpha*0.6})`;
+    ctx.beginPath();
+    ctx.arc(d.x-2,d.y-2,d.r*0.3,0,Math.PI*2);
+    ctx.fill();
+  }
+}
+
+function draw(){
+  // Background
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#1a2a3a');bg.addColorStop(1,'#0a1520');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+
+  // Wall tiles
+  ctx.fillStyle='#1e2e3e';
+  for(let ty=0;ty<H;ty+=40){
+    for(let tx=0;tx<W;tx+=60){
+      const off=(Math.floor(ty/40)%2)*30;
+      ctx.strokeStyle='#162636';ctx.lineWidth=1;
+      ctx.strokeRect(tx+off,ty,60,40);
+    }
+  }
+
+  if(state==='menu'){
+    ctx.fillStyle='#4af';
+    ctx.font='bold 48px Arial';ctx.textAlign='center';
+    ctx.fillText('DRIP',W/2,H*0.3);
+    ctx.font='18px Arial';ctx.fillStyle='#8cf';
+    ctx.fillText('Catch water drops, avoid oil!',W/2,H*0.4);
+    ctx.fillText('Drag to move the bucket',W/2,H*0.46);
+    ctx.fillText('Fill the bucket to level up',W/2,H*0.52);
+    ctx.font='20px Arial';ctx.fillStyle='#fff';
+    ctx.fillText('Tap to Start',W/2,H*0.65);
+
+    // Animated drops on menu
+    const t=Date.now()*0.002;
+    for(let i=0;i<5;i++){
+      const dx=W*0.2+i*W*0.15;
+      const dy=(t*40+i*80)%H;
+      drawDrop({x:dx,y:dy,r:7,isOil:false,alpha:0.5});
+    }
+    return;
+  }
+
+  if(state==='play'||state==='over'){
+    // Pipes
+    for(const p of pipes)drawPipe(p.x);
+
+    // Drops
+    for(const d of drops)drawDrop(d);
+
+    // Bucket
+    drawBucket();
+
+    // Particles
+    for(const p of particles){
+      ctx.globalAlpha=p.life;
+      ctx.fillStyle=p.color;
+      ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+
+    // HUD
+    ctx.fillStyle='rgba(0,0,0,0.5)';
+    ctx.fillRect(0,0,W,36);
+
+    ctx.font='bold 16px Arial';ctx.textAlign='left';
+    ctx.fillStyle='#4af';
+    ctx.fillText('Level: '+level,10,25);
+    ctx.textAlign='center';
+    ctx.fillStyle='#fff';
+    ctx.fillText('Score: '+score,W/2,25);
+
+    // Water meter
+    ctx.textAlign='right';
+    ctx.fillStyle='#8cf';
+    ctx.fillText(Math.floor(waterLevel)+'/'+targetWater,W-10,25);
+
+    // Progress bar
+    const barW=100,barH=8,barX=W-barW-10,barY=30;
+    ctx.fillStyle='#223';
+    ctx.fillRect(barX,barY,barW,barH);
+    ctx.fillStyle='#4af';
+    ctx.fillRect(barX,barY,barW*(waterLevel/targetWater),barH);
+  }
+
+  if(state==='over'){
+    ctx.fillStyle='rgba(0,0,0,0.7)';
+    ctx.fillRect(0,0,W,H);
+    ctx.font='bold 42px Arial';ctx.textAlign='center';
+    ctx.fillStyle='#f55';
+    ctx.fillText('GAME OVER',W/2,H*0.35);
+    ctx.font='24px Arial';ctx.fillStyle='#fff';
+    ctx.fillText('Score: '+score,W/2,H*0.45);
+    ctx.fillText('Level: '+level,W/2,H*0.52);
+    ctx.font='18px Arial';ctx.fillStyle='#aaa';
+    ctx.fillText('Tap to Continue',W/2,H*0.65);
+  }
+}
+
+function gameLoop(ts){
+  const dt=(ts-lastTime)/16.67;
+  lastTime=ts;
+  update(dt);
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

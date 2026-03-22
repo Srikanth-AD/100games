@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>MIRROR</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H,state='menu',score=0,level=0,moves=0,grid=[],gridSize=5,cellSize,offsetX,offsetY;
+let emitters=[],targets=[],mirrors=[],beamPaths=[],levelComplete=false,completeTimer=0,particles=[];
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+
+function playSound(freq,dur,type='sine'){
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(0.12,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+  o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+dur);
+}
+function playRotate(){playSound(600,0.1,'triangle');}
+function playHit(){playSound(1000,0.15);playSound(1200,0.2);}
+function playWin(){[0,80,160,240,320].forEach((d,i)=>setTimeout(()=>playSound(523+i*100,0.25),d));}
+
+function resize(){
+  W=canvas.width=Math.min(window.innerWidth,window.innerHeight);
+  H=canvas.height=W;
+  cellSize=Math.floor(W*0.75/gridSize);
+  offsetX=(W-gridSize*cellSize)/2;
+  offsetY=(H-gridSize*cellSize)/2+W*0.05;
+}
+window.addEventListener('resize',resize);
+
+// Direction: 0=up,1=right,2=down,3=left
+const DX=[0,1,0,-1],DY=[-1,0,1,0];
+const DIR_NAMES=['up','right','down','left'];
+
+// Mirror types: '/' reflects: right->up, down->left, left->down, up->right
+//               '\' reflects: right->down, up->left, left->up, down->right
+// Mirror angle: 0 = '/' , 1 = '\'
+function reflectBeam(dir,mirrorAngle){
+  if(mirrorAngle===0){ // '/'
+    return [1,0,3,2][[0,1,2,3].indexOf(dir)]; // up->right, right->up, down->left, left->down
+  } else { // '\'
+    return [3,2,1,0][[0,1,2,3].indexOf(dir)]; // up->left, right->down, down->right, left->up
+  }
+}
+
+const levels=[
+  {size:4,emitters:[{x:-1,y:1,dir:1,color:'#ff3333'}],targets:[{x:1,y:-1,dir:2}],mirrors:[{x:1,y:1,angle:0}]},
+  {size:4,emitters:[{x:-1,y:2,dir:1,color:'#ff3333'}],targets:[{x:3,y:-1,dir:2}],mirrors:[{x:1,y:2,angle:0},{x:1,y:0,angle:1}]},
+  {size:5,emitters:[{x:-1,y:2,dir:1,color:'#ff3333'}],targets:[{x:4,y:5,dir:0},{x:5,y:0,dir:3}],mirrors:[{x:2,y:2,angle:0},{x:2,y:0,angle:1},{x:4,y:2,angle:0}]},
+  {size:5,emitters:[{x:-1,y:1,dir:1,color:'#ff3333'},{x:-1,y:3,dir:1,color:'#3366ff'}],targets:[{x:5,y:3,dir:3},{x:5,y:1,dir:3}],mirrors:[{x:1,y:1,angle:0},{x:1,y:3,angle:1},{x:3,y:1,angle:1},{x:3,y:3,angle:0}]},
+  {size:6,emitters:[{x:-1,y:0,dir:1,color:'#ff3333'}],targets:[{x:5,y:6,dir:0},{x:0,y:6,dir:0}],mirrors:[{x:2,y:0,angle:1},{x:2,y:3,angle:0},{x:5,y:3,angle:0},{x:5,y:5,angle:1},{x:0,y:3,angle:1}]},
+  {size:6,emitters:[{x:-1,y:2,dir:1,color:'#ff3333'},{x:3,y:-1,dir:2,color:'#33ff66'}],targets:[{x:6,y:4,dir:3},{x:1,y:6,dir:0}],mirrors:[{x:1,y:2,angle:0},{x:1,y:4,angle:1},{x:3,y:2,angle:1},{x:3,y:4,angle:0},{x:5,y:4,angle:0}]},
+  {size:7,emitters:[{x:-1,y:3,dir:1,color:'#ff3333'},{x:3,y:-1,dir:2,color:'#3366ff'},{x:7,y:5,dir:3,color:'#ffcc00'}],
+   targets:[{x:7,y:1,dir:3},{x:-1,y:5,dir:1},{x:5,y:7,dir:0}],
+   mirrors:[{x:1,y:3,angle:0},{x:1,y:1,angle:1},{x:5,y:1,angle:0},{x:3,y:3,angle:1},{x:3,y:5,angle:0},{x:5,y:5,angle:1}]},
+  {size:7,emitters:[{x:-1,y:1,dir:1,color:'#ff3333'},{x:-1,y:5,dir:1,color:'#33ff66'}],
+   targets:[{x:7,y:5,dir:3},{x:7,y:1,dir:3},{x:3,y:7,dir:0}],
+   mirrors:[{x:1,y:1,angle:1},{x:1,y:3,angle:0},{x:3,y:3,angle:1},{x:3,y:5,angle:0},{x:5,y:5,angle:1},{x:5,y:1,angle:0},{x:3,y:1,angle:0}]},
+];
+
+function initLevel(){
+  const lv=levels[level%levels.length];
+  gridSize=lv.size;
+  emitters=lv.emitters.map(e=>({...e}));
+  targets=lv.targets.map(t=>({...t,hit:false}));
+  mirrors=lv.mirrors.map(m=>({...m}));
+  // Randomize mirror angles for puzzle
+  for(const m of mirrors) m.angle=Math.floor(Math.random()*2);
+  moves=0;levelComplete=false;completeTimer=0;
+  resize();
+  traceAllBeams();
+}
+
+function traceBeam(startX,startY,dir,color){
+  const path=[{x:startX,y:startY}];
+  let cx=startX,cy=startY,cd=dir;
+  const maxSteps=100;
+  for(let i=0;i<maxSteps;i++){
+    const nx=cx+DX[cd],ny=cy+DY[cd];
+    path.push({x:nx,y:ny});
+    // Check if beam exits grid
+    if(nx<0||ny<0||nx>=gridSize||ny>=gridSize){
+      // Check targets at edges
+      for(const t of targets){
+        if(t.x===nx&&t.y===ny) t.hit=true;
+        // Also check if beam exits at target position
+        if(nx<0&&t.x===-1&&t.y===ny) t.hit=true;
+        if(nx>=gridSize&&t.x===gridSize&&t.y===ny) t.hit=true;
+        if(ny<0&&t.y===-1&&t.x===nx) t.hit=true;
+        if(ny>=gridSize&&t.y===gridSize&&t.x===nx) t.hit=true;
+      }
+      break;
+    }
+    // Check for mirror at nx,ny
+    const mirror=mirrors.find(m=>m.x===nx&&m.y===ny);
+    if(mirror){
+      cd=reflectBeam(cd,mirror.angle);
+      cx=nx;cy=ny;
+    } else {
+      cx=nx;cy=ny;
+    }
+  }
+  return {path,color};
+}
+
+function traceAllBeams(){
+  for(const t of targets) t.hit=false;
+  beamPaths=[];
+  for(const e of emitters){
+    const startX=e.x+DX[e.dir];
+    const startY=e.y+DY[e.dir];
+    beamPaths.push(traceBeam(e.x,e.y,e.dir,e.color||'#ff3333'));
+  }
+  // Check win
+  if(targets.every(t=>t.hit)&&!levelComplete){
+    levelComplete=true;completeTimer=0;
+    score+=Math.max(50,500-moves*20);
+    playWin();
+    createParticles();
+    setTimeout(()=>{level++;if(level>=levels.length){state='gameover';}else{initLevel();}},2000);
+  }
+}
+
+function createParticles(){
+  particles=[];
+  for(let i=0;i<60;i++){
+    particles.push({
+      x:W/2,y:H/2,vx:(Math.random()-0.5)*10,vy:(Math.random()-0.5)*10,
+      life:1,color:`hsl(${Math.random()*360},80%,60%)`,size:Math.random()*5+2
+    });
+  }
+}
+
+function updateParticles(dt){
+  for(const p of particles){p.x+=p.vx;p.y+=p.vy;p.vy+=0.1;p.life-=dt;}
+  particles=particles.filter(p=>p.life>0);
+}
+
+function drawParticles(){
+  for(const p of particles){
+    ctx.globalAlpha=p.life;ctx.fillStyle=p.color;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.size,0,Math.PI*2);ctx.fill();
+  }
+  ctx.globalAlpha=1;
+}
+
+function gridToScreen(gx,gy){
+  return {x:offsetX+gx*cellSize+cellSize/2,y:offsetY+gy*cellSize+cellSize/2};
+}
+
+function drawMirror(m){
+  const {x,y}=gridToScreen(m.x,m.y);
+  const s=cellSize*0.4;
+  ctx.strokeStyle='#cceeff';ctx.lineWidth=4;ctx.lineCap='round';
+  ctx.beginPath();
+  if(m.angle===0){ // '/'
+    ctx.moveTo(x+s,y-s);ctx.lineTo(x-s,y+s);
+  } else { // '\'
+    ctx.moveTo(x-s,y-s);ctx.lineTo(x+s,y+s);
+  }
+  ctx.stroke();
+  // Mirror shine
+  ctx.strokeStyle='rgba(255,255,255,0.4)';ctx.lineWidth=2;
+  ctx.beginPath();
+  if(m.angle===0){
+    ctx.moveTo(x+s*0.5,y-s*0.5);ctx.lineTo(x-s*0.5,y+s*0.5);
+  } else {
+    ctx.moveTo(x-s*0.5,y-s*0.5);ctx.lineTo(x+s*0.5,y+s*0.5);
+  }
+  ctx.stroke();
+}
+
+function drawBeams(){
+  const t=Date.now()/1000;
+  for(const beam of beamPaths){
+    if(beam.path.length<2) continue;
+    // Glow
+    ctx.strokeStyle=beam.color;ctx.lineWidth=cellSize*0.15;ctx.globalAlpha=0.2;
+    ctx.lineCap='round';ctx.lineJoin='round';
+    ctx.beginPath();
+    const p0=gridToScreen(beam.path[0].x,beam.path[0].y);
+    ctx.moveTo(p0.x,p0.y);
+    for(let i=1;i<beam.path.length;i++){
+      const p=gridToScreen(beam.path[i].x,beam.path[i].y);
+      ctx.lineTo(p.x,p.y);
+    }
+    ctx.stroke();
+    // Core
+    ctx.globalAlpha=0.9;ctx.lineWidth=cellSize*0.06;
+    ctx.stroke();
+    // Animated pulse
+    ctx.globalAlpha=0.4+Math.sin(t*6)*0.2;ctx.lineWidth=cellSize*0.1;
+    ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+}
+
+function drawEmitter(e){
+  const {x,y}=gridToScreen(e.x,e.y);
+  ctx.fillStyle=e.color||'#ff3333';
+  ctx.beginPath();
+  const s=cellSize*0.3;
+  // Arrow shape pointing in direction
+  ctx.save();ctx.translate(x,y);ctx.rotate(e.dir*Math.PI/2);
+  ctx.beginPath();ctx.moveTo(s,0);ctx.lineTo(-s,-s);ctx.lineTo(-s*0.3,0);ctx.lineTo(-s,s);ctx.closePath();
+  ctx.fill();ctx.restore();
+  // Label
+  ctx.fillStyle='#fff';ctx.textAlign='center';ctx.font=`bold ${cellSize*0.3}px Arial`;
+  ctx.fillText('E',x,y+cellSize*0.1);
+}
+
+function drawTarget(t){
+  const {x,y}=gridToScreen(t.x,t.y);
+  const time=Date.now()/1000;
+  const s=cellSize*0.35;
+  if(t.hit){
+    ctx.fillStyle=`rgba(0,255,100,${0.5+Math.sin(time*5)*0.3})`;
+    const grad=ctx.createRadialGradient(x,y,0,x,y,s*2);
+    grad.addColorStop(0,'rgba(0,255,100,0.5)');grad.addColorStop(1,'rgba(0,255,100,0)');
+    ctx.fillStyle=grad;ctx.fillRect(x-s*2,y-s*2,s*4,s*4);
+  }
+  ctx.strokeStyle=t.hit?'#00ff66':'#666';ctx.lineWidth=3;
+  ctx.beginPath();ctx.arc(x,y,s,0,Math.PI*2);ctx.stroke();
+  ctx.beginPath();ctx.arc(x,y,s*0.5,0,Math.PI*2);ctx.stroke();
+  ctx.fillStyle=t.hit?'#00ff66':'#444';
+  ctx.beginPath();ctx.arc(x,y,s*0.2,0,Math.PI*2);ctx.fill();
+}
+
+function drawMenu(){
+  ctx.fillStyle='#0a0015';ctx.fillRect(0,0,W,H);
+  const t=Date.now()/1000;
+  // Decorative beams
+  for(let i=0;i<5;i++){
+    ctx.strokeStyle=`hsla(${i*60},80%,60%,${0.2+Math.sin(t+i)*0.1})`;
+    ctx.lineWidth=3;ctx.beginPath();
+    const sx=Math.sin(t*0.5+i)*W*0.3+W*0.2;
+    ctx.moveTo(sx,0);
+    let x=sx,y=0;
+    for(let j=0;j<6;j++){
+      const nx=x+(Math.random()>0.5?1:-1)*W*0.15;
+      const ny=y+H*0.15;
+      ctx.lineTo(nx,ny);x=nx;y=ny;
+    }
+    ctx.stroke();
+  }
+  ctx.fillStyle='#ff4466';ctx.textAlign='center';
+  ctx.font=`bold ${W*0.1}px Arial`;
+  ctx.fillText('MIRROR',W/2,H*0.35);
+  ctx.fillStyle='#aaa';ctx.font=`${W*0.033}px Arial`;
+  ctx.fillText('Rotate mirrors to reflect lasers',W/2,H*0.45);
+  ctx.fillText('Hit all targets to complete level',W/2,H*0.5);
+  ctx.fillText('Tap a mirror to rotate 45 degrees',W/2,H*0.55);
+  ctx.fillStyle='#ff4466';ctx.font=`${W*0.05}px Arial`;
+  const pulse=0.8+Math.sin(t*3)*0.2;ctx.globalAlpha=pulse;
+  ctx.fillText('TAP TO START',W/2,H*0.72);
+  ctx.globalAlpha=1;
+}
+
+function drawGameOver(){
+  ctx.fillStyle='#0a0015';ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';
+  ctx.fillStyle='#ff4466';ctx.font=`bold ${W*0.08}px Arial`;
+  ctx.fillText('ALL BEAMS',W/2,H*0.28);
+  ctx.fillText('ALIGNED!',W/2,H*0.36);
+  ctx.fillStyle='#fff';ctx.font=`${W*0.05}px Arial`;
+  ctx.fillText('Levels: '+level,W/2,H*0.48);
+  ctx.fillText('Score: '+score,W/2,H*0.56);
+  ctx.fillText('Total Moves: '+moves,W/2,H*0.64);
+  ctx.fillStyle='#ff4466';ctx.font=`${W*0.04}px Arial`;
+  const pulse=0.8+Math.sin(Date.now()/300)*0.2;ctx.globalAlpha=pulse;
+  ctx.fillText('TAP TO PLAY AGAIN',W/2,H*0.78);
+  ctx.globalAlpha=1;
+  drawParticles();
+}
+
+function drawGame(){
+  ctx.fillStyle='#0a0015';ctx.fillRect(0,0,W,H);
+
+  // Grid
+  ctx.strokeStyle='#1a1a2e';ctx.lineWidth=1;
+  for(let x=0;x<=gridSize;x++){
+    ctx.beginPath();ctx.moveTo(offsetX+x*cellSize,offsetY);ctx.lineTo(offsetX+x*cellSize,offsetY+gridSize*cellSize);ctx.stroke();
+  }
+  for(let y=0;y<=gridSize;y++){
+    ctx.beginPath();ctx.moveTo(offsetX,offsetY+y*cellSize);ctx.lineTo(offsetX+gridSize*cellSize,offsetY+y*cellSize);ctx.stroke();
+  }
+
+  // Grid cells background
+  for(let y=0;y<gridSize;y++){
+    for(let x=0;x<gridSize;x++){
+      ctx.fillStyle='#0d0d1f';
+      ctx.fillRect(offsetX+x*cellSize+1,offsetY+y*cellSize+1,cellSize-2,cellSize-2);
+    }
+  }
+
+  // Draw beams (behind mirrors)
+  drawBeams();
+
+  // Draw mirrors
+  for(const m of mirrors) drawMirror(m);
+
+  // Draw emitters
+  for(const e of emitters) drawEmitter(e);
+
+  // Draw targets
+  for(const t of targets) drawTarget(t);
+
+  // HUD
+  ctx.fillStyle='#fff';ctx.textAlign='left';ctx.font=`${W*0.04}px Arial`;
+  ctx.fillText('Level '+(level+1),10,W*0.05);
+  ctx.fillText('Moves: '+moves,10,W*0.1);
+  ctx.textAlign='right';
+  ctx.fillText('Score: '+score,W-10,W*0.05);
+
+  // Targets remaining
+  const remaining=targets.filter(t=>!t.hit).length;
+  ctx.textAlign='center';ctx.fillStyle=remaining===0?'#00ff66':'#ff6666';
+  ctx.font=`${W*0.03}px Arial`;
+  ctx.fillText('Targets: '+(targets.length-remaining)+'/'+targets.length,W/2,offsetY+gridSize*cellSize+W*0.06);
+
+  if(levelComplete){
+    ctx.fillStyle='rgba(0,255,100,0.15)';ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#00ff66';ctx.textAlign='center';
+    ctx.font=`bold ${W*0.07}px Arial`;
+    ctx.fillText('ALIGNED!',W/2,H*0.2);
+  }
+
+  drawParticles();
+}
+
+let lastTime=0;
+function gameLoop(ts){
+  const dt=Math.min((ts-lastTime)/1000,0.05);lastTime=ts;
+  if(levelComplete) completeTimer+=dt;
+  updateParticles(dt);
+  if(state==='menu') drawMenu();
+  else if(state==='play') drawGame();
+  else if(state==='gameover') drawGameOver();
+  requestAnimationFrame(gameLoop);
+}
+
+function getPos(e){
+  const r=canvas.getBoundingClientRect();
+  const t=e.touches?e.touches[0]:e;
+  return {x:(t.clientX-r.left)*(W/r.width),y:(t.clientY-r.top)*(H/r.height)};
+}
+
+function handleTap(e){
+  e.preventDefault();
+  const pos=getPos(e);
+  if(state==='menu'){
+    audioCtx.resume();state='play';level=0;score=0;initLevel();return;
+  }
+  if(state==='gameover'){state='menu';return;}
+  if(state==='play'&&!levelComplete){
+    // Find mirror under tap
+    const gx=Math.floor((pos.x-offsetX)/cellSize);
+    const gy=Math.floor((pos.y-offsetY)/cellSize);
+    const mirror=mirrors.find(m=>m.x===gx&&m.y===gy);
+    if(mirror){
+      mirror.angle=(mirror.angle+1)%2;
+      moves++;
+      playRotate();
+      traceAllBeams();
+      if(targets.some(t=>t.hit)) playHit();
+    }
+  }
+}
+
+canvas.addEventListener('mousedown',handleTap);
+canvas.addEventListener('touchstart',handleTap,{passive:false});
+canvas.addEventListener('touchmove',e=>e.preventDefault(),{passive:false});
+
+resize();
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

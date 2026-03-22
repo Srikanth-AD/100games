@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>TIGHTROPE</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H;
+function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight}
+resize();window.addEventListener('resize',resize);
+
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playSound(freq,dur,type='sine'){
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(0.15,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.01,audioCtx.currentTime+dur);
+  o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+dur);
+}
+function playBalance(){playSound(300+Math.random()*100,0.08,'triangle')}
+function playCollect(){playSound(880,0.1);setTimeout(()=>playSound(1100,0.15),80)}
+function playWind(){playSound(100+Math.random()*50,0.5,'sawtooth')}
+function playFall(){playSound(150,0.8,'sawtooth')}
+function playStep(){playSound(200,0.04,'square')}
+
+let state='menu';
+let balance=0; // -1 to 1, 0=center
+let balanceVel=0;
+let distance=0, speed=1, windForce=0, windTimer=0, windGustTimer=0;
+let playerX, playerY, ropeY;
+let falling=false, fallY=0, fallRot=0;
+let score=0, bestScore=0;
+let collectibles=[], particles=[], clouds=[];
+let stepTimer=0, armAngle=0;
+let bgScroll=0;
+let difficulty=1;
+
+class Collectible{
+  constructor(){
+    this.x=W+Math.random()*200;
+    this.y=0;
+    this.type=Math.random()<0.6?'star':'bird';
+    this.collected=false;
+    this.value=this.type==='star'?10:25;
+    if(this.type==='star'){
+      this.y=ropeY-60-Math.random()*80;
+      this.bobPhase=Math.random()*Math.PI*2;
+    } else {
+      this.y=ropeY-40-Math.random()*120;
+      this.wingPhase=Math.random()*Math.PI*2;
+      this.vy=Math.sin(Math.random()*Math.PI*2)*0.3;
+    }
+  }
+  update(){
+    this.x-=speed*2;
+    if(this.type==='star'){
+      this.bobPhase+=0.05;
+    } else {
+      this.wingPhase+=0.15;
+      this.y+=this.vy;
+    }
+  }
+  draw(){
+    if(this.collected)return;
+    ctx.save();ctx.translate(this.x,this.y);
+    if(this.type==='star'){
+      const bob=Math.sin(this.bobPhase)*5;
+      ctx.translate(0,bob);
+      ctx.fillStyle='#FFD700';
+      ctx.beginPath();
+      for(let i=0;i<5;i++){
+        const a=Math.PI*2*i/5-Math.PI/2;
+        const r=i%2===0?12:5;
+        ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r);
+      }
+      ctx.closePath();ctx.fill();
+      // glow
+      ctx.shadowColor='#FFD700';ctx.shadowBlur=10;ctx.fill();ctx.shadowBlur=0;
+    } else {
+      // bird
+      const wing=Math.sin(this.wingPhase)*15;
+      ctx.fillStyle='#fff';
+      ctx.beginPath();ctx.ellipse(0,0,10,5,0,0,Math.PI*2);ctx.fill();
+      // wings
+      ctx.strokeStyle='#fff';ctx.lineWidth=2;
+      ctx.beginPath();ctx.moveTo(-5,-2);ctx.quadraticCurveTo(-10,-2-wing,-15,-2);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(5,-2);ctx.quadraticCurveTo(10,-2-wing,15,-2);ctx.stroke();
+      // eye
+      ctx.fillStyle='#000';ctx.beginPath();ctx.arc(7,-1,1.5,0,Math.PI*2);ctx.fill();
+      // beak
+      ctx.fillStyle='#ff8800';ctx.beginPath();ctx.moveTo(10,0);ctx.lineTo(14,-1);ctx.lineTo(10,2);ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+function initGame(){
+  balance=0;balanceVel=0;distance=0;speed=1.2;
+  windForce=0;windTimer=0;windGustTimer=0;
+  falling=false;fallY=0;fallRot=0;
+  score=0;collectibles=[];particles=[];
+  stepTimer=0;armAngle=0;difficulty=1;
+  ropeY=H*0.65;playerX=W*0.35;playerY=ropeY;
+  // init clouds
+  clouds=[];
+  for(let i=0;i<8;i++){
+    clouds.push({x:Math.random()*W,y:Math.random()*H*0.35,w:60+Math.random()*80,speed:0.2+Math.random()*0.3});
+  }
+}
+
+function updateGame(){
+  if(falling){
+    fallY+=5;fallRot+=0.1;
+    if(fallY>H){
+      state='gameover';
+      if(score>bestScore)bestScore=score;
+    }
+    return;
+  }
+  distance+=speed*0.1;
+  score=Math.floor(distance*10);
+  difficulty=1+distance*0.02;
+  speed=1.2+distance*0.005;
+  // wind gusts
+  windGustTimer++;
+  if(windGustTimer>120/difficulty){
+    windGustTimer=0;
+    windForce=(Math.random()-0.5)*0.008*difficulty;
+    windTimer=60+Math.random()*60;
+    if(Math.abs(windForce)>0.004)playWind();
+  }
+  if(windTimer>0){windTimer--;} else {windForce*=0.95}
+  // balance physics
+  const gravity=0.0015*difficulty;
+  const sway=Math.sin(Date.now()*0.002)*0.0005;
+  balanceVel+=windForce+sway;
+  if(balance>0)balanceVel+=gravity*0.5;
+  else if(balance<0)balanceVel-=gravity*0.5;
+  balanceVel*=0.995;
+  balance+=balanceVel;
+  // clamp and check fall
+  if(Math.abs(balance)>1){
+    falling=true;playFall();
+    for(let i=0;i<20;i++){
+      particles.push({x:playerX,y:playerY-20,vx:(Math.random()-0.5)*4,vy:-Math.random()*5,life:40,color:'#ff4444',size:3});
+    }
+  }
+  // step sound
+  stepTimer+=speed*0.15;
+  if(stepTimer>1){stepTimer=0;playStep()}
+  armAngle=Math.sin(Date.now()*0.008)*0.3;
+  // spawn collectibles
+  if(Math.random()<0.015*difficulty){
+    collectibles.push(new Collectible());
+  }
+  // update collectibles
+  for(let i=collectibles.length-1;i>=0;i--){
+    const c=collectibles[i];
+    c.update();
+    if(!c.collected){
+      const dx=playerX-c.x,dy=(playerY-25)-c.y;
+      if(Math.sqrt(dx*dx+dy*dy)<25){
+        c.collected=true;
+        score+=c.value;
+        playCollect();
+        for(let j=0;j<10;j++){
+          particles.push({x:c.x,y:c.y,vx:(Math.random()-0.5)*5,vy:-Math.random()*4,life:30,
+            color:c.type==='star'?'#FFD700':'#fff',size:2});
+        }
+      }
+    }
+    if(c.x<-50)collectibles.splice(i,1);
+  }
+  // update clouds
+  for(const cl of clouds){
+    cl.x-=cl.speed+speed*0.3;
+    if(cl.x<-cl.w)cl.x=W+cl.w;
+  }
+  // particles
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];
+    p.x+=p.vx;p.y+=p.vy;p.vy+=0.1;p.life--;
+    if(p.life<=0)particles.splice(i,1);
+  }
+  bgScroll+=speed*2;
+}
+
+function drawSky(){
+  const grad=ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,'#0a1628');grad.addColorStop(0.4,'#1a3050');
+  grad.addColorStop(0.7,'#2a4a6a');grad.addColorStop(1,'#445');
+  ctx.fillStyle=grad;ctx.fillRect(0,0,W,H);
+  // stars
+  ctx.fillStyle='#fff';
+  for(let i=0;i<40;i++){
+    const sx=(i*173.7+bgScroll*0.1)%W;
+    const sy=(i*91.3)%(H*0.4);
+    ctx.globalAlpha=0.3+Math.sin(Date.now()*0.003+i)*0.3;
+    ctx.fillRect(sx,sy,1.5,1.5);
+  }
+  ctx.globalAlpha=1;
+  // moon
+  ctx.fillStyle='#dde8f0';ctx.beginPath();ctx.arc(W*0.8,H*0.12,30,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#cdd8e0';ctx.beginPath();ctx.arc(W*0.8+5,H*0.12-3,8,0,Math.PI*2);ctx.fill();
+  // clouds
+  ctx.fillStyle='rgba(200,220,240,0.15)';
+  for(const cl of clouds){
+    ctx.beginPath();
+    ctx.ellipse(cl.x,cl.y,cl.w/2,15,0,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(cl.x-cl.w*0.2,cl.y-8,cl.w*0.3,12,0,0,Math.PI*2);ctx.fill();
+  }
+}
+
+function drawBuildings(){
+  // left building
+  ctx.fillStyle='#1a1a2a';
+  ctx.fillRect(-20,ropeY-10,W*0.15+20,H-ropeY+10);
+  ctx.fillStyle='#222238';
+  ctx.fillRect(-10,ropeY-50,W*0.12+10,50);
+  // windows on left
+  for(let r=0;r<4;r++){
+    for(let c=0;c<2;c++){
+      ctx.fillStyle=Math.random()>0.5?'rgba(255,200,80,0.6)':'rgba(100,120,140,0.3)';
+      ctx.fillRect(10+c*30,ropeY+20+r*40,20,25);
+    }
+  }
+  // right building (distant, scrolling)
+  const rx=W*0.85;
+  ctx.fillStyle='#1a1a2a';
+  ctx.fillRect(rx,ropeY-10,W-rx+20,H-ropeY+10);
+  ctx.fillStyle='#222238';
+  ctx.fillRect(rx+10,ropeY-40,W-rx-10,40);
+}
+
+function drawRope(){
+  ctx.strokeStyle='#888';ctx.lineWidth=3;
+  ctx.beginPath();ctx.moveTo(0,ropeY);ctx.lineTo(W,ropeY);ctx.stroke();
+  // rope texture
+  ctx.strokeStyle='#666';ctx.lineWidth=1;
+  for(let x=0;x<W;x+=8){
+    const sx=(x+bgScroll)%W;
+    ctx.beginPath();ctx.moveTo(sx,ropeY-1);ctx.lineTo(sx+4,ropeY+1);ctx.stroke();
+  }
+}
+
+function drawPlayer(){
+  const px=playerX;
+  const py=falling?playerY+fallY:playerY;
+  const lean=balance*0.5;
+  ctx.save();
+  ctx.translate(px,py);
+  if(falling)ctx.rotate(fallRot);
+  else ctx.rotate(lean);
+  // legs
+  const walkPhase=Math.sin(Date.now()*0.01*speed)*0.2;
+  ctx.strokeStyle='#dda';ctx.lineWidth=3;
+  ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(-5,20+Math.sin(walkPhase)*3);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(5,20-Math.sin(walkPhase)*3);ctx.stroke();
+  // body
+  ctx.strokeStyle='#44aaff';ctx.lineWidth=4;
+  ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(0,-25);ctx.stroke();
+  // arms with balance pole
+  const armTilt=balance*0.8+armAngle;
+  ctx.strokeStyle='#dda';ctx.lineWidth=2;
+  // pole
+  ctx.strokeStyle='#aa8844';ctx.lineWidth=3;
+  ctx.beginPath();
+  ctx.moveTo(-35,-15+armTilt*20);ctx.lineTo(35,-15-armTilt*20);
+  ctx.stroke();
+  // hands
+  ctx.fillStyle='#dda';
+  ctx.beginPath();ctx.arc(-35,-15+armTilt*20,3,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(35,-15-armTilt*20,3,0,Math.PI*2);ctx.fill();
+  // head
+  ctx.fillStyle='#dda';ctx.beginPath();ctx.arc(0,-32,8,0,Math.PI*2);ctx.fill();
+  // eyes
+  ctx.fillStyle='#333';
+  ctx.beginPath();ctx.arc(3,-33,1.5,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(-3,-33,1.5,0,Math.PI*2);ctx.fill();
+  // hat
+  ctx.fillStyle='#ff4444';
+  ctx.fillRect(-8,-42,16,4);
+  ctx.fillRect(-5,-48,10,6);
+  ctx.restore();
+}
+
+function drawBalanceMeter(){
+  const mw=W*0.5,mh=20;
+  const mx=(W-mw)/2,my=20;
+  // background
+  ctx.fillStyle='rgba(0,0,0,0.5)';
+  ctx.fillRect(mx,my,mw,mh);
+  ctx.strokeStyle='#555';ctx.lineWidth=1;
+  ctx.strokeRect(mx,my,mw,mh);
+  // center line
+  ctx.strokeStyle='#4CAF50';ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(mx+mw/2,my);ctx.lineTo(mx+mw/2,my+mh);ctx.stroke();
+  // danger zones
+  ctx.fillStyle='rgba(255,0,0,0.3)';
+  ctx.fillRect(mx,my,mw*0.15,mh);
+  ctx.fillRect(mx+mw*0.85,my,mw*0.15,mh);
+  // indicator
+  const ix=mx+mw/2+balance*(mw/2);
+  const color=Math.abs(balance)<0.3?'#4CAF50':Math.abs(balance)<0.7?'#ffaa00':'#ff4444';
+  ctx.fillStyle=color;
+  ctx.beginPath();ctx.arc(ix,my+mh/2,mh/2+2,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#fff';ctx.lineWidth=1;ctx.stroke();
+  // wind indicator
+  if(windTimer>0&&Math.abs(windForce)>0.002){
+    ctx.fillStyle='rgba(255,255,255,0.7)';ctx.font='12px monospace';ctx.textAlign='center';
+    const dir=windForce>0?'WIND >>':'<< WIND';
+    ctx.fillText(dir,W/2,my+mh+18);
+  }
+}
+
+function drawHUD(){
+  ctx.fillStyle='#fff';ctx.font='bold 16px monospace';ctx.textAlign='left';
+  ctx.fillText(`Score: ${score}`,15,65);
+  ctx.fillText(`Dist: ${distance.toFixed(1)}m`,15,85);
+  if(bestScore>0){
+    ctx.fillStyle='#FFD700';ctx.font='14px monospace';
+    ctx.fillText(`Best: ${bestScore}`,15,105);
+  }
+  // tap zones hint
+  ctx.globalAlpha=0.15;ctx.fillStyle='#ff4444';
+  ctx.fillRect(0,H*0.3,W*0.15,H*0.5);
+  ctx.fillStyle='#4444ff';
+  ctx.fillRect(W*0.85,H*0.3,W*0.15,H*0.5);
+  ctx.globalAlpha=1;
+  ctx.fillStyle='rgba(255,255,255,0.2)';ctx.font='12px monospace';
+  ctx.textAlign='center';
+  ctx.fillText('L',W*0.07,H*0.55);
+  ctx.fillText('R',W*0.93,H*0.55);
+}
+
+function drawParticles2(){
+  for(const p of particles){
+    ctx.globalAlpha=p.life/40;
+    ctx.fillStyle=p.color;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.size,0,Math.PI*2);ctx.fill();
+  }
+  ctx.globalAlpha=1;
+}
+
+function drawMenu(){
+  drawSky();
+  ropeY=H*0.65;
+  drawBuildings();drawRope();
+  // static player
+  playerX=W*0.35;playerY=ropeY;
+  balance=Math.sin(Date.now()*0.002)*0.3;
+  drawPlayer();
+  ctx.fillStyle='rgba(0,0,0,0.4)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#fff';ctx.font=`bold ${Math.min(55,W*0.11)}px monospace`;ctx.textAlign='center';
+  ctx.fillText('TIGHTROPE',W/2,H*0.22);
+  ctx.fillStyle='#aaa';ctx.font=`${Math.min(18,W*0.035)}px monospace`;
+  ctx.fillText('Tap left/right to keep balance!',W/2,H*0.32);
+  ctx.fillText('Collect stars and birds for bonus',W/2,H*0.37);
+  ctx.fillStyle='#4CAF50';ctx.font=`bold ${Math.min(24,W*0.045)}px monospace`;
+  const pulse=Math.sin(Date.now()*0.005)*0.2+0.8;ctx.globalAlpha=pulse;
+  ctx.fillText('TAP TO START',W/2,H*0.85);ctx.globalAlpha=1;
+}
+
+function drawGameOver(){
+  drawSky();drawBuildings();drawRope();drawParticles2();
+  ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#ff4444';ctx.font=`bold ${Math.min(50,W*0.1)}px monospace`;ctx.textAlign='center';
+  ctx.fillText('FALLEN!',W/2,H*0.25);
+  ctx.fillStyle='#fff';ctx.font=`bold ${Math.min(30,W*0.06)}px monospace`;
+  ctx.fillText(`Score: ${score}`,W/2,H*0.4);
+  ctx.fillText(`Distance: ${distance.toFixed(1)}m`,W/2,H*0.48);
+  if(score>=bestScore){
+    ctx.fillStyle='#FFD700';ctx.font=`bold ${Math.min(22,W*0.04)}px monospace`;
+    ctx.fillText('NEW BEST!',W/2,H*0.57);
+  }
+  ctx.fillStyle='#aaa';ctx.font=`${Math.min(20,W*0.04)}px monospace`;
+  const pulse=Math.sin(Date.now()*0.005)*0.2+0.8;ctx.globalAlpha=pulse;
+  ctx.fillText('TAP TO RETRY',W/2,H*0.8);ctx.globalAlpha=1;
+}
+
+function handleInput(x){
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  if(state==='menu'){state='play';initGame();return}
+  if(state==='gameover'){state='play';initGame();return}
+  if(state==='play'&&!falling){
+    const force=0.025;
+    if(x<W/2){
+      balanceVel-=force;playBalance();
+    } else {
+      balanceVel+=force;playBalance();
+    }
+  }
+}
+
+canvas.addEventListener('mousedown',e=>{e.preventDefault();handleInput(e.clientX)});
+canvas.addEventListener('touchstart',e=>{e.preventDefault();
+  for(let i=0;i<e.touches.length;i++)handleInput(e.touches[i].clientX);
+},{passive:false});
+
+function gameLoop(){
+  resize();
+  ctx.clearRect(0,0,W,H);
+  ropeY=H*0.65;
+  if(state==='menu'){
+    drawMenu();
+  } else if(state==='play'){
+    updateGame();
+    drawSky();drawBuildings();drawRope();
+    for(const c of collectibles)c.draw();
+    drawPlayer();drawParticles2();
+    drawBalanceMeter();drawHUD();
+  } else if(state==='gameover'){
+    drawGameOver();
+  }
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

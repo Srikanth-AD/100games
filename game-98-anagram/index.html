@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>ANAGRAM</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H;
+function resize(){
+  const r=Math.min(window.innerWidth/480,window.innerHeight/720);
+  W=480;H=720;canvas.width=W;canvas.height=H;
+  canvas.style.width=(W*r)+'px';canvas.style.height=(H*r)+'px';
+}
+resize();window.addEventListener('resize',resize);
+
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playSound(f,d,t='sine'){
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type=t;o.frequency.value=f;g.gain.setValueAtTime(0.12,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+d);
+  o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+d);
+}
+function clickSound(){playSound(500,0.06,'square');}
+function correctSound(){playSound(523,0.12);setTimeout(()=>playSound(659,0.12),100);setTimeout(()=>playSound(784,0.2),200);}
+function wrongSound(){playSound(200,0.3,'sawtooth');}
+function hintSound(){playSound(800,0.15,'triangle');}
+
+const words={
+  animals:['HORSE','TIGER','WHALE','SNAKE','EAGLE','MOUSE','GOOSE','LLAMA','PANDA','SHARK','ROBIN','CRANE','OTTER','BISON','MOOSE'],
+  colors:['GREEN','BLACK','WHITE','BROWN','PEACH','CORAL','IVORY','AMBER','KHAKI','LILAC','MAUVE','OLIVE','LEMON','CREAM','MELON'],
+  foods:['BREAD','STEAK','GRAPE','MELON','PIZZA','PASTA','SALAD','MANGO','PEACH','LEMON','OLIVE','CANDY','TOAST','CREPE','BAGEL'],
+  nature:['STORM','OCEAN','RIVER','CLOUD','STONE','FLAME','FROST','MARSH','BLOOM','CLIFF','BEACH','GROVE','DELTA','RIDGE','DUNES'],
+  tools:['DRILL','CLAMP','LEVEL','LATHE','CHISEL','PLANE','ANVIL','GAUGE','RULER','BLADE','WEDGE','HOIST','WINCH','CRANE','PRESS'],
+};
+
+const categories=Object.keys(words);
+const catColors={'animals':'#e74c3c','colors':'#3498db','foods':'#2ecc71','nature':'#f39c12','tools':'#9b59b6'};
+
+const STATE={MENU:0,PLAY:1,CORRECT:2,OVER:3};
+let state=STATE.MENU;
+let score=0,level=1,timer=0,maxTime=20,hintsUsed=0,wordsCompleted=0;
+let currentWord='',scrambled=[],selected=-1;
+let currentCat='';
+let tiles=[];// {letter, x, y, targetX, targetY, revealed, animT}
+let particles=[];
+let correctTimer=0;
+
+function shuffle(arr){
+  const a=[...arr];
+  for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}
+  return a;
+}
+
+function newWord(){
+  currentCat=categories[Math.floor(Math.random()*categories.length)];
+  const wordList=words[currentCat];
+  currentWord=wordList[Math.floor(Math.random()*wordList.length)];
+
+  // Scramble ensuring it's different
+  let s;
+  do{ s=shuffle(currentWord.split('')); }while(s.join('')===currentWord);
+  scrambled=s;
+
+  selected=-1;
+  hintsUsed=0;
+  timer=maxTime;
+
+  // Create tiles
+  tiles=[];
+  const tileW=70,gap=8;
+  const totalW=currentWord.length*(tileW+gap)-gap;
+  const startX=(W-totalW)/2;
+  const y=340;
+  for(let i=0;i<scrambled.length;i++){
+    tiles.push({
+      letter:scrambled[i],
+      x:startX+i*(tileW+gap),
+      y:y,
+      targetX:startX+i*(tileW+gap),
+      targetY:y,
+      revealed:false,
+      animT:0,
+      scale:1,
+      color:catColors[currentCat]
+    });
+  }
+}
+
+function checkSolved(){
+  const current=tiles.map(t=>t.letter).join('');
+  return current===currentWord;
+}
+
+function revealHint(){
+  if(hintsUsed>=currentWord.length-1) return;
+  // Find first non-matching position
+  for(let i=0;i<tiles.length;i++){
+    if(tiles[i].letter!==currentWord[i]&&!tiles[i].revealed){
+      // Find the tile with the correct letter
+      for(let j=i+1;j<tiles.length;j++){
+        if(tiles[j].letter===currentWord[i]&&!tiles[j].revealed){
+          [tiles[i].letter,tiles[j].letter]=[tiles[j].letter,tiles[i].letter];
+          break;
+        }
+      }
+      tiles[i].revealed=true;
+      hintsUsed++;
+      hintSound();
+      if(checkSolved()) wordSolved();
+      return;
+    }
+  }
+}
+
+function swapTiles(a,b){
+  if(a===b||tiles[a].revealed||tiles[b].revealed) return;
+  [tiles[a].letter,tiles[b].letter]=[tiles[b].letter,tiles[a].letter];
+  tiles[a].animT=0.3;tiles[b].animT=0.3;
+  clickSound();
+  if(checkSolved()) wordSolved();
+}
+
+function wordSolved(){
+  const timeBonus=Math.floor(timer*10);
+  const hintPenalty=hintsUsed*50;
+  const points=Math.max(10,100+timeBonus-hintPenalty);
+  score+=points;
+  wordsCompleted++;
+  correctSound();
+
+  // Particles
+  for(let i=0;i<30;i++){
+    particles.push({
+      x:W/2,y:340,
+      vx:(Math.random()-0.5)*8,vy:-Math.random()*6-2,
+      life:1,color:catColors[currentCat],size:Math.random()*6+3
+    });
+  }
+
+  correctTimer=1.5;
+  state=STATE.CORRECT;
+
+  if(wordsCompleted%3===0){
+    level++;
+    if(maxTime>8) maxTime-=1;
+  }
+}
+
+function getCanvasPos(e){
+  const rect=canvas.getBoundingClientRect();
+  const sx=W/rect.width,sy=H/rect.height;
+  const t=e.touches?e.touches[0]:e;
+  return {x:(t.clientX-rect.left)*sx,y:(t.clientY-rect.top)*sy};
+}
+
+canvas.addEventListener('mousedown',handleDown);
+canvas.addEventListener('touchstart',handleDown);
+
+function handleDown(e){
+  e.preventDefault();audioCtx.resume();
+  const p=getCanvasPos(e);
+
+  if(state===STATE.MENU){state=STATE.PLAY;score=0;level=1;maxTime=20;wordsCompleted=0;newWord();return;}
+  if(state===STATE.OVER){state=STATE.MENU;return;}
+  if(state===STATE.CORRECT) return;
+
+  if(state===STATE.PLAY){
+    // Hint button
+    if(p.x>W/2-50&&p.x<W/2+50&&p.y>450&&p.y<490){
+      revealHint();
+      return;
+    }
+
+    // Skip button
+    if(p.x>W/2-40&&p.x<W/2+40&&p.y>500&&p.y<535){
+      newWord();
+      return;
+    }
+
+    // Tile click
+    const tileW=70,gap=8;
+    for(let i=0;i<tiles.length;i++){
+      if(tiles[i].revealed) continue;
+      if(p.x>tiles[i].x&&p.x<tiles[i].x+tileW&&p.y>tiles[i].y&&p.y<tiles[i].y+tileW){
+        if(selected===-1){
+          selected=i;
+          tiles[i].scale=1.15;
+          clickSound();
+        } else {
+          swapTiles(selected,i);
+          tiles[selected].scale=1;
+          selected=-1;
+        }
+        return;
+      }
+    }
+    // Clicked elsewhere, deselect
+    if(selected>=0){tiles[selected].scale=1;selected=-1;}
+  }
+}
+
+function drawTile(t,i){
+  const tileW=70;
+  ctx.save();
+  const cx=t.x+tileW/2,cy=t.y+tileW/2;
+  const s=t.scale||(t.animT>0?1+Math.sin(t.animT*20)*0.05:1);
+  ctx.translate(cx,cy);ctx.scale(s,s);ctx.translate(-cx,-cy);
+
+  // Shadow
+  ctx.fillStyle='rgba(0,0,0,0.3)';
+  ctx.beginPath();ctx.roundRect(t.x+3,t.y+3,tileW,tileW,10);ctx.fill();
+
+  // Tile bg
+  const col=t.revealed?'#7f8c8d':(i===selected?'#f39c12':t.color);
+  ctx.fillStyle=col;
+  ctx.beginPath();ctx.roundRect(t.x,t.y,tileW,tileW,10);ctx.fill();
+
+  // Lighter top
+  ctx.fillStyle='rgba(255,255,255,0.15)';
+  ctx.beginPath();ctx.roundRect(t.x,t.y,tileW,tileW/2,{upperLeft:10,upperRight:10,lowerLeft:0,lowerRight:0});ctx.fill();
+
+  // Letter
+  ctx.fillStyle='#fff';ctx.font='bold 36px Arial';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(t.letter,cx,cy);
+
+  if(t.revealed){
+    ctx.strokeStyle='#2ecc71';ctx.lineWidth=3;
+    ctx.beginPath();ctx.roundRect(t.x,t.y,tileW,tileW,10);ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawHUD(){
+  // Category
+  ctx.fillStyle=catColors[currentCat];ctx.font='bold 18px Arial';ctx.textAlign='center';
+  ctx.fillText(currentCat.toUpperCase(),W/2,50);
+
+  // Timer
+  const barW=300,barX=(W-barW)/2,barY=70;
+  ctx.fillStyle='#333';ctx.fillRect(barX,barY,barW,14);
+  const pct=Math.max(0,timer/maxTime);
+  ctx.fillStyle=pct>0.3?'#2ecc71':'#e74c3c';
+  ctx.fillRect(barX,barY,barW*pct,14);
+
+  // Score
+  ctx.fillStyle='#ecf0f1';ctx.font='bold 18px Arial';ctx.textAlign='left';
+  ctx.fillText('Score: '+score,15,30);
+  ctx.textAlign='right';
+  ctx.fillText('Level '+level,W-15,30);
+  ctx.textAlign='center';
+  ctx.fillText('Words: '+wordsCompleted,W/2,30);
+
+  // Word slots (target)
+  const tileW=70,gap=8;
+  const totalW=currentWord.length*(tileW+gap)-gap;
+  const startX=(W-totalW)/2;
+  ctx.font='24px Arial';ctx.fillStyle='#555';
+  for(let i=0;i<currentWord.length;i++){
+    ctx.strokeStyle='#444';ctx.lineWidth=2;
+    ctx.strokeRect(startX+i*(tileW+gap),240,tileW,tileW);
+    ctx.fillText(i+1,startX+i*(tileW+gap)+tileW/2,275);
+  }
+
+  // Hint button
+  ctx.fillStyle='#8e44ad';
+  ctx.beginPath();ctx.roundRect(W/2-50,450,100,35,8);ctx.fill();
+  ctx.fillStyle='#fff';ctx.font='bold 16px Arial';
+  ctx.fillText('HINT (-50pts)',W/2,473);
+
+  // Skip button
+  ctx.fillStyle='#555';
+  ctx.beginPath();ctx.roundRect(W/2-40,500,80,30,8);ctx.fill();
+  ctx.fillStyle='#ccc';ctx.font='14px Arial';
+  ctx.fillText('SKIP',W/2,520);
+
+  // Instructions
+  ctx.fillStyle='#555';ctx.font='14px Arial';
+  ctx.fillText('Tap two tiles to swap them',W/2,570);
+  ctx.fillText('Rearrange to spell the word!',W/2,590);
+}
+
+function drawMenu(){
+  ctx.fillStyle='#0d1117';ctx.fillRect(0,0,W,H);
+
+  const t=Date.now()/1000;
+  const word='ANAGRAM';
+  for(let i=0;i<word.length;i++){
+    const x=100+i*45;
+    const y=200+Math.sin(t*2+i*0.5)*15;
+    ctx.fillStyle=['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#e74c3c','#3498db'][i];
+    ctx.beginPath();ctx.roundRect(x-20,y-25,40,50,8);ctx.fill();
+    ctx.fillStyle='#fff';ctx.font='bold 30px Arial';ctx.textAlign='center';
+    ctx.fillText(word[i],x,y+10);
+  }
+
+  ctx.fillStyle='#ecf0f1';ctx.font='20px Arial';ctx.textAlign='center';
+  ctx.fillText('Unscramble the letters!',W/2,310);
+  ctx.font='16px Arial';ctx.fillStyle='#95a5a6';
+  ctx.fillText('Tap two tiles to swap their positions',W/2,345);
+  ctx.fillText('Categories: Animals, Colors, Foods & more',W/2,375);
+
+  ctx.fillStyle='#f39c12';ctx.font='bold 28px Arial';
+  ctx.fillText('TAP TO START',W/2,H-100);
+}
+
+function drawGameOver(){
+  ctx.fillStyle='#0d1117';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#e74c3c';ctx.font='bold 56px Arial';ctx.textAlign='center';
+  ctx.fillText('TIME\'S UP!',W/2,180);
+  ctx.fillStyle='#f1c40f';ctx.font='bold 80px Arial';
+  ctx.fillText(score,W/2,300);
+  ctx.font='24px Arial';ctx.fillStyle='#ecf0f1';
+  ctx.fillText('Points',W/2,340);
+  ctx.fillText('Words solved: '+wordsCompleted,W/2,390);
+  ctx.fillText('Level reached: '+level,W/2,425);
+  ctx.fillStyle='#f39c12';ctx.font='bold 24px Arial';
+  ctx.fillText('TAP TO PLAY AGAIN',W/2,H-100);
+}
+
+function updateParticles(dt){
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];
+    p.x+=p.vx;p.y+=p.vy;p.vy+=9.8*dt;
+    p.life-=dt*1.5;
+    if(p.life<=0) particles.splice(i,1);
+  }
+}
+
+function drawParticles(){
+  for(const p of particles){
+    ctx.globalAlpha=Math.max(0,p.life);
+    ctx.fillStyle=p.color;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.size,0,Math.PI*2);ctx.fill();
+  }
+  ctx.globalAlpha=1;
+}
+
+let lastTime=0;
+function update(ts){
+  const dt=Math.min((ts-lastTime)/1000,0.05);lastTime=ts;
+
+  ctx.fillStyle='#0d1117';ctx.fillRect(0,0,W,H);
+
+  if(state===STATE.MENU){drawMenu();}
+  else if(state===STATE.OVER){drawGameOver();}
+  else if(state===STATE.CORRECT){
+    correctTimer-=dt;
+    updateParticles(dt);
+    drawHUD();
+    for(let i=0;i<tiles.length;i++) drawTile(tiles[i],i);
+
+    ctx.fillStyle='#2ecc71';ctx.font='bold 40px Arial';ctx.textAlign='center';
+    ctx.fillText('CORRECT!',W/2,160);
+    ctx.font='24px Arial';
+    ctx.fillText(currentWord,W/2,200);
+
+    drawParticles();
+
+    if(correctTimer<=0){
+      state=STATE.PLAY;
+      newWord();
+    }
+  }
+  else if(state===STATE.PLAY){
+    timer-=dt;
+    if(timer<=0){timer=0;state=STATE.OVER;wrongSound();}
+
+    // Animate tiles
+    for(const t of tiles){
+      if(t.animT>0) t.animT-=dt;
+    }
+
+    updateParticles(dt);
+    drawHUD();
+    for(let i=0;i<tiles.length;i++) drawTile(tiles[i],i);
+    drawParticles();
+  }
+
+  requestAnimationFrame(update);
+}
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

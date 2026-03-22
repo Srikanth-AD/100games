@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>FERMENT</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1209;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+let W,H,scl;
+function resize(){
+  const vw=window.innerWidth,vh=window.innerHeight;
+  scl=Math.min(vw/375,vh/600);
+  W=Math.round(375*scl);H=Math.round(600*scl);
+  cv.width=W;cv.height=H;
+}
+resize();
+window.addEventListener('resize',()=>{resize();});
+
+const AC=new(window.AudioContext||window.webkitAudioContext)();
+function sfx(type){
+  try{
+    const t=AC.currentTime;
+    if(type==='bubble'){
+      const o=AC.createOscillator(),g=AC.createGain();
+      o.connect(g);g.connect(AC.destination);
+      o.type='triangle';
+      o.frequency.setValueAtTime(600+Math.random()*400,t);
+      o.frequency.exponentialRampToValueAtTime(200,t+0.12);
+      g.gain.setValueAtTime(0.08,t);
+      g.gain.exponentialRampToValueAtTime(0.001,t+0.12);
+      o.start(t);o.stop(t+0.15);
+    } else if(type==='correct'){
+      const freqs=[523,659,784];
+      freqs.forEach((f,i)=>{
+        const o=AC.createOscillator(),g=AC.createGain();
+        o.connect(g);g.connect(AC.destination);
+        o.type='sine';o.frequency.value=f;
+        g.gain.setValueAtTime(0.15,t+i*0.07);
+        g.gain.exponentialRampToValueAtTime(0.001,t+i*0.07+0.15);
+        o.start(t+i*0.07);o.stop(t+i*0.07+0.18);
+      });
+    } else if(type==='perfect'){
+      [523,659,784,1047].forEach((f,i)=>{
+        const o=AC.createOscillator(),g=AC.createGain();
+        o.connect(g);g.connect(AC.destination);
+        o.type='triangle';o.frequency.value=f;
+        g.gain.setValueAtTime(0.18,t+i*0.08);
+        g.gain.exponentialRampToValueAtTime(0.001,t+i*0.08+0.2);
+        o.start(t+i*0.08);o.stop(t+i*0.08+0.25);
+      });
+    } else if(type==='wrong'){
+      const o=AC.createOscillator(),g=AC.createGain();
+      o.connect(g);g.connect(AC.destination);
+      o.type='sawtooth';
+      o.frequency.setValueAtTime(220,t);
+      o.frequency.linearRampToValueAtTime(110,t+0.3);
+      g.gain.setValueAtTime(0.2,t);
+      g.gain.linearRampToValueAtTime(0,t+0.3);
+      o.start(t);o.stop(t+0.35);
+    } else if(type==='complete'){
+      [523,659,784,659,784,1047,784,1047,1319].forEach((f,i)=>{
+        const o=AC.createOscillator(),g=AC.createGain();
+        o.connect(g);g.connect(AC.destination);
+        o.type='triangle';o.frequency.value=f;
+        g.gain.setValueAtTime(0.15,t+i*0.07);
+        g.gain.exponentialRampToValueAtTime(0.001,t+i*0.07+0.12);
+        o.start(t+i*0.07);o.stop(t+i*0.07+0.15);
+      });
+    } else if(type==='over'){
+      [440,349,261,196].forEach((f,i)=>{
+        const o=AC.createOscillator(),g=AC.createGain();
+        o.connect(g);g.connect(AC.destination);
+        o.type='sawtooth';o.frequency.value=f;
+        g.gain.setValueAtTime(0.15,t+i*0.13);
+        g.gain.exponentialRampToValueAtTime(0.001,t+i*0.13+0.12);
+        o.start(t+i*0.13);o.stop(t+i*0.13+0.15);
+      });
+    }
+  }catch(e){}
+}
+
+// ── Ingredients ────────────────────────────────────────────────────────────────
+const INGREDIENTS=[
+  {name:'RED',   hue:0,   color:'#e74c3c',dark:'#922b21'},
+  {name:'BLUE',  hue:220, color:'#3498db',dark:'#1a5276'},
+  {name:'GREEN', hue:120, color:'#2ecc71',dark:'#1a6b3a'},
+  {name:'YELLOW',hue:55,  color:'#f1c40f',dark:'#876512'},
+  {name:'PURPLE',hue:280, color:'#9b59b6',dark:'#512e6c'},
+];
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let gs='start';
+let score=0,lives=3,level=1;
+let best=+localStorage.getItem('ferment_best')||0;
+let popups=[];
+
+// Brew state
+let brewHue=0;        // 0–360
+let brewT=0;          // accumulated time
+let cycleDuration=8000; // ms per full 360 cycle
+
+// Recipe
+let recipe=[];        // [{ingIdx, targetHue, window}]
+let recipeStep=0;
+let recipeCount=3;
+let stepDone=false;   // currently in success flash
+let stepFlashT=0;
+let missFlash=0;      // >0 = red flash
+let wrongFlash=0;
+
+// Bubbles
+let bubbles=[];
+let bubbleTimer=0;
+let steamParticles=[];
+let steamTimer=0;
+let ripples=[];
+
+// Level complete animation
+let completeAnim=0;
+let nextRoundTimer=0;
+
+let bottleAnims=[];  // {idx, scale, targetScale}
+
+function getWindowWidth(){
+  return Math.max(0.6,1.5-level*0.15);  // seconds
+}
+
+function generateRecipe(){
+  recipeCount=Math.min(3+Math.floor(level/2),6);
+  recipe=[];
+  for(let i=0;i<recipeCount;i++){
+    const ingIdx=Math.floor(Math.random()*INGREDIENTS.length);
+    // Place target hue spread around the ingredient's natural hue, avoiding current brew
+    const offset=(Math.random()-0.5)*60;
+    const targetHue=(INGREDIENTS[ingIdx].hue+offset+360)%360;
+    recipe.push({ingIdx,targetHue,window:getWindowWidth()*cycleDuration/360*360/360});
+  }
+  recipeStep=0;
+  stepDone=false;
+}
+
+function initBubbles(){
+  bubbles=[];
+  for(let i=0;i<8;i++){
+    spawnBubble(true);
+  }
+}
+
+// Pot geometry
+function getPotBounds(){
+  const cx=W/2;
+  const pw=180*scl,ph=130*scl;
+  const px=cx-pw/2;
+  const py=H*0.38;
+  return {cx,pw,ph,px,py};
+}
+
+function spawnBubble(init){
+  const {cx,pw,ph,px,py}=getPotBounds();
+  const liqH=ph*0.72;
+  const liqY=py+ph*0.08+ph-liqH;
+  bubbles.push({
+    x:px+pw*0.15+Math.random()*pw*0.7,
+    y:init?liqY+Math.random()*liqH:liqY+liqH*0.9+Math.random()*liqH*0.1,
+    r:(2+Math.random()*5)*scl,
+    vy:-(20+Math.random()*40)*scl,
+    alpha:0.6+Math.random()*0.4,
+    life:1,
+    phase:Math.random()*Math.PI*2
+  });
+}
+
+function spawnSteam(){
+  const {cx,py}=getPotBounds();
+  steamParticles.push({
+    x:cx+(Math.random()-0.5)*30*scl,
+    y:py+5*scl,
+    vx:(Math.random()-0.5)*10*scl,
+    vy:-(15+Math.random()*25)*scl,
+    r:(4+Math.random()*6)*scl,
+    life:1,
+    alpha:0.15+Math.random()*0.12
+  });
+}
+
+function resetGame(){
+  score=0;lives=3;level=1;popups=[];
+  brewHue=0;brewT=0;cycleDuration=8000;
+  bubbles=[];steamParticles=[];ripples=[];
+  missFlash=0;wrongFlash=0;completeAnim=0;nextRoundTimer=0;stepDone=false;
+  initBubbles();
+  generateRecipe();
+  bottleAnims=INGREDIENTS.map(()=>({scale:1,pulse:0}));
+}
+
+// ── Drawing helpers ────────────────────────────────────────────────────────────
+function drawHeart(x,y,size,col){
+  ctx.save();ctx.fillStyle=col;
+  ctx.beginPath();
+  ctx.moveTo(x,y+size*0.3);
+  ctx.bezierCurveTo(x,y,x-size,y,x-size,y+size*0.4);
+  ctx.bezierCurveTo(x-size,y+size*0.8,x,y+size*1.1,x,y+size*1.3);
+  ctx.bezierCurveTo(x,y+size*1.1,x+size,y+size*0.8,x+size,y+size*0.4);
+  ctx.bezierCurveTo(x+size,y,x,y,x,y+size*0.3);
+  ctx.fill();ctx.restore();
+}
+
+function drawHUD(){
+  ctx.save();
+  ctx.font=`bold ${11*scl}px monospace`;
+  ctx.fillStyle='#7a5a20';ctx.textAlign='left';ctx.textBaseline='top';
+  ctx.fillText(`LVL ${level}`,10*scl,10*scl);
+
+  ctx.textAlign='center';
+  ctx.fillStyle='#d4aa50';
+  ctx.font=`bold ${15*scl}px monospace`;
+  ctx.fillText(Math.floor(score),W/2,10*scl);
+
+  ctx.textAlign='right';
+  ctx.fillStyle='#5a3a10';
+  ctx.font=`bold ${11*scl}px monospace`;
+  ctx.fillText(`BEST ${best}`,W-10*scl,10*scl);
+
+  for(let i=0;i<3;i++){
+    drawHeart(W-10*scl-i*18*scl,26*scl,5*scl,i<lives?'#e05050':'#3a1a0a');
+  }
+  ctx.restore();
+}
+
+function drawBackground(){
+  ctx.fillStyle='#1a1209';
+  ctx.fillRect(0,0,W,H);
+  // Stone texture effect
+  for(let i=0;i<6;i++){
+    const y=100*scl+i*80*scl;
+    ctx.strokeStyle=`rgba(255,200,100,${0.015+i*0.005})`;
+    ctx.lineWidth=scl*0.5;
+    ctx.beginPath();
+    ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();
+  }
+  // Warm ambient glow from pot
+  const {cx,py,ph}=getPotBounds();
+  const grd=ctx.createRadialGradient(cx,py+ph*0.5,0,cx,py+ph*0.5,120*scl);
+  grd.addColorStop(0,`hsla(${brewHue},60%,50%,0.08)`);
+  grd.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=grd;
+  ctx.fillRect(0,0,W,H);
+}
+
+function drawPot(){
+  const {cx,pw,ph,px,py}=getPotBounds();
+  const liqH=ph*0.72;
+  const liqY=py+ph*0.08+ph-liqH;
+
+  ctx.save();
+  // Flash effects
+  if(wrongFlash>0){
+    ctx.save();
+    ctx.globalAlpha=wrongFlash*0.4;
+    ctx.fillStyle='#e74c3c';
+    ctx.fillRect(0,0,W,H);
+    ctx.restore();
+  }
+
+  // Pot body (trapezoid-ish)
+  ctx.beginPath();
+  ctx.moveTo(px+pw*0.05,py);
+  ctx.lineTo(px+pw*0.95,py);
+  ctx.lineTo(px+pw,py+ph);
+  ctx.lineTo(px,py+ph);
+  ctx.closePath();
+  ctx.fillStyle='#2c2c2c';
+  ctx.fill();
+  ctx.strokeStyle='#444';
+  ctx.lineWidth=3*scl;
+  ctx.stroke();
+
+  // Pot highlight
+  ctx.beginPath();
+  ctx.moveTo(px+pw*0.08,py+4*scl);
+  ctx.lineTo(px+pw*0.3,py+4*scl);
+  ctx.strokeStyle='rgba(255,255,255,0.08)';
+  ctx.lineWidth=2*scl;
+  ctx.stroke();
+
+  // Liquid inside
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(px+pw*0.05+4*scl,liqY);
+  ctx.lineTo(px+pw*0.95-4*scl,liqY);
+  ctx.lineTo(px+pw-4*scl,py+ph-4*scl);
+  ctx.lineTo(px+4*scl,py+ph-4*scl);
+  ctx.closePath();
+  ctx.clip();
+
+  // Liquid gradient
+  const lgrd=ctx.createLinearGradient(cx,liqY,cx,py+ph);
+  lgrd.addColorStop(0,`hsla(${brewHue},80%,55%,0.9)`);
+  lgrd.addColorStop(1,`hsla(${brewHue},90%,30%,0.95)`);
+  ctx.fillStyle=lgrd;
+  ctx.fillRect(px,liqY,pw,ph);
+
+  // Liquid surface shimmer
+  ctx.fillStyle=`hsla(${brewHue},70%,75%,0.15)`;
+  ctx.fillRect(px,liqY,pw,4*scl);
+
+  // Bubbles
+  bubbles.forEach(b=>{
+    ctx.beginPath();
+    ctx.arc(b.x,b.y,b.r,0,Math.PI*2);
+    ctx.strokeStyle=`hsla(${brewHue},60%,85%,${b.alpha*b.life})`;
+    ctx.lineWidth=scl;
+    ctx.stroke();
+  });
+
+  // Ripples
+  ripples.forEach(r=>{
+    ctx.beginPath();
+    ctx.arc(r.x,r.y,r.r,0,Math.PI*2);
+    ctx.strokeStyle=`rgba(255,255,255,${0.4*r.life})`;
+    ctx.lineWidth=scl;
+    ctx.stroke();
+  });
+
+  ctx.restore();
+
+  // Pot rim
+  ctx.beginPath();
+  ctx.ellipse(cx,py,pw*0.5+2*scl,10*scl,0,0,Math.PI*2);
+  ctx.fillStyle='#3a3a3a';
+  ctx.fill();
+  ctx.strokeStyle='#555';
+  ctx.lineWidth=2*scl;
+  ctx.stroke();
+
+  // Handles
+  ctx.strokeStyle='#555';
+  ctx.lineWidth=5*scl;
+  ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.arc(px-8*scl,py+ph*0.3,10*scl,Math.PI*0.6,Math.PI*1.4);ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(px+pw+8*scl,py+ph*0.3,10*scl,-Math.PI*0.4,Math.PI*0.4);ctx.stroke();
+
+  // Steam particles
+  steamParticles.forEach(s=>{
+    ctx.beginPath();
+    ctx.arc(s.x,s.y,s.r,0,Math.PI*2);
+    ctx.fillStyle=`rgba(200,200,200,${s.alpha*s.life})`;
+    ctx.fill();
+  });
+
+  ctx.restore();
+}
+
+function drawColorWheel(){
+  const {cx,py,ph}=getPotBounds();
+  const wy=py+ph+28*scl;
+  const wr=28*scl;
+  ctx.save();
+
+  // Draw arc rainbow
+  for(let h=0;h<360;h+=4){
+    const a1=(h-90)*Math.PI/180;
+    const a2=(h+4-90)*Math.PI/180;
+    ctx.beginPath();
+    ctx.arc(cx,wy,wr,a1,a2);
+    ctx.arc(cx,wy,wr-8*scl,a2,a1,true);
+    ctx.closePath();
+    ctx.fillStyle=`hsl(${h},80%,55%)`;
+    ctx.fill();
+  }
+
+  // Target window highlight
+  if(recipeStep<recipe.length){
+    const step=recipe[recipeStep];
+    const win=getWindowWidth();
+    const winDeg=win*cycleDuration/1000*(360/cycleDuration*1000);
+    // window in degrees
+    const winDegs=(win*1000)*(360/(cycleDuration));
+    const ta1=(step.targetHue-winDegs/2-90)*Math.PI/180;
+    const ta2=(step.targetHue+winDegs/2-90)*Math.PI/180;
+    ctx.beginPath();
+    ctx.arc(cx,wy,wr+3*scl,ta1,ta2);
+    ctx.arc(cx,wy,wr-8*scl-3*scl,ta2,ta1,true);
+    ctx.closePath();
+    ctx.fillStyle='rgba(255,255,255,0.35)';
+    ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,0.7)';
+    ctx.lineWidth=1.5*scl;
+    ctx.stroke();
+  }
+
+  // Current brew position needle
+  const na=(brewHue-90)*Math.PI/180;
+  ctx.beginPath();
+  ctx.moveTo(cx+Math.cos(na)*(wr-10*scl),wy+Math.sin(na)*(wr-10*scl));
+  ctx.lineTo(cx+Math.cos(na)*(wr+5*scl),wy+Math.sin(na)*(wr+5*scl));
+  ctx.strokeStyle='#fff';
+  ctx.lineWidth=2.5*scl;
+  ctx.lineCap='round';
+  ctx.stroke();
+  // Dot
+  ctx.beginPath();
+  ctx.arc(cx+Math.cos(na)*(wr-2*scl),wy+Math.sin(na)*(wr-2*scl),3*scl,0,Math.PI*2);
+  ctx.fillStyle='#fff';ctx.fill();
+
+  // Center label
+  ctx.fillStyle='rgba(0,0,0,0.7)';
+  ctx.beginPath();ctx.arc(cx,wy,wr-8*scl,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,0.4)';
+  ctx.font=`${8*scl}px monospace`;
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText('HUE',cx,wy);
+
+  ctx.restore();
+}
+
+function drawRecipeSteps(){
+  const steps=recipe;
+  const startX=W/2-(steps.length*28*scl)/2;
+  const ry=H*0.08;
+  ctx.save();
+  steps.forEach((step,i)=>{
+    const ing=INGREDIENTS[step.ingIdx];
+    const sx=startX+i*28*scl+14*scl;
+    const isActive=i===recipeStep;
+    const isDone=i<recipeStep;
+
+    ctx.beginPath();
+    ctx.arc(sx,ry,10*scl,0,Math.PI*2);
+    ctx.fillStyle=isDone?'rgba(46,204,113,0.4)':isActive?ing.color:`${ing.color}44`;
+    ctx.fill();
+    ctx.strokeStyle=isActive?'rgba(255,255,255,0.8)':'rgba(255,255,255,0.2)';
+    ctx.lineWidth=isActive?2*scl:scl;
+    ctx.stroke();
+
+    if(isDone){
+      ctx.fillStyle='#2ecc71';
+      ctx.font=`bold ${10*scl}px monospace`;
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText('✓',sx,ry);
+    } else {
+      ctx.fillStyle=isActive?'#fff':'rgba(255,255,255,0.4)';
+      ctx.font=`bold ${7*scl}px monospace`;
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(ing.name.slice(0,1),sx,ry);
+    }
+  });
+  // Arrow label
+  ctx.fillStyle='rgba(255,255,255,0.3)';
+  ctx.font=`${9*scl}px monospace`;
+  ctx.textAlign='center';
+  ctx.fillText('RECIPE',W/2,ry+16*scl);
+  ctx.restore();
+}
+
+function drawIngredientBottles(){
+  const n=INGREDIENTS.length;
+  const bw=44*scl,bh=64*scl;
+  const spacing=W/(n+1);
+  const by=H*0.82;
+  const currentIng=recipeStep<recipe.length?recipe[recipeStep].ingIdx:-1;
+
+  ctx.save();
+  INGREDIENTS.forEach((ing,i)=>{
+    const bx=spacing*(i+1);
+    const ba=bottleAnims[i];
+    const isTarget=i===currentIng;
+    const pulse=isTarget?(1+0.1*Math.sin(last*0.007)):1;
+    const sc=ba?ba.scale*pulse:pulse;
+
+    ctx.save();
+    ctx.translate(bx,by);
+    ctx.scale(sc,sc);
+
+    // Glow for target
+    if(isTarget){
+      const grd=ctx.createRadialGradient(0,0,0,0,0,30*scl);
+      grd.addColorStop(0,`${ing.color}44`);
+      grd.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=grd;
+      ctx.beginPath();ctx.arc(0,0,30*scl,0,Math.PI*2);ctx.fill();
+    }
+
+    // Bottle body
+    const bh2=32*scl,bw2=16*scl;
+    ctx.beginPath();
+    ctx.roundRect(-bw2/2,-bh2/2,bw2,bh2,6*scl);
+    ctx.fillStyle=isTarget?ing.color:ing.dark;
+    ctx.fill();
+    ctx.strokeStyle=isTarget?'rgba(255,255,255,0.6)':'rgba(255,255,255,0.15)';
+    ctx.lineWidth=1.5*scl;
+    ctx.stroke();
+
+    // Bottle neck
+    ctx.beginPath();
+    ctx.roundRect(-5*scl,-bh2/2-12*scl,10*scl,14*scl,3*scl);
+    ctx.fillStyle=isTarget?ing.color:ing.dark;
+    ctx.fill();
+    ctx.strokeStyle=isTarget?'rgba(255,255,255,0.5)':'rgba(255,255,255,0.1)';
+    ctx.stroke();
+
+    // Cork/cap
+    ctx.beginPath();
+    ctx.roundRect(-6*scl,-bh2/2-16*scl,12*scl,6*scl,2*scl);
+    ctx.fillStyle='#c8a865';ctx.fill();
+
+    // Liquid level
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(-bw2/2+2*scl,4*scl,bw2-4*scl,bh2/2-6*scl,4*scl);
+    ctx.clip();
+    ctx.fillStyle=`${ing.color}99`;
+    ctx.fillRect(-bw2/2,0,bw2,bh2);
+    ctx.restore();
+
+    // Label
+    ctx.fillStyle=isTarget?'rgba(255,255,255,0.9)':'rgba(255,255,255,0.4)';
+    ctx.font=`bold ${6*scl}px monospace`;
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(ing.name,-0,-bh2/2+8*scl);
+
+    ctx.restore();
+  });
+  ctx.restore();
+}
+
+function drawPopups(){
+  for(let i=popups.length-1;i>=0;i--){
+    const p=popups[i];
+    ctx.save();
+    ctx.globalAlpha=p.life;
+    ctx.font=`bold ${14*scl}px monospace`;
+    ctx.fillStyle=p.col||'#ffcc44';
+    ctx.textAlign='center';
+    ctx.fillText(p.text,p.x,p.y);
+    ctx.restore();
+    p.y-=0.6;p.life-=0.02;
+    if(p.life<=0) popups.splice(i,1);
+  }
+}
+
+function drawStart(ts){
+  ctx.fillStyle='#1a1209';ctx.fillRect(0,0,W,H);
+
+  // Animated brew
+  const demoHue=(ts*0.04)%360;
+  const {cx,pw,ph,px,py}=getPotBounds();
+  const liqH=ph*0.72,liqY=py+ph*0.08+ph-liqH;
+
+  // Pot
+  ctx.beginPath();
+  ctx.moveTo(px+pw*0.05,py);ctx.lineTo(px+pw*0.95,py);
+  ctx.lineTo(px+pw,py+ph);ctx.lineTo(px,py+ph);ctx.closePath();
+  ctx.fillStyle='#2c2c2c';ctx.fill();
+  ctx.strokeStyle='#444';ctx.lineWidth=3*scl;ctx.stroke();
+
+  // Liquid
+  const lgrd=ctx.createLinearGradient(cx,liqY,cx,py+ph);
+  lgrd.addColorStop(0,`hsla(${demoHue},80%,55%,0.9)`);
+  lgrd.addColorStop(1,`hsla(${demoHue},90%,30%,0.95)`);
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(px+pw*0.05+4*scl,liqY);ctx.lineTo(px+pw*0.95-4*scl,liqY);
+  ctx.lineTo(px+pw-4*scl,py+ph-4*scl);ctx.lineTo(px+4*scl,py+ph-4*scl);
+  ctx.closePath();ctx.clip();
+  ctx.fillStyle=lgrd;ctx.fillRect(px,liqY,pw,ph);
+  // Animated bubbles
+  for(let i=0;i<5;i++){
+    const bx=px+pw*0.2+i*pw*0.15;
+    const by=liqY+liqH*0.8+Math.sin(ts*0.003+i)*liqH*0.2;
+    ctx.beginPath();ctx.arc(bx,by,3*scl,0,Math.PI*2);
+    ctx.strokeStyle='rgba(255,255,255,0.4)';ctx.lineWidth=scl;ctx.stroke();
+  }
+  ctx.restore();
+
+  // Rim
+  ctx.beginPath();
+  ctx.ellipse(cx,py,pw*0.5+2*scl,10*scl,0,0,Math.PI*2);
+  ctx.fillStyle='#3a3a3a';ctx.fill();
+
+  // Steam
+  for(let i=0;i<3;i++){
+    const sx=cx+(i-1)*20*scl+Math.sin(ts*0.002+i)*8*scl;
+    const sy=py-20*scl-Math.abs(Math.sin(ts*0.001+i))*20*scl;
+    ctx.beginPath();ctx.arc(sx,sy,6*scl,0,Math.PI*2);
+    ctx.fillStyle=`rgba(200,200,200,${0.1+0.05*Math.sin(ts*0.002+i)})`;ctx.fill();
+  }
+
+  // Overlay
+  ctx.fillStyle='rgba(26,18,9,0.5)';ctx.fillRect(0,0,W,H);
+
+  // Title
+  ctx.save();
+  ctx.textAlign='center';
+  ctx.font=`bold ${52*scl}px serif`;
+  ctx.fillStyle='#d4aa50';
+  ctx.shadowColor='rgba(212,170,80,0.5)';ctx.shadowBlur=20*scl;
+  ctx.fillText('FERMENT',W/2,H*0.18);
+  ctx.shadowBlur=0;
+  ctx.font=`${10*scl}px monospace`;
+  ctx.fillStyle='#7a5a20';
+  ctx.fillText('TAP THE RIGHT INGREDIENT AT THE RIGHT MOMENT',W/2,H*0.26);
+
+  const pulse=0.7+0.3*Math.sin(ts*0.004);
+  ctx.globalAlpha=pulse;
+  ctx.font=`bold ${15*scl}px monospace`;
+  ctx.fillStyle='#d4aa50';
+  ctx.fillText('TAP TO START',W/2,H*0.88);
+  ctx.restore();
+}
+
+function drawOver(){
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';
+  ctx.font=`bold ${38*scl}px serif`;
+  ctx.fillStyle='#d4aa50';
+  ctx.shadowColor='rgba(212,170,80,0.5)';ctx.shadowBlur=15*scl;
+  ctx.fillText('BATCH SPOILED',W/2,H*0.33);
+  ctx.shadowBlur=0;
+
+  ctx.font=`bold ${52*scl}px monospace`;
+  ctx.fillStyle='#fff';
+  ctx.fillText(Math.floor(score),W/2,H*0.47);
+
+  ctx.font=`${11*scl}px monospace`;
+  ctx.fillStyle='#5a3a10';
+  ctx.fillText('BEST  '+best,W/2,H*0.56);
+
+  const pulse=0.7+0.3*Math.sin(last*0.004);
+  ctx.globalAlpha=pulse;
+  ctx.font=`bold ${14*scl}px monospace`;
+  ctx.fillStyle='#d4aa50';
+  ctx.fillText('TAP TO PLAY AGAIN',W/2,H*0.72);
+  ctx.restore();
+}
+
+// ── Game logic ─────────────────────────────────────────────────────────────────
+function checkTap(ingIdx){
+  if(recipeStep>=recipe.length) return;
+  const step=recipe[recipeStep];
+  // Check ingredient
+  if(ingIdx!==step.ingIdx){
+    // Wrong ingredient
+    wrongFlash=0.8;
+    missFlash=0.5;
+    lives--;
+    popups.push({x:W/2,y:H*0.5,text:'WRONG!',life:1,col:'#e74c3c'});
+    sfx('wrong');
+    if(lives<=0){
+      if(Math.floor(score)>best){best=Math.floor(score);localStorage.setItem('ferment_best',best);}
+      gs='over';sfx('over');
+    }
+    return;
+  }
+  // Check timing — is brewHue in target window?
+  const win=getWindowWidth();
+  const winDegs=win*(360/cycleDuration*1000);
+  let diff=((brewHue-step.targetHue)+360)%360;
+  if(diff>180) diff=360-diff;
+
+  if(diff<=winDegs/2){
+    // In window
+    const precision=1-diff/(winDegs/2);
+    const pts=Math.floor(precision*100*level);
+    score+=pts;
+    if(precision>0.8){
+      popups.push({x:W/2,y:H*0.47,text:`PERFECT! +${pts}`,life:1,col:'#2ecc71'});
+      sfx('perfect');
+    } else {
+      popups.push({x:W/2,y:H*0.47,text:`GOOD +${pts}`,life:1,col:'#f1c40f'});
+      sfx('correct');
+    }
+    // Animate bottle
+    if(bottleAnims[ingIdx]) bottleAnims[ingIdx].scale=1.3;
+    // Add ripple
+    const {cx,py,ph}=getPotBounds();
+    ripples.push({x:cx+(Math.random()-0.5)*40*scl,y:py+ph*0.5,r:0,life:1});
+
+    recipeStep++;
+    stepDone=true;stepFlashT=300;
+
+    if(recipeStep>=recipe.length){
+      // Recipe complete
+      const bonus=Math.floor(100*level);
+      score+=bonus;
+      popups.push({x:W/2,y:H*0.38,text:`BREW COMPLETE! +${bonus}`,life:1.5,col:'#2ecc71'});
+      sfx('complete');
+      if(Math.floor(score)>best){best=Math.floor(score);localStorage.setItem('ferment_best',best);}
+      completeAnim=1;
+      nextRoundTimer=2200;
+    }
+  } else {
+    // Miss — outside window
+    missFlash=0.6;
+    lives--;
+    popups.push({x:W/2,y:H*0.5,text:'TOO EARLY/LATE!',life:1,col:'#e67e22'});
+    sfx('wrong');
+    if(lives<=0){
+      if(Math.floor(score)>best){best=Math.floor(score);localStorage.setItem('ferment_best',best);}
+      gs='over';sfx('over');
+    }
+  }
+}
+
+let last=0;
+function update(ts){
+  requestAnimationFrame(update);
+  const dt=Math.min(ts-last,50);last=ts;
+
+  if(gs==='start'){drawStart(ts);return;}
+  if(gs==='over'){
+    drawBackground();drawPot();drawColorWheel();
+    drawRecipeSteps();drawIngredientBottles();
+    drawHUD();drawPopups();drawOver();return;
+  }
+
+  // Brew cycle
+  brewT+=dt;
+  brewHue=(brewT/cycleDuration*360)%360;
+  // Speed up with level
+  cycleDuration=Math.max(4000,8000-level*500);
+
+  // Bubbles
+  bubbleTimer+=dt;
+  if(bubbleTimer>200+Math.random()*300){
+    bubbleTimer=0;spawnBubble(false);sfx('bubble');
+  }
+  for(let i=bubbles.length-1;i>=0;i--){
+    const b=bubbles[i];
+    b.y+=b.vy*(dt/1000);
+    b.x+=Math.sin(ts*0.003+b.phase)*1*scl;
+    const {py}=getPotBounds();
+    if(b.y<py+5*scl){
+      // Pop → ripple
+      ripples.push({x:b.x,y:b.y,r:0,life:1});
+      bubbles.splice(i,1);
+    }
+  }
+
+  // Ripples
+  for(let i=ripples.length-1;i>=0;i--){
+    const r=ripples[i];
+    r.r+=40*scl*(dt/1000);r.life-=dt/500;
+    if(r.life<=0) ripples.splice(i,1);
+  }
+
+  // Steam
+  steamTimer+=dt;
+  if(steamTimer>150){steamTimer=0;spawnSteam();}
+  for(let i=steamParticles.length-1;i>=0;i--){
+    const s=steamParticles[i];
+    s.x+=s.vx*(dt/1000);s.y+=s.vy*(dt/1000);
+    s.r+=1*scl*(dt/1000);s.life-=dt/2000;
+    if(s.life<=0) steamParticles.splice(i,1);
+  }
+
+  // Flash decay
+  if(wrongFlash>0) wrongFlash-=dt/400;
+  if(missFlash>0) missFlash-=dt/400;
+  if(stepFlashT>0) stepFlashT-=dt;
+
+  // Bottle anim
+  if(bottleAnims){
+    bottleAnims.forEach(ba=>{
+      if(ba.scale>1) ba.scale=Math.max(1,ba.scale-dt*0.003);
+    });
+  }
+
+  // Next round timer
+  if(nextRoundTimer>0){
+    nextRoundTimer-=dt;
+    if(nextRoundTimer<=0){
+      level++;
+      generateRecipe();
+      completeAnim=0;
+      nextRoundTimer=0;
+    }
+  }
+
+  // Draw
+  drawBackground();
+  drawPot();
+  drawColorWheel();
+  drawRecipeSteps();
+  drawIngredientBottles();
+  drawHUD();
+  drawPopups();
+
+  // Step flash overlay
+  if(stepDone && stepFlashT>0){
+    ctx.save();
+    ctx.globalAlpha=(stepFlashT/300)*0.12;
+    ctx.fillStyle='#2ecc71';ctx.fillRect(0,0,W,H);
+    ctx.restore();
+  }
+
+  // Complete celebration
+  if(completeAnim>0){
+    ctx.save();
+    ctx.globalAlpha=0.15;
+    ctx.fillStyle=`hsl(${brewHue},80%,60%)`;ctx.fillRect(0,0,W,H);
+    ctx.restore();
+  }
+}
+
+// ── Input ──────────────────────────────────────────────────────────────────────
+cv.addEventListener('pointerdown',e=>{
+  e.preventDefault();
+  AC.resume();
+  if(gs==='start'){gs='play';resetGame();return;}
+  if(gs==='over'){gs='play';resetGame();return;}
+  if(gs!=='play') return;
+  if(nextRoundTimer>0) return;
+
+  const rect=cv.getBoundingClientRect();
+  const px=e.clientX-rect.left,py=e.clientY-rect.top;
+
+  // Check bottle taps
+  const n=INGREDIENTS.length;
+  const spacing=W/(n+1);
+  const by=H*0.82;
+  const bh2=32*scl;
+  INGREDIENTS.forEach((ing,i)=>{
+    const bx=spacing*(i+1);
+    const dx=px-bx,dy=py-by;
+    if(Math.abs(dx)<22*scl && Math.abs(dy)<bh2+10*scl){
+      checkTap(i);
+    }
+  });
+},{passive:false});
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

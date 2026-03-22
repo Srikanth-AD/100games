@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>PENDULUM</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W, H;
+function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Audio
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playSound(freq, dur, type = 'sine', vol = 0.3) {
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(vol, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    o.connect(g);
+    g.connect(audioCtx.destination);
+    o.start();
+    o.stop(audioCtx.currentTime + dur);
+}
+
+// Game state
+let state = 'menu'; // menu, play, over
+let score = 0;
+let bestScore = 0;
+let hooks = [];
+let player = {};
+let cameraX = 0;
+let particles = [];
+let hookIndex = 0;
+let ropeLen = 0;
+let swingAngle = 0;
+let swingVel = 0;
+let attached = true;
+let velX = 0, velY = 0;
+let gravity = 0.35;
+let distanceTraveled = 0;
+let hookSpacing = 200;
+let hookMinY = 80;
+let hookMaxY = 180;
+let trailPoints = [];
+
+function generateHooks(startX, count) {
+    for (let i = 0; i < count; i++) {
+        const lastHook = hooks.length > 0 ? hooks[hooks.length - 1] : { x: startX - hookSpacing, y: H * 0.25 };
+        const spacing = hookSpacing + Math.min(score * 0.5, 150);
+        const x = lastHook.x + spacing + Math.random() * 60;
+        const y = hookMinY + Math.random() * (hookMaxY - hookMinY);
+        hooks.push({ x, y });
+    }
+}
+
+function initGame() {
+    hooks = [];
+    hookIndex = 0;
+    score = 0;
+    distanceTraveled = 0;
+    cameraX = 0;
+    particles = [];
+    trailPoints = [];
+    hookSpacing = 180;
+
+    hooks.push({ x: W * 0.3, y: H * 0.2 });
+    generateHooks(W * 0.3, 20);
+
+    player = { x: hooks[0].x, y: hooks[0].y + 120 };
+    attached = true;
+    ropeLen = 120;
+    swingAngle = -Math.PI / 4;
+    swingVel = 0.02;
+    velX = 0;
+    velY = 0;
+}
+
+function spawnParticles(x, y, color, count) {
+    for (let i = 0; i < count; i++) {
+        particles.push({
+            x, y,
+            vx: (Math.random() - 0.5) * 8,
+            vy: (Math.random() - 0.5) * 8,
+            life: 1,
+            color,
+            size: Math.random() * 4 + 2
+        });
+    }
+}
+
+function update() {
+    if (state !== 'play') return;
+
+    const hook = hooks[hookIndex];
+
+    if (attached && hook) {
+        const dampening = 0.998;
+        const gravityEffect = gravity * 0.03;
+        swingVel += -gravityEffect * Math.cos(swingAngle);
+        swingVel *= dampening;
+        swingAngle += swingVel;
+
+        player.x = hook.x + Math.sin(swingAngle) * ropeLen;
+        player.y = hook.y + Math.cos(swingAngle) * ropeLen;
+
+        velX = swingVel * Math.cos(swingAngle) * ropeLen;
+        velY = -swingVel * Math.sin(swingAngle) * ropeLen;
+    } else {
+        velY += gravity;
+        player.x += velX;
+        player.y += velY;
+
+        // Check attachment to next hooks
+        for (let i = hookIndex + 1; i < hooks.length && i <= hookIndex + 3; i++) {
+            const h = hooks[i];
+            const dx = player.x - h.x;
+            const dy = player.y - h.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const catchRadius = 140 + Math.min(score * 0.3, 40);
+            if (dist < catchRadius && player.y > h.y) {
+                hookIndex = i;
+                attached = true;
+                ropeLen = dist;
+                swingAngle = Math.atan2(dx, dy);
+                swingVel = (velX * Math.cos(swingAngle) - velY * Math.sin(swingAngle)) / ropeLen;
+                score++;
+                hookSpacing = 180 + Math.min(score * 2, 120);
+                playSound(440 + score * 20, 0.2, 'sine', 0.2);
+                spawnParticles(h.x, h.y, '#00ffaa', 10);
+
+                if (hooks.length - hookIndex < 10) {
+                    generateHooks(hooks[hooks.length - 1].x, 10);
+                }
+                break;
+            }
+        }
+
+        // Fall off screen
+        if (player.y > H + 100) {
+            state = 'over';
+            bestScore = Math.max(bestScore, score);
+            playSound(150, 0.5, 'sawtooth', 0.3);
+        }
+    }
+
+    // Trail
+    trailPoints.push({ x: player.x, y: player.y, life: 1 });
+    if (trailPoints.length > 30) trailPoints.shift();
+    trailPoints.forEach(p => p.life -= 0.035);
+
+    // Camera smoothly follows player
+    const targetCam = player.x - W * 0.35;
+    cameraX += (targetCam - cameraX) * 0.08;
+
+    // Particles
+    particles.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= 0.025;
+    });
+    particles = particles.filter(p => p.life > 0);
+}
+
+function draw() {
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, W, H);
+
+    // Stars background
+    const starSeed = 42;
+    for (let i = 0; i < 80; i++) {
+        const sx = ((i * 137.5 + starSeed * 17) % W + W - cameraX * 0.1 % W) % W;
+        const sy = (i * 97.3 + starSeed * 31) % (H * 0.6);
+        const bright = 0.3 + (Math.sin(Date.now() * 0.002 + i) * 0.2 + 0.2);
+        ctx.fillStyle = `rgba(255,255,255,${bright})`;
+        ctx.fillRect(sx, sy, 2, 2);
+    }
+
+    // Ground / chasm
+    const groundY = H - 60;
+    ctx.fillStyle = '#1a0a2e';
+    ctx.fillRect(0, groundY, W, 60);
+    for (let x = -cameraX % 40 - 40; x < W; x += 40) {
+        ctx.fillStyle = '#2a1a3e';
+        ctx.fillRect(x, groundY, 20, 4);
+    }
+
+    // Fog at bottom
+    const fogGrad = ctx.createLinearGradient(0, groundY - 100, 0, groundY);
+    fogGrad.addColorStop(0, 'rgba(30,10,60,0)');
+    fogGrad.addColorStop(1, 'rgba(30,10,60,0.6)');
+    ctx.fillStyle = fogGrad;
+    ctx.fillRect(0, groundY - 100, W, 100);
+
+    ctx.save();
+    ctx.translate(-cameraX, 0);
+
+    // Draw hooks
+    for (let i = 0; i < hooks.length; i++) {
+        const h = hooks[i];
+        if (h.x - cameraX < -100 || h.x - cameraX > W + 100) continue;
+
+        // Hook glow
+        if (i === hookIndex + 1) {
+            ctx.beginPath();
+            ctx.arc(h.x, h.y, 25 + Math.sin(Date.now() * 0.005) * 5, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(0,255,170,0.15)';
+            ctx.fill();
+        }
+
+        // Hook line to ceiling
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(h.x, 0);
+        ctx.lineTo(h.x, h.y);
+        ctx.stroke();
+
+        // Hook circle
+        ctx.beginPath();
+        ctx.arc(h.x, h.y, 8, 0, Math.PI * 2);
+        ctx.fillStyle = i <= hookIndex ? '#555' : (i === hookIndex + 1 ? '#00ffaa' : '#887799');
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+
+    // Trail
+    for (let i = 1; i < trailPoints.length; i++) {
+        const p = trailPoints[i];
+        if (p.life <= 0) continue;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 3 * p.life, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(0,200,255,${p.life * 0.5})`;
+        ctx.fill();
+    }
+
+    // Rope
+    if (attached && hooks[hookIndex]) {
+        const h = hooks[hookIndex];
+        ctx.beginPath();
+        ctx.moveTo(h.x, h.y);
+        ctx.lineTo(player.x, player.y);
+        ctx.strokeStyle = '#ffcc44';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+
+    // Player
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, 12, 0, Math.PI * 2);
+    const pGrad = ctx.createRadialGradient(player.x - 3, player.y - 3, 2, player.x, player.y, 12);
+    pGrad.addColorStop(0, '#ff6688');
+    pGrad.addColorStop(1, '#cc2244');
+    ctx.fillStyle = pGrad;
+    ctx.fill();
+    ctx.strokeStyle = '#ffaacc';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Player eyes
+    const eyeDir = attached ? Math.sin(swingAngle) : (velX > 0 ? 1 : -1);
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(player.x - 4 + eyeDir * 2, player.y - 3, 3, 0, Math.PI * 2);
+    ctx.arc(player.x + 4 + eyeDir * 2, player.y - 3, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(player.x - 4 + eyeDir * 3, player.y - 3, 1.5, 0, Math.PI * 2);
+    ctx.arc(player.x + 4 + eyeDir * 3, player.y - 3, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Particles
+    particles.forEach(p => {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+        ctx.fillStyle = p.color + Math.floor(p.life * 255).toString(16).padStart(2, '0');
+        ctx.fill();
+    });
+
+    ctx.restore();
+
+    // UI
+    if (state === 'play') {
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 28px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(`HOOKS: ${score}`, W / 2, 40);
+
+        // Mini hint
+        if (score === 0) {
+            ctx.font = '16px monospace';
+            ctx.fillStyle = 'rgba(255,255,255,0.5)';
+            ctx.fillText('TAP to release and swing!', W / 2, 70);
+        }
+    }
+
+    if (state === 'menu') {
+        drawMenu();
+    }
+    if (state === 'over') {
+        drawGameOver();
+    }
+}
+
+function drawMenu() {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffcc44';
+    ctx.font = 'bold 52px monospace';
+    ctx.fillText('PENDULUM', W / 2, H * 0.3);
+
+    ctx.fillStyle = '#00ffaa';
+    ctx.font = '20px monospace';
+    ctx.fillText('Swing from hook to hook', W / 2, H * 0.3 + 50);
+
+    // Animated pendulum demo
+    const t = Date.now() * 0.003;
+    const demoAngle = Math.sin(t) * 0.8;
+    const demoX = W / 2 + Math.sin(demoAngle) * 80;
+    const demoY = H * 0.55 + Math.cos(demoAngle) * 80;
+    ctx.strokeStyle = '#ffcc44';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(W / 2, H * 0.55 - 80);
+    ctx.lineTo(demoX, demoY);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(W / 2, H * 0.55 - 80, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#887799';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(demoX, demoY, 12, 0, Math.PI * 2);
+    ctx.fillStyle = '#ff6688';
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.5 + Math.sin(Date.now() * 0.004) * 0.3) + ')';
+    ctx.font = '22px monospace';
+    ctx.fillText('TAP TO START', W / 2, H * 0.8);
+}
+
+function drawGameOver() {
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ff4466';
+    ctx.font = 'bold 44px monospace';
+    ctx.fillText('FELL!', W / 2, H * 0.3);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 32px monospace';
+    ctx.fillText(`HOOKS: ${score}`, W / 2, H * 0.45);
+
+    ctx.fillStyle = '#ffcc44';
+    ctx.font = '22px monospace';
+    ctx.fillText(`BEST: ${bestScore}`, W / 2, H * 0.55);
+
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.5 + Math.sin(Date.now() * 0.004) * 0.3) + ')';
+    ctx.font = '20px monospace';
+    ctx.fillText('TAP TO RETRY', W / 2, H * 0.72);
+}
+
+function handleTap() {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+
+    if (state === 'menu') {
+        state = 'play';
+        initGame();
+        return;
+    }
+    if (state === 'over') {
+        state = 'play';
+        initGame();
+        return;
+    }
+    if (state === 'play' && attached) {
+        attached = false;
+        // Give a little boost
+        velX *= 1.15;
+        velY -= 1;
+        playSound(300, 0.15, 'triangle', 0.2);
+    }
+}
+
+canvas.addEventListener('mousedown', handleTap);
+canvas.addEventListener('touchstart', e => { e.preventDefault(); handleTap(); });
+
+function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+
+initGame();
+loop();
+</script>
+</body>
+</html>

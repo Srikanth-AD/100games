@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>SWAT</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H;
+function resize(){W=canvas.width=Math.min(window.innerWidth,480);H=canvas.height=Math.min(window.innerHeight,720);}
+resize();window.addEventListener('resize',resize);
+
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playSound(freq,dur,type='sine',vol=0.12){
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(vol,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+  o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+dur);
+}
+function sndSwat(){playSound(200,0.08,'square',0.15);playSound(100,0.12,'noise'===''?'square':'sawtooth',0.08);}
+function sndHit(){playSound(800,0.1);playSound(600,0.08);}
+function sndBee(){playSound(150,0.3,'sawtooth',0.1);}
+function sndCombo(){playSound(1000,0.15);playSound(1200,0.1);}
+function sndMiss(){playSound(250,0.1,'square',0.05);}
+
+let state='menu',score=0,timer=60,bugs=[],splats=[],swatter={x:0,y:0,show:false,frame:0};
+let combo=0,comboTimer=0,maxCombo=0,lastTime=0;
+let bugsSwatted=0,beesHit=0;
+
+const BUG_TYPES={
+  fly:{color:'#333',size:10,points:10,speed:2,wingColor:'#aaa'},
+  mosquito:{color:'#555',size:8,points:20,speed:3,wingColor:'#ccc'},
+  horsefly:{color:'#442',size:14,points:30,speed:1.5,wingColor:'#997'},
+  bee:{color:'#fc0',size:12,points:-50,speed:1.8,wingColor:'#fff',isBee:true}
+};
+
+function spawnBug(){
+  const types=Object.keys(BUG_TYPES);
+  const elapsed=60-timer;
+  // More bees as time goes on
+  const weights=[4,3,2,1+elapsed*0.03];
+  const total=weights.reduce((a,b)=>a+b);
+  let r=Math.random()*total,idx=0;
+  for(let i=0;i<weights.length;i++){r-=weights[i];if(r<=0){idx=i;break;}}
+  const typeName=types[idx];
+  const bt=BUG_TYPES[typeName];
+  const speedMult=1+elapsed*0.015;
+  const bug={
+    type:typeName,...bt,
+    x:Math.random()*W,y:Math.random()*H*0.7+40,
+    vx:(Math.random()-0.5)*bt.speed*speedMult,
+    vy:(Math.random()-0.5)*bt.speed*speedMult,
+    angle:0,wingPhase:Math.random()*Math.PI*2,
+    alive:true,erratic:Math.random()*2,
+    changeTimer:Math.random()*60+30
+  };
+  bugs.push(bug);
+}
+
+function initGame(){
+  score=0;timer=60;bugs=[];splats=[];combo=0;comboTimer=0;maxCombo=0;
+  bugsSwatted=0;beesHit=0;
+  for(let i=0;i<6;i++)spawnBug();
+}
+
+function getPos(e){
+  const rect=canvas.getBoundingClientRect();
+  const x=(e.touches?e.touches[0].clientX:e.clientX)-rect.left;
+  const y=(e.touches?e.touches[0].clientY:e.clientY)-rect.top;
+  return{x,y};
+}
+
+function doSwat(x,y){
+  swatter={x,y,show:true,frame:0};
+  sndSwat();
+  let hitAny=false;
+  for(let i=bugs.length-1;i>=0;i--){
+    const b=bugs[i];
+    if(!b.alive)continue;
+    const dx=b.x-x,dy=b.y-y;
+    if(Math.sqrt(dx*dx+dy*dy)<b.size+20){
+      b.alive=false;
+      if(b.isBee){
+        score+=b.points;
+        beesHit++;
+        sndBee();
+        splats.push({x:b.x,y:b.y,color:'#fc0',alpha:1,text:b.points,r:b.size});
+        combo=0;
+      }else{
+        comboTimer=45;
+        combo++;
+        if(combo>maxCombo)maxCombo=combo;
+        let pts=b.points;
+        if(combo>=3){pts=Math.floor(pts*(1+combo*0.3));sndCombo();}
+        else sndHit();
+        score+=pts;
+        bugsSwatted++;
+        splats.push({x:b.x,y:b.y,color:'#611',alpha:1,text:'+'+pts,r:b.size});
+      }
+      hitAny=true;
+      // Remove and spawn new
+      setTimeout(()=>{
+        const idx=bugs.indexOf(b);
+        if(idx>=0)bugs.splice(idx,1);
+        if(state==='play')spawnBug();
+      },300);
+    }
+  }
+  if(!hitAny)sndMiss();
+}
+
+canvas.addEventListener('mousedown',e=>{
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  if(state==='menu'){state='play';initGame();return;}
+  if(state==='over'){state='menu';return;}
+  const p=getPos(e);doSwat(p.x,p.y);
+});
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  if(state==='menu'){state='play';initGame();return;}
+  if(state==='over'){state='menu';return;}
+  const p=getPos(e);doSwat(p.x,p.y);
+},{passive:false});
+
+function updateBug(b,dt){
+  if(!b.alive)return;
+  b.wingPhase+=0.3;
+  b.changeTimer-=dt;
+  if(b.changeTimer<=0){
+    b.vx+=(Math.random()-0.5)*b.speed*b.erratic;
+    b.vy+=(Math.random()-0.5)*b.speed*b.erratic;
+    b.changeTimer=Math.random()*40+20;
+  }
+  // Random jitter
+  b.x+=b.vx*dt+(Math.random()-0.5)*0.5;
+  b.y+=b.vy*dt+(Math.random()-0.5)*0.5;
+  b.angle=Math.atan2(b.vy,b.vx);
+
+  // Bounds
+  if(b.x<20){b.x=20;b.vx=Math.abs(b.vx);}
+  if(b.x>W-20){b.x=W-20;b.vx=-Math.abs(b.vx);}
+  if(b.y<40){b.y=40;b.vy=Math.abs(b.vy);}
+  if(b.y>H-60){b.y=H-60;b.vy=-Math.abs(b.vy);}
+
+  // Speed limit
+  const spd=Math.sqrt(b.vx*b.vx+b.vy*b.vy);
+  const maxSpd=b.speed*(1+(60-timer)*0.02);
+  if(spd>maxSpd){b.vx*=maxSpd/spd;b.vy*=maxSpd/spd;}
+}
+
+function update(dt){
+  if(state!=='play')return;
+  timer-=dt/60;
+  if(timer<=0){timer=0;state='over';playSound(200,0.5,'sawtooth',0.1);}
+
+  comboTimer-=dt;
+  if(comboTimer<=0)combo=0;
+
+  for(const b of bugs)updateBug(b,dt);
+
+  // Swatter anim
+  if(swatter.show){swatter.frame+=dt;if(swatter.frame>12)swatter.show=false;}
+
+  // Fade splats
+  for(let i=splats.length-1;i>=0;i--){
+    splats[i].alpha-=0.01*dt;
+    if(splats[i].alpha<=0)splats.splice(i,1);
+  }
+
+  // Keep bug count up
+  if(bugs.filter(b=>b.alive).length<4+Math.floor((60-timer)/10))spawnBug();
+}
+
+function drawBug(b){
+  ctx.save();ctx.translate(b.x,b.y);ctx.rotate(b.angle);
+
+  if(!b.alive){
+    ctx.globalAlpha=0.4;
+    ctx.fillStyle='#411';
+    ctx.beginPath();ctx.arc(0,0,b.size*0.8,0,Math.PI*2);ctx.fill();
+    ctx.restore();return;
+  }
+
+  // Wings
+  const wingFlap=Math.sin(b.wingPhase)*0.5;
+  ctx.fillStyle=b.wingColor;
+  ctx.globalAlpha=0.5;
+  ctx.beginPath();ctx.ellipse(-2,-b.size*0.6+wingFlap*3,b.size*0.7,b.size*0.4,wingFlap-0.3,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.ellipse(-2,b.size*0.6-wingFlap*3,b.size*0.7,b.size*0.4,-wingFlap+0.3,0,Math.PI*2);ctx.fill();
+  ctx.globalAlpha=1;
+
+  // Body
+  ctx.fillStyle=b.color;
+  ctx.beginPath();ctx.ellipse(0,0,b.size,b.size*0.6,0,0,Math.PI*2);ctx.fill();
+
+  if(b.isBee){
+    // Bee stripes
+    ctx.fillStyle='#000';
+    for(let s=-b.size+3;s<b.size;s+=5){
+      ctx.fillRect(s,-b.size*0.4,2,b.size*0.8);
+    }
+    // Stinger
+    ctx.fillStyle='#000';
+    ctx.beginPath();ctx.moveTo(b.size,0);ctx.lineTo(b.size+5,-2);ctx.lineTo(b.size+5,2);ctx.closePath();ctx.fill();
+  }
+
+  // Eyes
+  ctx.fillStyle='#f00';
+  ctx.beginPath();ctx.arc(-b.size*0.6,-2,2,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(-b.size*0.6,2,2,0,Math.PI*2);ctx.fill();
+
+  ctx.restore();
+}
+
+function drawSwatter(s){
+  if(!s.show)return;
+  const scale=s.frame<4?0.5+s.frame*0.12:1;
+  ctx.save();ctx.translate(s.x,s.y);ctx.scale(scale,scale);
+
+  // Handle
+  ctx.strokeStyle='#853';ctx.lineWidth=4;
+  ctx.beginPath();ctx.moveTo(15,15);ctx.lineTo(40,40);ctx.stroke();
+
+  // Head
+  ctx.fillStyle='rgba(200,50,50,0.7)';
+  ctx.fillRect(-18,-18,36,36);
+  // Grid
+  ctx.strokeStyle='rgba(150,30,30,0.5)';ctx.lineWidth=1;
+  for(let g=-12;g<=12;g+=8){
+    ctx.beginPath();ctx.moveTo(g,-18);ctx.lineTo(g,18);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(-18,g);ctx.lineTo(18,g);ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function draw(){
+  // Background - kitchen
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#f5e6c8');bg.addColorStop(1,'#e8d5a8');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+
+  // Tile pattern
+  ctx.fillStyle='rgba(0,0,0,0.03)';
+  for(let ty=0;ty<H;ty+=50){
+    for(let tx=0;tx<W;tx+=50){
+      if((Math.floor(tx/50)+Math.floor(ty/50))%2===0)ctx.fillRect(tx,ty,50,50);
+    }
+  }
+
+  if(state==='menu'){
+    // Draw some flies
+    const t=Date.now()*0.001;
+    for(let i=0;i<4;i++){
+      const fx=W*0.3+Math.sin(t+i*1.5)*80;
+      const fy=H*0.45+Math.cos(t*1.3+i*2)*60;
+      drawBug({x:fx,y:fy,size:12,color:'#333',wingColor:'#aaa',angle:t+i,wingPhase:t*8+i,alive:true,isBee:false});
+    }
+
+    ctx.fillStyle='#c33';
+    ctx.font='bold 52px Arial';ctx.textAlign='center';
+    ctx.fillText('SWAT',W/2,H*0.25);
+    ctx.font='18px Arial';ctx.fillStyle='#555';
+    ctx.fillText('Tap bugs to swat them!',W/2,H*0.33);
+    ctx.fillText('Avoid bees (yellow)',W/2,H*0.38);
+    ctx.fillText('Chain hits for combos!',W/2,H*0.43);
+    ctx.font='16px Arial';ctx.fillStyle='#888';
+    ctx.fillText('60 seconds - get the highest score!',W/2,H*0.55);
+    ctx.font='22px Arial';ctx.fillStyle='#333';
+    ctx.fillText('Tap to Start',W/2,H*0.7);
+    return;
+  }
+
+  // Splats
+  for(const s of splats){
+    ctx.globalAlpha=s.alpha*0.6;
+    ctx.fillStyle=s.color;
+    ctx.beginPath();ctx.arc(s.x,s.y,s.r+5,0,Math.PI*2);ctx.fill();
+    // Splatter dots
+    for(let i=0;i<4;i++){
+      const a=i*Math.PI/2;
+      ctx.beginPath();ctx.arc(s.x+Math.cos(a)*12,s.y+Math.sin(a)*10,3,0,Math.PI*2);ctx.fill();
+    }
+    ctx.globalAlpha=s.alpha;
+    ctx.fillStyle=s.text.toString().startsWith('-')?'#f33':'#fff';
+    ctx.font='bold 16px Arial';ctx.textAlign='center';
+    ctx.fillText(s.text,s.x,s.y-15);
+  }
+  ctx.globalAlpha=1;
+
+  // Bugs
+  for(const b of bugs)drawBug(b);
+
+  // Swatter
+  drawSwatter(swatter);
+
+  // HUD
+  ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(0,0,W,38);
+  ctx.font='bold 16px Arial';ctx.textAlign='left';
+  ctx.fillStyle='#fff';ctx.fillText('Score: '+score,10,26);
+  ctx.textAlign='center';
+  ctx.fillStyle=timer<10?'#f55':'#ff0';
+  ctx.fillText(Math.ceil(timer)+'s',W/2,26);
+  ctx.textAlign='right';
+  if(combo>=3){
+    ctx.fillStyle='#f80';
+    ctx.fillText('COMBO x'+combo+'!',W-10,26);
+  }
+
+  if(state==='over'){
+    ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(0,0,W,H);
+    ctx.font='bold 44px Arial';ctx.textAlign='center';
+    ctx.fillStyle='#c33';ctx.fillText("TIME'S UP!",W/2,H*0.28);
+    ctx.font='28px Arial';ctx.fillStyle='#fff';
+    ctx.fillText('Score: '+score,W/2,H*0.38);
+    ctx.font='18px Arial';ctx.fillStyle='#aaa';
+    ctx.fillText('Bugs swatted: '+bugsSwatted,W/2,H*0.47);
+    ctx.fillText('Best combo: '+maxCombo+'x',W/2,H*0.53);
+    if(beesHit>0){ctx.fillStyle='#fc0';ctx.fillText('Bees hit: '+beesHit+' (ouch!)',W/2,H*0.59);}
+    ctx.font='20px Arial';ctx.fillStyle='#fff';
+    ctx.fillText('Tap to Continue',W/2,H*0.72);
+  }
+}
+
+function gameLoop(ts){
+  const dt=Math.min((ts-lastTime)/16.67,3);lastTime=ts;
+  update(dt);draw();
+  requestAnimationFrame(gameLoop);
+}
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

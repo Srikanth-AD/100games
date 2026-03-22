@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>FLICKER</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a0a02;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+let W,H,scl;
+function resize(){
+  const vw=window.innerWidth,vh=window.innerHeight;
+  scl=Math.min(vw/375,vh/600);
+  W=Math.round(375*scl);H=Math.round(600*scl);
+  cv.width=W;cv.height=H;
+}
+resize();
+window.addEventListener('resize',()=>{resize();});
+
+const AC=new(window.AudioContext||window.webkitAudioContext)();
+function sfx(type){
+  try{
+    const t=AC.currentTime;
+    if(type==='wind'){
+      const buf=AC.createBuffer(1,AC.sampleRate*0.6,AC.sampleRate);
+      const d=buf.getChannelData(0);
+      for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1);
+      const src=AC.createBufferSource();
+      src.buffer=buf;
+      const flt=AC.createBiquadFilter();
+      flt.type='bandpass';flt.frequency.value=800;flt.Q.value=0.5;
+      const g=AC.createGain();
+      g.gain.setValueAtTime(0,t);
+      g.gain.linearRampToValueAtTime(0.12,t+0.15);
+      g.gain.linearRampToValueAtTime(0.08,t+0.4);
+      g.gain.linearRampToValueAtTime(0,t+0.6);
+      src.connect(flt);flt.connect(g);g.connect(AC.destination);
+      src.start(t);src.stop(t+0.7);
+    } else if(type==='extinguish'){
+      const o=AC.createOscillator(),g=AC.createGain();
+      o.connect(g);g.connect(AC.destination);
+      o.type='sine';
+      o.frequency.setValueAtTime(400,t);
+      o.frequency.linearRampToValueAtTime(80,t+0.4);
+      g.gain.setValueAtTime(0.15,t);
+      g.gain.linearRampToValueAtTime(0,t+0.4);
+      o.start(t);o.stop(t+0.4);
+    } else if(type==='levelup'){
+      [523,659,784,1047].forEach((f,i)=>{
+        const o=AC.createOscillator(),g=AC.createGain();
+        o.connect(g);g.connect(AC.destination);
+        o.type='triangle';o.frequency.value=f;
+        g.gain.setValueAtTime(0.2,t+i*0.1);
+        g.gain.linearRampToValueAtTime(0,t+i*0.1+0.15);
+        o.start(t+i*0.1);o.stop(t+i*0.1+0.2);
+      });
+    } else if(type==='over'){
+      const o=AC.createOscillator(),g=AC.createGain();
+      o.connect(g);g.connect(AC.destination);
+      o.type='sawtooth';
+      o.frequency.setValueAtTime(300,t);
+      o.frequency.linearRampToValueAtTime(80,t+0.6);
+      g.gain.setValueAtTime(0.2,t);
+      g.gain.linearRampToValueAtTime(0,t+0.6);
+      o.start(t);o.stop(t+0.7);
+    }
+  }catch(e){}
+}
+
+// ── State ────────────────────────────────────────────────────────────────────
+let gs='start';
+let score=0,lives=3,level=1,survived=0,scoreAcc=0;
+let best=+localStorage.getItem('flicker_best')||0;
+let popups=[];
+let gusts=[];
+let candles=[];
+let activePointers={};  // pointerId → {x,y}
+let touchMap={};        // touchId → {x,y}
+let shakeX=0,shakeY=0,shakeDur=0;
+let windTimer=0,windInterval=4000;
+let levelTimer=0;
+let extAnim=[];  // {x,y,t,life} extinguish puff
+
+const CANDLE_COLORS=['#fffde7','#fff8e1','#fff3e0','#fce4ec','#e8f5e9'];
+const FLAME_COLORS=[['#ff6600','#ffcc00'],['#ff4400','#ffaa00'],['#ff3300','#ff8800']];
+
+function mkCandle(i,total){
+  const spacing=W/(total+1);
+  return {
+    x:spacing*(i+1),
+    y:H*0.62,
+    flame:1,
+    phase:Math.random()*Math.PI*2,
+    color:CANDLE_COLORS[i%CANDLE_COLORS.length],
+    out:false,
+    extT:0,
+    flickerExtra:0
+  };
+}
+
+function initCandles(){
+  const n=Math.min(1+level,5);
+  candles=[];
+  for(let i=0;i<n;i++) candles.push(mkCandle(i,n));
+}
+
+function spawnGust(){
+  const str=Math.min(0.3+level*0.08+Math.random()*0.25,1.0);
+  const dir=Math.random()<0.5?1:-1;
+  const y=H*0.15+Math.random()*(H*0.55);
+  const h=40*scl+Math.random()*60*scl;
+  gusts.push({x:dir>0?-W*0.3:W*1.3,y,h,dir,str,life:1,vx:dir*(220+Math.random()*120)*scl});
+}
+
+function resetRound(){
+  score=0;survived=0;scoreAcc=0;lives=3;level=1;
+  gusts=[];popups=[];extAnim=[];shakeX=0;shakeY=0;shakeDur=0;
+  windTimer=0;windInterval=4000;levelTimer=0;
+  initCandles();
+}
+
+// ── Drawing helpers ──────────────────────────────────────────────────────────
+function drawHeart(x,y,size,col){
+  ctx.save();
+  ctx.fillStyle=col;
+  ctx.beginPath();
+  const s=size;
+  ctx.moveTo(x,y+s*0.3);
+  ctx.bezierCurveTo(x,y,x-s,y,x-s,y+s*0.4);
+  ctx.bezierCurveTo(x-s,y+s*0.8,x,y+s*1.1,x,y+s*1.3);
+  ctx.bezierCurveTo(x,y+s*1.1,x+s,y+s*0.8,x+s,y+s*0.4);
+  ctx.bezierCurveTo(x+s,y,x,y,x,y+s*0.3);
+  ctx.fill();
+  ctx.restore();
+}
+
+function isCupped(candle){
+  for(const id in activePointers){
+    const p=activePointers[id];
+    const dx=p.x-candle.x,dy=p.y-candle.y;
+    if(Math.sqrt(dx*dx+dy*dy)<30*scl) return true;
+  }
+  return false;
+}
+
+function drawCandle(c,t){
+  if(c.out){
+    // Smoke wisp
+    const age=c.extT;
+    for(let i=0;i<3;i++){
+      const sy=c.y-20*scl-age*0.05*i*scl;
+      const sx=c.x+Math.sin(age*0.01+i)*6*scl;
+      const alpha=Math.max(0,0.4-age*0.003);
+      ctx.beginPath();
+      ctx.arc(sx,sy,3*scl*(1+i*0.3),0,Math.PI*2);
+      ctx.fillStyle=`rgba(180,180,180,${alpha})`;
+      ctx.fill();
+    }
+    return;
+  }
+
+  const cw=14*scl,ch=55*scl;
+  const cx=c.x,cy=c.y;
+
+  // Glow beneath
+  const glowR=55*scl*(0.5+c.flame*0.5);
+  const grd=ctx.createRadialGradient(cx,cy-ch*0.5,0,cx,cy-ch*0.5,glowR);
+  grd.addColorStop(0,`rgba(255,180,50,${0.18*c.flame})`);
+  grd.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=grd;
+  ctx.beginPath();
+  ctx.ellipse(cx,cy-ch*0.5,glowR,glowR*0.6,0,0,Math.PI*2);
+  ctx.fill();
+
+  // Wax body
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(cx-cw/2,cy-ch,cw,ch,3*scl);
+  ctx.fillStyle=c.color;
+  ctx.fill();
+  // Wax drips
+  ctx.fillStyle='rgba(255,255,220,0.4)';
+  ctx.fillRect(cx-cw*0.3,cy-ch+4*scl,cw*0.15,8*scl);
+  ctx.restore();
+
+  // Wick
+  ctx.beginPath();
+  ctx.moveTo(cx,cy-ch);
+  ctx.lineTo(cx,cy-ch-6*scl);
+  ctx.strokeStyle='#222';
+  ctx.lineWidth=1.5*scl;
+  ctx.stroke();
+
+  if(c.flame>0){
+    const fh=(0.7+0.3*Math.sin(t*0.008+c.phase))*c.flame*32*scl;
+    const fw=fh*0.45;
+    const fx=cx+Math.sin(t*0.011+c.phase*2)*3*scl*(1-c.flame*0.5);
+    const fy=cy-ch-6*scl;
+
+    // Extra flicker for low flame
+    const extraW=c.flickerExtra?fw*1.3:fw;
+
+    // Outer flame
+    ctx.beginPath();
+    ctx.moveTo(fx,fy);
+    ctx.bezierCurveTo(fx+extraW,fy-fh*0.3,fx+extraW*0.6,fy-fh,fx,fy-fh);
+    ctx.bezierCurveTo(fx-extraW*0.6,fy-fh,fx-extraW,fy-fh*0.3,fx,fy);
+    const fc=c.flame<0.3?`hsla(${20+c.flame*40},100%,50%,${c.flame})`:`rgba(255,${180+Math.floor(c.flame*50)},20,${0.85+c.flame*0.15})`;
+    ctx.fillStyle=fc;
+    ctx.fill();
+
+    // Inner flame
+    const ih=fh*0.6,iw=fw*0.45;
+    ctx.beginPath();
+    ctx.moveTo(fx,fy-fh*0.15);
+    ctx.bezierCurveTo(fx+iw,fy-fh*0.4,fx+iw*0.5,fy-fh*0.9,fx,fy-fh*0.9);
+    ctx.bezierCurveTo(fx-iw*0.5,fy-fh*0.9,fx-iw,fy-fh*0.4,fx,fy-fh*0.15);
+    ctx.fillStyle=c.flame<0.3?`rgba(255,120,0,0.7)`:`rgba(255,240,120,0.9)`;
+    ctx.fill();
+  }
+
+  // Cup shield
+  if(isCupped(c)){
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(c.x,c.y-ch*0.5,28*scl,38*scl,0,0,Math.PI*2);
+    ctx.fillStyle='rgba(255,220,150,0.07)';
+    ctx.fill();
+    ctx.strokeStyle='rgba(255,200,100,0.18)';
+    ctx.lineWidth=1.5*scl;
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawHUD(){
+  ctx.save();
+  // Level
+  ctx.font=`bold ${11*scl}px monospace`;
+  ctx.fillStyle='#a0704a';
+  ctx.textAlign='left';
+  ctx.fillText(`LVL ${level}`,10*scl,16*scl);
+
+  // Score
+  ctx.textAlign='center';
+  ctx.fillStyle='#e8a060';
+  ctx.font=`bold ${14*scl}px monospace`;
+  ctx.fillText(Math.floor(score),W/2,16*scl);
+
+  // Best
+  ctx.textAlign='right';
+  ctx.fillStyle='#7a5030';
+  ctx.font=`bold ${11*scl}px monospace`;
+  ctx.fillText(`BEST ${best}`,W-10*scl,16*scl);
+
+  // Lives (hearts)
+  for(let i=0;i<3;i++){
+    const hx=22*scl+i*22*scl,hy=28*scl;
+    drawHeart(hx,hy,6*scl,i<lives?'#e05050':'#3a2010');
+  }
+  ctx.restore();
+}
+
+function drawPopups(){
+  for(let i=popups.length-1;i>=0;i--){
+    const p=popups[i];
+    ctx.save();
+    ctx.globalAlpha=p.life;
+    ctx.font=`bold ${13*scl}px monospace`;
+    ctx.fillStyle=p.col||'#ffcc44';
+    ctx.textAlign='center';
+    ctx.fillText(p.text,p.x,p.y);
+    ctx.restore();
+    p.y-=0.6;
+    p.life-=0.018;
+    if(p.life<=0) popups.splice(i,1);
+  }
+}
+
+function drawBackground(t){
+  // Warm dark BG
+  const warmth=candles.filter(c=>!c.out).length/Math.max(candles.length,1);
+  const bgGrd=ctx.createLinearGradient(0,0,0,H);
+  bgGrd.addColorStop(0,`rgb(${18+warmth*20},${8+warmth*5},2)`);
+  bgGrd.addColorStop(1,`rgb(${12+warmth*8},4,1)`);
+  ctx.fillStyle=bgGrd;
+  ctx.fillRect(0,0,W,H);
+
+  // Candle glow on table/floor area
+  candles.forEach(c=>{
+    if(c.out) return;
+    const gr=ctx.createRadialGradient(c.x,c.y,0,c.x,c.y,80*scl*c.flame);
+    gr.addColorStop(0,`rgba(255,150,30,${0.08*c.flame})`);
+    gr.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=gr;
+    ctx.fillRect(0,0,W,H);
+  });
+
+  // Table surface
+  const ty=H*0.66;
+  const tGrd=ctx.createLinearGradient(0,ty,0,ty+30*scl);
+  tGrd.addColorStop(0,'rgba(80,40,10,0.7)');
+  tGrd.addColorStop(1,'rgba(40,15,2,0)');
+  ctx.fillStyle=tGrd;
+  ctx.fillRect(0,ty,W,30*scl);
+}
+
+function drawGusts(){
+  gusts.forEach(g=>{
+    ctx.save();
+    ctx.globalAlpha=g.life*0.5;
+    const grd=ctx.createLinearGradient(g.dir>0?g.x:g.x+W*0.3,0,g.dir>0?g.x+W*0.5:g.x,0);
+    grd.addColorStop(0,'rgba(200,230,255,0)');
+    grd.addColorStop(0.3,'rgba(200,230,255,0.06)');
+    grd.addColorStop(0.7,'rgba(200,230,255,0.06)');
+    grd.addColorStop(1,'rgba(200,230,255,0)');
+    ctx.fillStyle=grd;
+    ctx.fillRect(0,g.y-g.h/2,W,g.h);
+    ctx.globalAlpha=g.life*0.15;
+    // Streak lines
+    for(let i=0;i<3;i++){
+      const ly=g.y-g.h*0.3+i*g.h*0.3;
+      ctx.beginPath();
+      ctx.moveTo(g.x,ly);
+      ctx.lineTo(g.x+g.dir*120*scl,ly);
+      ctx.strokeStyle='rgba(220,240,255,0.5)';
+      ctx.lineWidth=scl;
+      ctx.stroke();
+    }
+    ctx.restore();
+  });
+}
+
+function drawExtAnims(){
+  for(let i=extAnim.length-1;i>=0;i--){
+    const e=extAnim[i];
+    const alpha=Math.max(0,1-e.t/600);
+    ctx.save();
+    ctx.globalAlpha=alpha*0.7;
+    for(let j=0;j<5;j++){
+      const ang=j/5*Math.PI*2+e.t*0.005;
+      const r=15*scl*(e.t/600);
+      ctx.beginPath();
+      ctx.arc(e.x+Math.cos(ang)*r,e.y+Math.sin(ang)*r*0.4,2*scl,0,Math.PI*2);
+      ctx.fillStyle='rgba(150,150,150,0.8)';
+      ctx.fill();
+    }
+    ctx.restore();
+    e.t+=16;e.life-=0.025;
+    if(e.life<=0) extAnim.splice(i,1);
+  }
+}
+
+// ── Start screen ─────────────────────────────────────────────────────────────
+function drawStart(t){
+  // BG
+  const bgGrd=ctx.createLinearGradient(0,0,0,H);
+  bgGrd.addColorStop(0,'#1a0a02');bgGrd.addColorStop(1,'#0a0300');
+  ctx.fillStyle=bgGrd;ctx.fillRect(0,0,W,H);
+
+  // 3 demo candles
+  const demoCandles=[
+    {x:W*0.25,y:H*0.6,flame:0.9,phase:0,color:'#fffde7',out:false,extT:0,flickerExtra:false},
+    {x:W*0.5, y:H*0.6,flame:0.85,phase:1.2,color:'#fff8e1',out:false,extT:0,flickerExtra:false},
+    {x:W*0.75,y:H*0.6,flame:0.95,phase:2.4,color:'#fff3e0',out:false,extT:0,flickerExtra:false}
+  ];
+  // Glow
+  demoCandles.forEach(c=>{
+    const gr=ctx.createRadialGradient(c.x,c.y,0,c.x,c.y,80*scl);
+    gr.addColorStop(0,'rgba(255,150,30,0.1)');gr.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=gr;ctx.fillRect(0,0,W,H);
+  });
+  // Moving wind streak on start
+  const wx=((t*0.12)%(W*1.6))-W*0.3;
+  ctx.save();
+  ctx.globalAlpha=0.07+0.03*Math.sin(t*0.003);
+  const wgrd=ctx.createLinearGradient(wx,0,wx+W*0.5,0);
+  wgrd.addColorStop(0,'rgba(200,230,255,0)');wgrd.addColorStop(0.5,'rgba(200,230,255,1)');wgrd.addColorStop(1,'rgba(200,230,255,0)');
+  ctx.fillStyle=wgrd;
+  ctx.fillRect(wx,H*0.35,W*0.5,40*scl);
+  ctx.restore();
+
+  demoCandles.forEach(c=>drawCandle(c,t));
+
+  // Title
+  ctx.save();
+  ctx.textAlign='center';
+  ctx.font=`bold ${56*scl}px serif`;
+  ctx.fillStyle='#f5c842';
+  ctx.shadowColor='rgba(255,180,50,0.6)';
+  ctx.shadowBlur=20*scl;
+  ctx.fillText('FLICKER',W/2,H*0.28);
+  ctx.shadowBlur=0;
+
+  ctx.font=`${11*scl}px monospace`;
+  ctx.fillStyle='#a07040';
+  ctx.letterSpacing='3px';
+  ctx.fillText('HOLD TO SHIELD CANDLES FROM WIND',W/2,H*0.35);
+
+  // Pulsing tap
+  const pulse=0.7+0.3*Math.sin(t*0.004);
+  ctx.globalAlpha=pulse;
+  ctx.font=`bold ${15*scl}px monospace`;
+  ctx.fillStyle='#ffcc66';
+  ctx.fillText('TAP TO START',W/2,H*0.85);
+  ctx.restore();
+}
+
+function drawOver(){
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.72)';
+  ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';
+
+  ctx.font=`bold ${40*scl}px serif`;
+  ctx.fillStyle='#e05020';
+  ctx.shadowColor='rgba(255,80,20,0.5)';
+  ctx.shadowBlur=15*scl;
+  ctx.fillText('BLOWN OUT',W/2,H*0.35);
+  ctx.shadowBlur=0;
+
+  ctx.font=`bold ${52*scl}px monospace`;
+  ctx.fillStyle='#fff';
+  ctx.fillText(Math.floor(score),W/2,H*0.48);
+
+  ctx.font=`${11*scl}px monospace`;
+  ctx.fillStyle='#7a5030';
+  ctx.fillText('BEST  '+best,W/2,H*0.57);
+
+  const pulse=0.7+0.3*Math.sin(last*0.004);
+  ctx.globalAlpha=pulse;
+  ctx.font=`bold ${14*scl}px monospace`;
+  ctx.fillStyle='#ffcc66';
+  ctx.fillText('TAP TO PLAY AGAIN',W/2,H*0.72);
+  ctx.restore();
+}
+
+// ── Game logic ────────────────────────────────────────────────────────────────
+function loseLife(){
+  lives--;
+  shakeDur=400;shakeX=(Math.random()-0.5)*8*scl;shakeY=(Math.random()-0.5)*4*scl;
+  sfx('extinguish');
+  if(lives<=0){
+    if(Math.floor(score)>best){best=Math.floor(score);localStorage.setItem('flicker_best',best);}
+    gs='over';sfx('over');
+  }
+}
+
+let last=0;
+function update(ts){
+  requestAnimationFrame(update);
+  const dt=Math.min(ts-last,50);last=ts;
+
+  if(gs==='start'){
+    drawStart(ts);
+    return;
+  }
+  if(gs==='over'){
+    // Still draw game BG underneath
+    ctx.save();
+    if(shakeDur>0){ctx.translate(shakeX*(shakeDur/400),shakeY*(shakeDur/400));shakeDur-=dt;}
+    drawBackground(ts);
+    drawGusts();
+    candles.forEach(c=>drawCandle(c,ts));
+    ctx.restore();
+    drawHUD();
+    drawPopups();
+    drawExtAnims();
+    drawOver();
+    return;
+  }
+
+  // ── Play ──────────────────────────────────────────────────────────────────
+  survived+=dt;
+  scoreAcc+=dt;
+
+  // Score: accumulate time * level * lit candles
+  const litCount=candles.filter(c=>!c.out).length;
+  score+=litCount*level*(dt/1000)*8;
+
+  // Level up
+  levelTimer+=dt;
+  if(levelTimer>20000){
+    levelTimer=0;level++;
+    windInterval=Math.max(1500,4000-level*300);
+    initCandles();
+    popups.push({x:W/2,y:H*0.4,text:`LEVEL ${level}`,life:1,col:'#ffcc44'});
+    sfx('levelup');
+  }
+
+  // Wind gust timer
+  windTimer+=dt;
+  if(windTimer>windInterval){
+    windTimer=0;
+    spawnGust();
+    sfx('wind');
+    const extra=Math.random();
+    if(extra>0.6 && level>2) spawnGust();
+  }
+
+  // Update gusts
+  for(let i=gusts.length-1;i>=0;i--){
+    const g=gusts[i];
+    g.x+=g.vx*(dt/1000);
+    // Apply to candles
+    candles.forEach(c=>{
+      if(c.out) return;
+      const dx=Math.abs(c.x-g.x);
+      const dy=Math.abs(c.y-30*scl-g.y);
+      if(dx<W*0.4 && dy<g.h*0.6){
+        const exposure=isCupped(c)?0.05:1.0;
+        const dmg=g.str*exposure*(dt/1000)*0.8;
+        c.flame=Math.max(0,c.flame-dmg);
+        if(c.flame<0.3) c.flickerExtra=true;
+        else c.flickerExtra=false;
+        if(c.flame===0 && !c.out){
+          c.out=true;c.extT=0;
+          extAnim.push({x:c.x,y:c.y-55*scl,t:0,life:1});
+          loseLife();
+        }
+      }
+    });
+    // Fade gust at edges
+    const off=(g.dir>0)?g.x-W:(-g.x);
+    if(off>0) g.life=Math.max(0,1-off/(W*0.35));
+    if(g.life<=0) gusts.splice(i,1);
+  }
+
+  // Regen flame slowly if cupped and not 0
+  candles.forEach(c=>{
+    if(!c.out && isCupped(c)){
+      c.flame=Math.min(1,c.flame+0.05*(dt/1000));
+    }
+    if(c.out) c.extT+=dt;
+  });
+
+  // Draw
+  ctx.save();
+  if(shakeDur>0){
+    ctx.translate(shakeX*(shakeDur/400),shakeY*(shakeDur/400));
+    shakeDur-=dt;
+  }
+  drawBackground(ts);
+  drawGusts();
+  candles.forEach(c=>drawCandle(c,ts));
+  ctx.restore();
+  drawHUD();
+  drawPopups();
+  drawExtAnims();
+}
+
+// ── Input ─────────────────────────────────────────────────────────────────────
+cv.addEventListener('pointerdown',e=>{
+  e.preventDefault();
+  AC.resume();
+  if(gs==='start'){gs='play';resetRound();return;}
+  if(gs==='over'){gs='play';resetRound();return;}
+  activePointers[e.pointerId]={x:e.clientX*scl/scl,y:e.clientY};
+  // Correct for canvas offset
+  const rect=cv.getBoundingClientRect();
+  activePointers[e.pointerId]={x:e.clientX-rect.left,y:e.clientY-rect.top};
+},{passive:false});
+
+cv.addEventListener('pointermove',e=>{
+  e.preventDefault();
+  if(activePointers[e.pointerId]){
+    const rect=cv.getBoundingClientRect();
+    activePointers[e.pointerId]={x:e.clientX-rect.left,y:e.clientY-rect.top};
+  }
+},{passive:false});
+
+cv.addEventListener('pointerup',e=>{
+  e.preventDefault();
+  delete activePointers[e.pointerId];
+},{passive:false});
+
+cv.addEventListener('pointercancel',e=>{
+  delete activePointers[e.pointerId];
+},{passive:false});
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

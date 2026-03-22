@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>METRONOME</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W, H;
+function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Audio
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playSound(freq, dur, type = 'sine', vol = 0.3) {
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(vol, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    o.connect(g);
+    g.connect(audioCtx.destination);
+    o.start();
+    o.stop(audioCtx.currentTime + dur);
+}
+
+function playTick() {
+    playSound(800, 0.05, 'square', 0.15);
+}
+
+function playPerfect() {
+    playSound(880, 0.15, 'sine', 0.25);
+    setTimeout(() => playSound(1100, 0.15, 'sine', 0.2), 80);
+}
+
+function playGood() {
+    playSound(660, 0.12, 'triangle', 0.2);
+}
+
+function playMiss() {
+    playSound(200, 0.3, 'sawtooth', 0.2);
+}
+
+// State
+let state = 'menu';
+let score = 0;
+let bestScore = 0;
+let combo = 0;
+let maxCombo = 0;
+let bpm = 60;
+let beats = 0;
+let misses = 0;
+let maxMisses = 3;
+
+// Metronome
+let metAngle = 0; // -1 to 1 range, 0 = center
+let metDirection = 1;
+let metSpeed = 0;
+let lastBeatTime = 0;
+let beatInterval = 0;
+
+// Visual feedback
+let rings = [];
+let flashAlpha = 0;
+let flashColor = '#fff';
+let feedbackText = '';
+let feedbackTimer = 0;
+let feedbackColor = '#fff';
+let bgHue = 220;
+let shakeX = 0, shakeY = 0;
+
+// Particles
+let particles = [];
+
+function initGame() {
+    score = 0;
+    combo = 0;
+    maxCombo = 0;
+    bpm = 60;
+    beats = 0;
+    misses = 0;
+    metAngle = -1;
+    metDirection = 1;
+    rings = [];
+    particles = [];
+    flashAlpha = 0;
+    feedbackText = '';
+    feedbackTimer = 0;
+    bgHue = 220;
+    updateBPM();
+    lastBeatTime = Date.now();
+}
+
+function updateBPM() {
+    beatInterval = 60000 / bpm;
+    metSpeed = 2 / (beatInterval / (1000 / 60)); // full swing in one beat
+}
+
+function spawnRing(x, y, color) {
+    rings.push({ x, y, radius: 10, maxRadius: 120, life: 1, color });
+}
+
+function spawnParticles(x, y, color, count) {
+    for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Math.random() * 4 + 1;
+        particles.push({
+            x, y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: 1,
+            color,
+            size: Math.random() * 4 + 2
+        });
+    }
+}
+
+function update() {
+    if (state !== 'play') return;
+
+    // Move metronome
+    metAngle += metDirection * metSpeed;
+
+    // Check if metronome hit the edge (auto-beat)
+    if (metAngle >= 1) {
+        metAngle = 1;
+        metDirection = -1;
+        playTick();
+    } else if (metAngle <= -1) {
+        metAngle = -1;
+        metDirection = 1;
+        playTick();
+    }
+
+    // Update rings
+    rings.forEach(r => {
+        r.radius += 3;
+        r.life -= 0.025;
+    });
+    rings = rings.filter(r => r.life > 0);
+
+    // Update particles
+    particles.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.05;
+        p.life -= 0.02;
+    });
+    particles = particles.filter(p => p.life > 0);
+
+    // Feedback timer
+    if (feedbackTimer > 0) feedbackTimer -= 0.02;
+
+    // Flash
+    flashAlpha *= 0.92;
+
+    // Shake
+    shakeX *= 0.85;
+    shakeY *= 0.85;
+
+    // Hue shift
+    bgHue += 0.05;
+}
+
+function handleBeat() {
+    const centerDist = Math.abs(metAngle); // 0 = perfect center, 1 = edge
+
+    if (centerDist < 0.08) {
+        // PERFECT
+        score += 100 * (1 + combo * 0.5);
+        combo++;
+        maxCombo = Math.max(maxCombo, combo);
+        feedbackText = 'PERFECT!';
+        feedbackColor = '#ffcc00';
+        feedbackTimer = 1;
+        flashColor = '#ffcc00';
+        flashAlpha = 0.4;
+        beats++;
+        spawnRing(W / 2, H * 0.5, '#ffcc00');
+        spawnParticles(W / 2, H * 0.5, '#ffcc00', 20);
+        playPerfect();
+    } else if (centerDist < 0.22) {
+        // GOOD
+        score += 50 * (1 + combo * 0.25);
+        combo++;
+        maxCombo = Math.max(maxCombo, combo);
+        feedbackText = 'GOOD';
+        feedbackColor = '#00ccff';
+        feedbackTimer = 1;
+        flashColor = '#00ccff';
+        flashAlpha = 0.25;
+        beats++;
+        spawnRing(W / 2, H * 0.5, '#00ccff');
+        spawnParticles(W / 2, H * 0.5, '#00ccff', 10);
+        playGood();
+    } else {
+        // MISS
+        combo = 0;
+        misses++;
+        feedbackText = 'MISS';
+        feedbackColor = '#ff3344';
+        feedbackTimer = 1;
+        flashColor = '#ff3344';
+        flashAlpha = 0.3;
+        shakeX = (Math.random() - 0.5) * 10;
+        shakeY = (Math.random() - 0.5) * 10;
+        playMiss();
+
+        if (misses >= maxMisses) {
+            state = 'over';
+            bestScore = Math.max(bestScore, Math.floor(score));
+            return;
+        }
+    }
+
+    // Increase BPM every 8 beats
+    if (beats > 0 && beats % 8 === 0) {
+        bpm = Math.min(bpm + 10, 200);
+        updateBPM();
+    }
+}
+
+function draw() {
+    ctx.save();
+    ctx.translate(shakeX, shakeY);
+
+    // Background
+    const bgColor = `hsl(${bgHue % 360}, 30%, 8%)`;
+    ctx.fillStyle = bgColor;
+    ctx.fillRect(0, 0, W, H);
+
+    // Flash
+    if (flashAlpha > 0.01) {
+        ctx.fillStyle = flashColor;
+        ctx.globalAlpha = flashAlpha;
+        ctx.fillRect(0, 0, W, H);
+        ctx.globalAlpha = 1;
+    }
+
+    if (state === 'play' || state === 'over') {
+        drawGameplay();
+    }
+    if (state === 'menu') {
+        drawMenu();
+    }
+    if (state === 'over') {
+        drawGameOver();
+    }
+
+    ctx.restore();
+}
+
+function drawGameplay() {
+    const cx = W / 2;
+    const cy = H * 0.5;
+    const armLen = Math.min(W, H) * 0.3;
+    const pivotY = cy - armLen * 0.3;
+
+    // Beat markers on arc
+    const arcRadius = armLen * 0.8;
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, pivotY, arcRadius, Math.PI * 0.15, Math.PI * 0.85);
+    ctx.stroke();
+
+    // Center marker (target)
+    ctx.strokeStyle = '#ffcc00';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(cx, pivotY + arcRadius - 15);
+    ctx.lineTo(cx, pivotY + arcRadius + 15);
+    ctx.stroke();
+
+    // Perfect zone indicator
+    const perfectAngleSpan = 0.08 * Math.PI * 0.35;
+    ctx.strokeStyle = 'rgba(255,204,0,0.3)';
+    ctx.lineWidth = 8;
+    ctx.beginPath();
+    ctx.arc(cx, pivotY, arcRadius, Math.PI * 0.5 - perfectAngleSpan, Math.PI * 0.5 + perfectAngleSpan);
+    ctx.stroke();
+
+    // Metronome arm
+    const armAngle = metAngle * Math.PI * 0.35; // swing range
+    const tipX = cx + Math.sin(armAngle) * armLen;
+    const tipY = pivotY + Math.cos(armAngle) * armLen;
+
+    // Arm shadow/glow
+    ctx.strokeStyle = `hsla(${(bgHue + 60) % 360}, 80%, 50%, 0.3)`;
+    ctx.lineWidth = 8;
+    ctx.beginPath();
+    ctx.moveTo(cx, pivotY);
+    ctx.lineTo(tipX, tipY);
+    ctx.stroke();
+
+    // Main arm
+    ctx.strokeStyle = '#eee';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(cx, pivotY);
+    ctx.lineTo(tipX, tipY);
+    ctx.stroke();
+
+    // Pivot
+    ctx.beginPath();
+    ctx.arc(cx, pivotY, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#888';
+    ctx.fill();
+
+    // Tip weight
+    const weightGrad = ctx.createRadialGradient(tipX - 3, tipY - 3, 2, tipX, tipY, 18);
+    weightGrad.addColorStop(0, `hsl(${(bgHue + 60) % 360}, 80%, 70%)`);
+    weightGrad.addColorStop(1, `hsl(${(bgHue + 60) % 360}, 80%, 40%)`);
+    ctx.beginPath();
+    ctx.arc(tipX, tipY, 18, 0, Math.PI * 2);
+    ctx.fillStyle = weightGrad;
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Rings
+    rings.forEach(r => {
+        ctx.beginPath();
+        ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2);
+        ctx.strokeStyle = r.color;
+        ctx.globalAlpha = r.life * 0.6;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+    });
+
+    // Particles
+    particles.forEach(p => {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.life;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+    });
+
+    // Feedback text
+    if (feedbackTimer > 0) {
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 40px monospace';
+        ctx.fillStyle = feedbackColor;
+        ctx.globalAlpha = Math.min(feedbackTimer, 1);
+        ctx.fillText(feedbackText, cx, cy + armLen * 0.7 + (1 - feedbackTimer) * -20);
+        ctx.globalAlpha = 1;
+    }
+
+    // Score
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 28px monospace';
+    ctx.fillText(Math.floor(score) + '', cx, 40);
+
+    // Combo
+    if (combo > 1) {
+        ctx.fillStyle = '#ffcc00';
+        ctx.font = 'bold 20px monospace';
+        ctx.fillText(`${combo}x COMBO`, cx, 68);
+    }
+
+    // BPM
+    ctx.fillStyle = '#888';
+    ctx.font = '16px monospace';
+    ctx.fillText(`${bpm} BPM`, cx, H - 40);
+
+    // Misses (hearts)
+    ctx.textAlign = 'left';
+    ctx.font = '24px monospace';
+    for (let i = 0; i < maxMisses; i++) {
+        ctx.fillStyle = i < (maxMisses - misses) ? '#ff3366' : '#333';
+        ctx.fillText('\u2665', 20 + i * 30, 35);
+    }
+}
+
+function drawMenu() {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+
+    ctx.fillStyle = '#ffcc00';
+    ctx.font = 'bold 48px monospace';
+    ctx.fillText('METRONOME', W / 2, H * 0.25);
+
+    ctx.fillStyle = '#aaa';
+    ctx.font = '18px monospace';
+    ctx.fillText('Tap when the pendulum hits center', W / 2, H * 0.25 + 45);
+
+    // Demo metronome
+    const t = Date.now() * 0.003;
+    const dAngle = Math.sin(t) * 0.35 * Math.PI;
+    const armLen = 100;
+    const px = W / 2;
+    const py = H * 0.5;
+    ctx.strokeStyle = '#eee';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(px, py - 30);
+    ctx.lineTo(px + Math.sin(dAngle) * armLen, py - 30 + Math.cos(dAngle) * armLen);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(px + Math.sin(dAngle) * armLen, py - 30 + Math.cos(dAngle) * armLen, 14, 0, Math.PI * 2);
+    ctx.fillStyle = `hsl(${Date.now() * 0.05 % 360}, 70%, 60%)`;
+    ctx.fill();
+
+    // Center marker
+    ctx.strokeStyle = '#ffcc00';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(px, py - 30 + armLen - 15);
+    ctx.lineTo(px, py - 30 + armLen + 15);
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.5 + Math.sin(Date.now() * 0.004) * 0.3) + ')';
+    ctx.font = '22px monospace';
+    ctx.fillText('TAP TO START', W / 2, H * 0.78);
+}
+
+function drawGameOver() {
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+
+    ctx.fillStyle = '#ff3366';
+    ctx.font = 'bold 42px monospace';
+    ctx.fillText('GAME OVER', W / 2, H * 0.25);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 32px monospace';
+    ctx.fillText(`SCORE: ${Math.floor(score)}`, W / 2, H * 0.4);
+
+    ctx.fillStyle = '#ffcc00';
+    ctx.font = '22px monospace';
+    ctx.fillText(`MAX COMBO: ${maxCombo}x`, W / 2, H * 0.5);
+    ctx.fillText(`BEST: ${bestScore}`, W / 2, H * 0.57);
+
+    ctx.fillStyle = '#aaa';
+    ctx.font = '18px monospace';
+    ctx.fillText(`Final BPM: ${bpm}`, W / 2, H * 0.65);
+
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.5 + Math.sin(Date.now() * 0.004) * 0.3) + ')';
+    ctx.font = '20px monospace';
+    ctx.fillText('TAP TO RETRY', W / 2, H * 0.78);
+}
+
+function handleTap() {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+
+    if (state === 'menu') {
+        state = 'play';
+        initGame();
+        return;
+    }
+    if (state === 'over') {
+        state = 'play';
+        initGame();
+        return;
+    }
+    if (state === 'play') {
+        handleBeat();
+    }
+}
+
+canvas.addEventListener('mousedown', handleTap);
+canvas.addEventListener('touchstart', e => { e.preventDefault(); handleTap(); });
+
+function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>

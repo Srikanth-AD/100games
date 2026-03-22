@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>CIPHER</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H,state='menu',score=0,totalCorrect=0,totalWrong=0,timeLeft=0,maxTime=90;
+let cipherMap={},reverseMap={},decoded={},message='',cipherText='',selectedCipher=null;
+let messageIndex=0,messagesDecoded=0,glowLetters={},particles=[],hintUsed=0;
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+const ALPHA='ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+function playSound(freq,dur,type='sine'){
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(0.12,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+  o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+dur);
+}
+function playCorrect(){playSound(880,0.15);setTimeout(()=>playSound(1100,0.2),80);}
+function playWrong(){playSound(200,0.3,'sawtooth');}
+function playWin(){[0,100,200,300].forEach((d,i)=>setTimeout(()=>playSound(600+i*100,0.2),d));}
+function playSelect(){playSound(600,0.06,'triangle');}
+
+function resize(){
+  W=canvas.width=Math.min(window.innerWidth,window.innerHeight);
+  H=canvas.height=W;
+}
+window.addEventListener('resize',resize);resize();
+
+const messages=[
+  "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG",
+  "KNOWLEDGE IS POWER",
+  "TO BE OR NOT TO BE THAT IS THE QUESTION",
+  "ALL THAT GLITTERS IS NOT GOLD",
+  "THE EARLY BIRD CATCHES THE WORM",
+  "ACTIONS SPEAK LOUDER THAN WORDS",
+  "FORTUNE FAVORS THE BOLD",
+  "A JOURNEY OF A THOUSAND MILES BEGINS WITH A SINGLE STEP",
+  "WHERE THERE IS A WILL THERE IS A WAY",
+  "THE PEN IS MIGHTIER THAN THE SWORD",
+  "EVERY CLOUD HAS A SILVER LINING",
+  "TIME AND TIDE WAIT FOR NO MAN",
+  "NOTHING VENTURED NOTHING GAINED",
+  "PRACTICE MAKES PERFECT",
+  "LOOK BEFORE YOU LEAP",
+];
+
+function shuffle(arr){
+  const a=[...arr];
+  for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}
+  return a;
+}
+
+function generateCipher(){
+  const shuffled=shuffle(ALPHA.split(''));
+  cipherMap={};reverseMap={};decoded={};glowLetters={};selectedCipher=null;
+  for(let i=0;i<26;i++){
+    cipherMap[ALPHA[i]]=shuffled[i];
+    reverseMap[shuffled[i]]=ALPHA[i];
+  }
+  message=messages[messageIndex%messages.length];
+  cipherText=message.split('').map(c=>ALPHA.includes(c)?cipherMap[c]:c).join('');
+}
+
+function checkComplete(){
+  for(const c of message){
+    if(!ALPHA.includes(c)) continue;
+    const cipher=cipherMap[c];
+    if(!decoded[cipher]) return false;
+  }
+  return true;
+}
+
+function addParticles(x,y,color){
+  for(let i=0;i<15;i++){
+    particles.push({
+      x,y,vx:(Math.random()-0.5)*6,vy:(Math.random()-0.5)*6-2,
+      life:1,color,size:Math.random()*4+2
+    });
+  }
+}
+
+function updateParticles(dt){
+  for(const p of particles){p.x+=p.vx;p.y+=p.vy;p.vy+=0.1;p.life-=dt*1.5;}
+  particles=particles.filter(p=>p.life>0);
+}
+
+function drawParticles(){
+  for(const p of particles){
+    ctx.globalAlpha=p.life;ctx.fillStyle=p.color;
+    ctx.fillRect(p.x-p.size/2,p.y-p.size/2,p.size,p.size);
+  }
+  ctx.globalAlpha=1;
+}
+
+function getUniqueLetters(){
+  const s=new Set();
+  for(const c of message) if(ALPHA.includes(c)) s.add(cipherMap[c]);
+  return s;
+}
+
+function drawMenu(){
+  ctx.fillStyle='#0a0a20';ctx.fillRect(0,0,W,H);
+  const t=Date.now()/1000;
+  // Scrolling cipher text decoration
+  ctx.fillStyle='#1a3a1a';ctx.font=`${W*0.04}px monospace`;ctx.textAlign='left';
+  for(let i=0;i<12;i++){
+    const offset=(t*30+i*100)%W;
+    const text='XQZMJBKWYPVFRLHDGEUCNSITOA'.repeat(3);
+    ctx.fillText(text,-offset,W*0.08+i*W*0.08);
+  }
+  ctx.fillStyle='#00cc66';ctx.textAlign='center';
+  ctx.font=`bold ${W*0.1}px monospace`;
+  ctx.fillText('CIPHER',W/2,H*0.35);
+  ctx.fillStyle='#aaa';ctx.font=`${W*0.033}px Arial`;
+  ctx.fillText('Decode the encrypted message',W/2,H*0.45);
+  ctx.fillText('Tap cipher letter, then tap real letter',W/2,H*0.5);
+  ctx.fillText(maxTime+' seconds per round',W/2,H*0.55);
+  ctx.fillStyle='#00cc66';ctx.font=`${W*0.05}px Arial`;
+  const pulse=0.8+Math.sin(t*3)*0.2;ctx.globalAlpha=pulse;
+  ctx.fillText('TAP TO START',W/2,H*0.72);
+  ctx.globalAlpha=1;
+}
+
+function drawGameOver(){
+  ctx.fillStyle='#0a0a20';ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';
+  ctx.fillStyle='#00cc66';ctx.font=`bold ${W*0.08}px monospace`;
+  ctx.fillText('DECODED!',W/2,H*0.25);
+  ctx.fillStyle='#fff';ctx.font=`${W*0.045}px Arial`;
+  ctx.fillText('Messages: '+messagesDecoded,W/2,H*0.38);
+  ctx.fillText('Score: '+score,W/2,H*0.46);
+  ctx.fillText('Correct: '+totalCorrect,W/2,H*0.54);
+  ctx.fillText('Wrong: '+totalWrong,W/2,H*0.62);
+  ctx.fillStyle='#00cc66';ctx.font=`${W*0.04}px Arial`;
+  const pulse=0.8+Math.sin(Date.now()/300)*0.2;ctx.globalAlpha=pulse;
+  ctx.fillText('TAP TO PLAY AGAIN',W/2,H*0.78);
+  ctx.globalAlpha=1;
+}
+
+function drawGame(){
+  ctx.fillStyle='#0a0a20';ctx.fillRect(0,0,W,H);
+  const t=Date.now()/1000;
+
+  // Timer bar
+  const timerPct=timeLeft/maxTime;
+  ctx.fillStyle='#222';ctx.fillRect(10,10,W-20,W*0.03);
+  ctx.fillStyle=timerPct>0.3?'#00cc66':'#ff4444';
+  ctx.fillRect(10,10,(W-20)*timerPct,W*0.03);
+
+  // HUD
+  ctx.fillStyle='#fff';ctx.textAlign='left';ctx.font=`${W*0.03}px Arial`;
+  ctx.fillText('Score: '+score,10,W*0.08);
+  ctx.textAlign='right';
+  ctx.fillText('Msg '+(messagesDecoded+1),W-10,W*0.08);
+  ctx.fillText(Math.ceil(timeLeft)+'s',W-10,W*0.12);
+
+  // Cipher text display - wrapped
+  const fontSize=W*0.04;
+  ctx.font=`bold ${fontSize}px monospace`;ctx.textAlign='center';
+  const maxCharsPerLine=Math.floor((W-40)/(fontSize*0.65));
+  const words=cipherText.split(' ');
+  let lines=[],currentLine='';
+  for(const w of words){
+    if((currentLine+' '+w).trim().length>maxCharsPerLine){
+      lines.push(currentLine.trim());currentLine=w;
+    } else {
+      currentLine+=(currentLine?' ':'')+w;
+    }
+  }
+  if(currentLine) lines.push(currentLine.trim());
+
+  const startY=W*0.18;
+  const lineHeight=fontSize*2.2;
+
+  for(let l=0;l<lines.length;l++){
+    const line=lines[l];
+    const y=startY+l*lineHeight;
+    const lineW=line.length*fontSize*0.62;
+    const sx=W/2-lineW/2;
+
+    for(let i=0;i<line.length;i++){
+      const ch=line[i];
+      const x=sx+i*fontSize*0.62+fontSize*0.3;
+
+      if(!ALPHA.includes(ch)){
+        ctx.fillStyle='#555';ctx.fillText(ch,x,y);
+        continue;
+      }
+
+      // Cipher letter on top
+      const isDecoded=decoded[ch]!==undefined;
+      const isCorrect=isDecoded&&decoded[ch]===reverseMap[ch];
+      const isSelected=ch===selectedCipher;
+
+      if(isCorrect){
+        ctx.fillStyle=`hsl(120,80%,${50+Math.sin(t*3)*10}%)`;
+        if(glowLetters[ch]){
+          ctx.shadowColor='#00ff88';ctx.shadowBlur=10;
+        }
+      } else if(isSelected){
+        ctx.fillStyle='#ffcc00';
+      } else {
+        ctx.fillStyle='#ff6666';
+      }
+      ctx.fillText(ch,x,y);
+      ctx.shadowBlur=0;
+
+      // Decoded letter below
+      if(isDecoded){
+        ctx.fillStyle=isCorrect?'#00ff88':'#ff4444';
+        ctx.font=`${fontSize*0.8}px monospace`;
+        ctx.fillText(decoded[ch],x,y+fontSize*1.1);
+        ctx.font=`bold ${fontSize}px monospace`;
+      } else {
+        ctx.fillStyle='#333';
+        ctx.fillText('_',x,y+fontSize*1.1);
+      }
+    }
+  }
+
+  // Alphabet grid for input
+  const gridY=H*0.55;
+  const gridCols=9;
+  const gridRows=Math.ceil(26/gridCols);
+  const cellW=W*0.09;
+  const cellH=W*0.09;
+  const gridOffX=(W-gridCols*cellW)/2;
+
+  ctx.font=`bold ${W*0.04}px monospace`;
+  // Label
+  ctx.fillStyle='#888';ctx.textAlign='center';ctx.font=`${W*0.025}px Arial`;
+  ctx.fillText(selectedCipher?`Cipher "${selectedCipher}" -> tap a letter below`:'Tap a cipher letter above to select',W/2,gridY-W*0.02);
+  ctx.font=`bold ${W*0.04}px monospace`;
+
+  for(let i=0;i<26;i++){
+    const col=i%gridCols,row=Math.floor(i/gridCols);
+    const x=gridOffX+col*cellW,y=gridY+row*cellH;
+    const letter=ALPHA[i];
+    // Check if this letter is already used in decoded
+    const used=Object.values(decoded).includes(letter);
+
+    ctx.fillStyle=used?'#1a3a1a':'#1a1a3a';
+    ctx.strokeStyle=used?'#0a5a0a':'#334';
+    ctx.lineWidth=1;
+    ctx.fillRect(x+2,y+2,cellW-4,cellH-4);
+    ctx.strokeRect(x+2,y+2,cellW-4,cellH-4);
+
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillStyle=used?'#00aa55':'#8888ff';
+    ctx.fillText(letter,x+cellW/2,y+cellH/2);
+  }
+  ctx.textBaseline='alphabetic';
+
+  // Hint button
+  const hx=W*0.85,hy=H*0.93,hr=W*0.06;
+  ctx.fillStyle='#333';
+  ctx.beginPath();ctx.arc(hx,hy,hr,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#ffcc00';ctx.textAlign='center';
+  ctx.font=`bold ${W*0.04}px Arial`;
+  ctx.fillText('?',hx,hy+W*0.015);
+  ctx.font=`${W*0.02}px Arial`;ctx.fillStyle='#aaa';
+  ctx.fillText('Hint',hx,hy+hr+W*0.02);
+
+  drawParticles();
+}
+
+function getAlphabetGridPos(px,py){
+  const gridY=H*0.55;
+  const gridCols=9;
+  const cellW=W*0.09;
+  const cellH=W*0.09;
+  const gridOffX=(W-gridCols*cellW)/2;
+  const col=Math.floor((px-gridOffX)/cellW);
+  const row=Math.floor((py-gridY)/cellH);
+  const idx=row*gridCols+col;
+  if(col<0||col>=gridCols||row<0||idx<0||idx>=26) return null;
+  return ALPHA[idx];
+}
+
+function getCipherLetterAtPos(px,py){
+  const fontSize=W*0.04;
+  const maxCharsPerLine=Math.floor((W-40)/(fontSize*0.65));
+  const words=cipherText.split(' ');
+  let lines=[],currentLine='';
+  for(const w of words){
+    if((currentLine+' '+w).trim().length>maxCharsPerLine){
+      lines.push(currentLine.trim());currentLine=w;
+    } else {
+      currentLine+=(currentLine?' ':'')+w;
+    }
+  }
+  if(currentLine) lines.push(currentLine.trim());
+
+  const startY=W*0.18;
+  const lineHeight=fontSize*2.2;
+
+  for(let l=0;l<lines.length;l++){
+    const line=lines[l];
+    const y=startY+l*lineHeight;
+    const lineW=line.length*fontSize*0.62;
+    const sx=W/2-lineW/2;
+    if(py>y-fontSize&&py<y+fontSize*1.5){
+      for(let i=0;i<line.length;i++){
+        const ch=line[i];
+        const x=sx+i*fontSize*0.62;
+        if(px>x&&px<x+fontSize*0.62&&ALPHA.includes(ch)){
+          // Don't select already correct letters
+          if(decoded[ch]&&decoded[ch]===reverseMap[ch]) return null;
+          return ch;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function useHint(){
+  // Reveal one undecoded letter
+  const unique=getUniqueLetters();
+  const undecoded=[];
+  for(const c of unique){
+    if(!decoded[c]||decoded[c]!==reverseMap[c]) undecoded.push(c);
+  }
+  if(undecoded.length===0) return;
+  const pick=undecoded[Math.floor(Math.random()*undecoded.length)];
+  decoded[pick]=reverseMap[pick];
+  glowLetters[pick]=true;
+  hintUsed++;
+  score=Math.max(0,score-20);
+  playCorrect();
+  if(checkComplete()){
+    messagesDecoded++;score+=Math.max(10,Math.floor(timeLeft)*5);
+    playWin();
+    setTimeout(()=>{messageIndex++;generateCipher();},1500);
+  }
+}
+
+let lastTime=0;
+function gameLoop(ts){
+  const dt=Math.min((ts-lastTime)/1000,0.05);lastTime=ts;
+  if(state==='play'){
+    timeLeft-=dt;
+    if(timeLeft<=0){timeLeft=0;state='gameover';}
+  }
+  updateParticles(dt);
+  if(state==='menu') drawMenu();
+  else if(state==='play') drawGame();
+  else if(state==='gameover') drawGameOver();
+  requestAnimationFrame(gameLoop);
+}
+
+function getPos(e){
+  const r=canvas.getBoundingClientRect();
+  const t=e.touches?e.touches[0]:e;
+  return {x:(t.clientX-r.left)*(W/r.width),y:(t.clientY-r.top)*(H/r.height)};
+}
+
+function handleTap(e){
+  e.preventDefault();
+  const pos=getPos(e);
+  if(state==='menu'){
+    audioCtx.resume();state='play';score=0;timeLeft=maxTime;messageIndex=0;
+    messagesDecoded=0;totalCorrect=0;totalWrong=0;hintUsed=0;
+    generateCipher();return;
+  }
+  if(state==='gameover'){state='menu';return;}
+  if(state==='play'){
+    // Check hint button
+    const hx=W*0.85,hy=H*0.93,hr=W*0.06;
+    if(Math.hypot(pos.x-hx,pos.y-hy)<hr){useHint();return;}
+
+    // Check cipher text tap
+    const cipherLetter=getCipherLetterAtPos(pos.x,pos.y);
+    if(cipherLetter){
+      selectedCipher=cipherLetter;
+      playSelect();
+      return;
+    }
+
+    // Check alphabet grid tap
+    if(selectedCipher){
+      const plain=getAlphabetGridPos(pos.x,pos.y);
+      if(plain){
+        // Remove this plain letter from any other cipher mapping
+        for(const k in decoded){if(decoded[k]===plain) delete decoded[k];}
+        decoded[selectedCipher]=plain;
+        if(plain===reverseMap[selectedCipher]){
+          totalCorrect++;score+=10;
+          glowLetters[selectedCipher]=true;
+          playCorrect();
+          addParticles(pos.x,pos.y,'#00ff88');
+        } else {
+          totalWrong++;
+          score=Math.max(0,score-5);
+          playWrong();
+        }
+        selectedCipher=null;
+        if(checkComplete()){
+          messagesDecoded++;score+=Math.max(10,Math.floor(timeLeft)*5);
+          timeLeft=Math.min(timeLeft+20,maxTime);
+          playWin();
+          setTimeout(()=>{messageIndex++;generateCipher();},1500);
+        }
+      }
+    }
+  }
+}
+
+canvas.addEventListener('mousedown',handleTap);
+canvas.addEventListener('touchstart',handleTap,{passive:false});
+canvas.addEventListener('touchmove',e=>e.preventDefault(),{passive:false});
+
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>BLACKOUT</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+let W,H;
+function resize(){
+  const s=Math.min(window.innerWidth,window.innerHeight);
+  W=canvas.width=s;H=canvas.height=s;
+}
+resize();
+window.addEventListener('resize',resize);
+
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playSound(freq,dur,type='sine',vol=0.1){
+  const o=audioCtx.createOscillator();const g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(vol,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+  o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+dur);
+}
+function playFlip(){playSound(500,0.1,'triangle',0.08);}
+function playMatch(){playSound(600,0.15,'sine',0.1);playSound(900,0.15,'sine',0.08);setTimeout(()=>playSound(1200,0.2,'sine',0.07),100);}
+function playMismatch(){playSound(200,0.3,'square',0.08);playSound(150,0.2,'sawtooth',0.06);}
+function playBlackout(){playSound(80,0.6,'sawtooth',0.12);playSound(60,0.8,'square',0.06);}
+function playRoundClear(){playSound(500,0.15,'sine',0.1);playSound(700,0.15,'sine',0.08);playSound(900,0.15,'sine',0.07);setTimeout(()=>playSound(1200,0.3,'sine',0.1),200);}
+
+let state='menu';
+let score=0;
+let bestScore=0;
+let round=1;
+let gameTimer=0;
+let moves=0;
+
+// Card symbols (emoji-like shapes drawn with canvas)
+const SYMBOLS=['heart','star','diamond','circle','triangle','square','moon','cross','bolt','drop','flower','club'];
+const SYMBOL_COLORS=['#FF5252','#FFD740','#40C4FF','#69F0AE','#FF6E40','#E040FB','#FFFF00','#FF4081','#FFC107','#00BCD4','#FF9800','#8BC34A'];
+
+let gridCols=4;
+let gridRows=4;
+let cards=[];
+let flipped=[];
+let matched=[];
+let blackoutZones=[];// {row,col} cells that are blacked out
+let matchCount=0;
+let matchesSinceBlackout=0;
+let lockInput=false;
+let cardFlipAnims=[];
+let glowCards=[];// Cards that glow before blackout
+let glowTimer=0;
+let showingGlow=false;
+let blackoutPending=false;
+let roundTransition=false;
+let roundTransTimer=0;
+
+function getGridSize(){
+  if(round<=2)return{cols:4,rows:3};
+  if(round<=4)return{cols:4,rows:4};
+  if(round<=6)return{cols:5,rows:4};
+  return{cols:6,rows:5};
+}
+
+function initRound(){
+  const size=getGridSize();
+  gridCols=size.cols;gridRows=size.rows;
+  const total=gridCols*gridRows;
+  const pairs=total/2;
+  // Create pairs
+  let syms=[];
+  for(let i=0;i<pairs;i++){
+    const idx=i%SYMBOLS.length;
+    syms.push(idx,idx);
+  }
+  // Shuffle
+  for(let i=syms.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    [syms[i],syms[j]]=[syms[j],syms[i]];
+  }
+  cards=[];
+  for(let r=0;r<gridRows;r++){
+    for(let c=0;c<gridCols;c++){
+      const idx=r*gridCols+c;
+      cards.push({row:r,col:c,symbol:syms[idx],flipped:false,matched:false});
+    }
+  }
+  flipped=[];matched=[];blackoutZones=[];
+  matchCount=0;matchesSinceBlackout=0;
+  lockInput=false;cardFlipAnims=[];glowCards=[];
+  showingGlow=false;blackoutPending=false;
+  roundTransition=false;
+}
+
+function initGame(){
+  state='play';score=0;round=1;gameTimer=0;moves=0;
+  initRound();
+}
+
+function isBlackedOut(r,c){
+  return blackoutZones.some(z=>z.row===r&&z.col===c);
+}
+
+function getCardRect(card){
+  const pad=W*0.04;
+  const topOffset=W*0.1;
+  const areaW=W-pad*2;
+  const areaH=H-topOffset-pad*2;
+  const cellW=areaW/gridCols;
+  const cellH=areaH/gridRows;
+  const gap=Math.min(cellW,cellH)*0.08;
+  const cw=cellW-gap;
+  const ch=cellH-gap;
+  const x=pad+card.col*cellW+gap/2;
+  const y=topOffset+pad+card.row*cellH+gap/2;
+  return{x,y,w:cw,h:ch};
+}
+
+function addBlackoutZone(){
+  // Pick a non-blacked-out cell that has unmatched cards
+  const candidates=[];
+  for(let r=0;r<gridRows;r++){
+    for(let c=0;c<gridCols;c++){
+      const card=cards.find(cd=>cd.row===r&&cd.col===c);
+      if(card&&!card.matched&&!isBlackedOut(r,c)){
+        candidates.push({row:r,col:c});
+      }
+    }
+  }
+  if(candidates.length===0)return;
+  // Pick a cluster of 1-3 cells
+  const numCells=Math.min(1+Math.floor(round/3),3,candidates.length);
+  // Start from random cell
+  const start=candidates[Math.floor(Math.random()*candidates.length)];
+  const newZones=[start];
+  // Expand to adjacent
+  for(let i=1;i<numCells;i++){
+    const adj=[];
+    for(const z of newZones){
+      for(const[dr,dc]of[[0,1],[0,-1],[1,0],[-1,0]]){
+        const nr=z.row+dr;const nc=z.col+dc;
+        if(nr>=0&&nr<gridRows&&nc>=0&&nc<gridCols){
+          if(!isBlackedOut(nr,nc)&&!newZones.some(nz=>nz.row===nr&&nz.col===nc)){
+            const card=cards.find(cd=>cd.row===nr&&cd.col===nc);
+            if(card&&!card.matched)adj.push({row:nr,col:nc});
+          }
+        }
+      }
+    }
+    if(adj.length>0)newZones.push(adj[Math.floor(Math.random()*adj.length)]);
+  }
+  // Glow these cards first
+  glowCards=newZones.map(z=>({...z,timer:90}));
+  showingGlow=true;
+  blackoutPending=true;
+  lockInput=true;
+}
+
+function triggerBlackout(){
+  for(const g of glowCards){
+    if(!isBlackedOut(g.row,g.col)){
+      blackoutZones.push({row:g.row,col:g.col});
+    }
+  }
+  glowCards=[];
+  showingGlow=false;
+  blackoutPending=false;
+  lockInput=false;
+  playBlackout();
+}
+
+function handleTap(tx,ty){
+  if(state!=='play'||lockInput)return;
+  // Find tapped card
+  for(const card of cards){
+    if(card.matched||card.flipped)continue;
+    const r=getCardRect(card);
+    if(tx>=r.x&&tx<=r.x+r.w&&ty>=r.y&&ty<=r.y+r.h){
+      card.flipped=true;
+      flipped.push(card);
+      moves++;
+      playFlip();
+      cardFlipAnims.push({card,timer:10});
+      if(flipped.length===2){
+        lockInput=true;
+        setTimeout(()=>{
+          if(flipped[0].symbol===flipped[1].symbol){
+            flipped[0].matched=true;
+            flipped[1].matched=true;
+            matchCount++;
+            matchesSinceBlackout++;
+            score+=10+(round*5);
+            playMatch();
+            // Check blackout trigger
+            if(matchesSinceBlackout>=2){
+              matchesSinceBlackout=0;
+              // Check if there are still unmatched cards to blackout
+              const unmatched=cards.filter(c=>!c.matched);
+              if(unmatched.length>2){
+                setTimeout(()=>addBlackoutZone(),400);
+              }
+            }else{
+              lockInput=false;
+            }
+            // Check round complete
+            if(cards.every(c=>c.matched)){
+              score+=Math.max(0,50-moves)*2;
+              playRoundClear();
+              roundTransition=true;
+              roundTransTimer=120;
+              setTimeout(()=>{round++;initRound();},2000);
+            }
+          }else{
+            playMismatch();
+            setTimeout(()=>{
+              flipped[0].flipped=false;
+              flipped[1].flipped=false;
+              if(!blackoutPending)lockInput=false;
+            },600);
+          }
+          flipped=[];
+        },500);
+      }
+      break;
+    }
+  }
+}
+
+canvas.addEventListener('pointerdown',e=>{
+  e.preventDefault();
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  if(state==='menu'){initGame();return;}
+  if(state==='over'){initGame();return;}
+  const rect=canvas.getBoundingClientRect();
+  handleTap(e.clientX-rect.left,e.clientY-rect.top);
+});
+canvas.addEventListener('touchstart',e=>e.preventDefault(),{passive:false});
+
+let lastTime=0;
+function update(ts){
+  const dt=Math.min((ts-lastTime)/16.67,3);
+  lastTime=ts;
+
+  if(state==='play'&&!roundTransition){
+    gameTimer+=dt/60;
+  }
+
+  // Glow timer
+  if(showingGlow){
+    let allDone=true;
+    for(const g of glowCards){
+      g.timer-=dt;
+      if(g.timer>0)allDone=false;
+    }
+    if(allDone&&blackoutPending){
+      triggerBlackout();
+    }
+  }
+
+  // Flip anims
+  for(let i=cardFlipAnims.length-1;i>=0;i--){
+    cardFlipAnims[i].timer-=dt;
+    if(cardFlipAnims[i].timer<=0)cardFlipAnims.splice(i,1);
+  }
+
+  if(roundTransition){
+    roundTransTimer-=dt;
+    if(roundTransTimer<=0)roundTransition=false;
+  }
+
+  draw();
+  requestAnimationFrame(update);
+}
+
+function drawSymbol(sym,color,cx,cy,size){
+  ctx.fillStyle=color;
+  ctx.strokeStyle=color;
+  ctx.lineWidth=2;
+  const s=size*0.35;
+  switch(sym){
+    case'heart':
+      ctx.beginPath();
+      ctx.moveTo(cx,cy+s*0.7);
+      ctx.bezierCurveTo(cx-s*1.2,cy-s*0.3,cx-s*0.5,cy-s*1.2,cx,cy-s*0.4);
+      ctx.bezierCurveTo(cx+s*0.5,cy-s*1.2,cx+s*1.2,cy-s*0.3,cx,cy+s*0.7);
+      ctx.fill();break;
+    case'star':
+      drawStar(cx,cy,5,s,s*0.45);break;
+    case'diamond':
+      ctx.beginPath();ctx.moveTo(cx,cy-s);ctx.lineTo(cx+s*0.6,cy);ctx.lineTo(cx,cy+s);ctx.lineTo(cx-s*0.6,cy);ctx.closePath();ctx.fill();break;
+    case'circle':
+      ctx.beginPath();ctx.arc(cx,cy,s*0.7,0,Math.PI*2);ctx.fill();break;
+    case'triangle':
+      ctx.beginPath();ctx.moveTo(cx,cy-s);ctx.lineTo(cx+s,cy+s*0.7);ctx.lineTo(cx-s,cy+s*0.7);ctx.closePath();ctx.fill();break;
+    case'square':
+      ctx.fillRect(cx-s*0.6,cy-s*0.6,s*1.2,s*1.2);break;
+    case'moon':
+      ctx.beginPath();ctx.arc(cx,cy,s*0.7,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#1a1a2e';ctx.beginPath();ctx.arc(cx+s*0.3,cy-s*0.2,s*0.55,0,Math.PI*2);ctx.fill();break;
+    case'cross':
+      ctx.fillRect(cx-s*0.2,cy-s*0.7,s*0.4,s*1.4);
+      ctx.fillRect(cx-s*0.7,cy-s*0.2,s*1.4,s*0.4);break;
+    case'bolt':
+      ctx.beginPath();ctx.moveTo(cx+s*0.1,cy-s);ctx.lineTo(cx-s*0.4,cy+s*0.1);ctx.lineTo(cx+s*0.1,cy);ctx.lineTo(cx-s*0.1,cy+s);ctx.lineTo(cx+s*0.4,cy-s*0.1);ctx.lineTo(cx-s*0.1,cy);ctx.closePath();ctx.fill();break;
+    case'drop':
+      ctx.beginPath();ctx.moveTo(cx,cy-s);ctx.bezierCurveTo(cx+s*0.8,cy,cx+s*0.7,cy+s*0.8,cx,cy+s*0.8);ctx.bezierCurveTo(cx-s*0.7,cy+s*0.8,cx-s*0.8,cy,cx,cy-s);ctx.fill();break;
+    case'flower':
+      for(let i=0;i<6;i++){
+        const a=Math.PI*2/6*i;
+        ctx.beginPath();ctx.arc(cx+Math.cos(a)*s*0.4,cy+Math.sin(a)*s*0.4,s*0.3,0,Math.PI*2);ctx.fill();
+      }
+      ctx.fillStyle='#FFD740';ctx.beginPath();ctx.arc(cx,cy,s*0.25,0,Math.PI*2);ctx.fill();break;
+    case'club':
+      ctx.beginPath();ctx.arc(cx,cy-s*0.4,s*0.35,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.arc(cx-s*0.4,cy+s*0.1,s*0.35,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.arc(cx+s*0.4,cy+s*0.1,s*0.35,0,Math.PI*2);ctx.fill();
+      ctx.fillRect(cx-s*0.1,cy,s*0.2,s*0.7);break;
+  }
+}
+
+function drawStar(cx,cy,pts,outerR,innerR){
+  ctx.beginPath();
+  for(let i=0;i<pts*2;i++){
+    const r=i%2===0?outerR:innerR;
+    const a=Math.PI*2/(pts*2)*i-Math.PI/2;
+    if(i===0)ctx.moveTo(cx+Math.cos(a)*r,cy+Math.sin(a)*r);
+    else ctx.lineTo(cx+Math.cos(a)*r,cy+Math.sin(a)*r);
+  }
+  ctx.closePath();ctx.fill();
+}
+
+function draw(){
+  // Background
+  ctx.fillStyle='#0a0a1a';
+  ctx.fillRect(0,0,W,H);
+
+  if(state==='play'||state==='over'){
+    // Subtle grid bg pattern
+    ctx.strokeStyle='rgba(50,50,80,0.2)';ctx.lineWidth=1;
+    for(let i=0;i<W;i+=30){ctx.beginPath();ctx.moveTo(i,0);ctx.lineTo(i,H);ctx.stroke();}
+    for(let i=0;i<H;i+=30){ctx.beginPath();ctx.moveTo(0,i);ctx.lineTo(W,i);ctx.stroke();}
+
+    // Draw cards
+    for(const card of cards){
+      const r=getCardRect(card);
+      const blacked=isBlackedOut(card.row,card.col);
+      const isGlowing=glowCards.some(g=>g.row===card.row&&g.col===card.col);
+
+      if(card.matched){
+        // Matched card - subtle outline
+        ctx.fillStyle='rgba(100,255,150,0.08)';
+        ctx.fillRect(r.x,r.y,r.w,r.h);
+        ctx.strokeStyle='rgba(100,255,150,0.2)';ctx.lineWidth=1;
+        ctx.strokeRect(r.x,r.y,r.w,r.h);
+        // Show symbol faded
+        ctx.globalAlpha=0.2;
+        drawSymbol(SYMBOLS[card.symbol],SYMBOL_COLORS[card.symbol],r.x+r.w/2,r.y+r.h/2,Math.min(r.w,r.h));
+        ctx.globalAlpha=1;
+        continue;
+      }
+
+      // Glow effect
+      if(isGlowing){
+        const glowI=Math.sin(Date.now()*0.01)*0.3+0.7;
+        ctx.shadowColor='#FF6B35';
+        ctx.shadowBlur=15*glowI;
+      }
+
+      if(card.flipped){
+        if(blacked){
+          // Can't see it - dark card
+          ctx.fillStyle='#1a1a2e';
+          ctx.fillRect(r.x,r.y,r.w,r.h);
+          ctx.fillStyle='rgba(255,255,255,0.05)';
+          ctx.fillText('?',r.x+r.w/2,r.y+r.h/2);
+          ctx.strokeStyle='#333';ctx.lineWidth=1;
+          ctx.strokeRect(r.x,r.y,r.w,r.h);
+        }else{
+          // Revealed
+          ctx.fillStyle='#1a1a3e';
+          ctx.fillRect(r.x,r.y,r.w,r.h);
+          drawSymbol(SYMBOLS[card.symbol],SYMBOL_COLORS[card.symbol],r.x+r.w/2,r.y+r.h/2,Math.min(r.w,r.h));
+          ctx.strokeStyle='#555';ctx.lineWidth=1.5;
+          ctx.strokeRect(r.x,r.y,r.w,r.h);
+        }
+      }else{
+        // Face down
+        if(blacked){
+          // Blackout zone
+          ctx.fillStyle='#0d0d15';
+          ctx.fillRect(r.x,r.y,r.w,r.h);
+          ctx.strokeStyle='#1a1a30';ctx.lineWidth=1;
+          ctx.strokeRect(r.x,r.y,r.w,r.h);
+          // Dark static effect
+          for(let i=0;i<5;i++){
+            const sx=r.x+Math.random()*r.w;
+            const sy=r.y+Math.random()*r.h;
+            ctx.fillStyle=`rgba(30,30,50,${Math.random()*0.3})`;
+            ctx.fillRect(sx,sy,2,2);
+          }
+        }else{
+          // Normal card back
+          const cardGrad=ctx.createLinearGradient(r.x,r.y,r.x+r.w,r.y+r.h);
+          cardGrad.addColorStop(0,'#2a2a4e');
+          cardGrad.addColorStop(1,'#1a1a3e');
+          ctx.fillStyle=cardGrad;
+          ctx.fillRect(r.x,r.y,r.w,r.h);
+          // Pattern on back
+          ctx.strokeStyle='rgba(100,100,180,0.2)';ctx.lineWidth=1;
+          const cx=r.x+r.w/2;const cy=r.y+r.h/2;
+          const pr=Math.min(r.w,r.h)*0.3;
+          ctx.beginPath();ctx.arc(cx,cy,pr,0,Math.PI*2);ctx.stroke();
+          ctx.beginPath();ctx.arc(cx,cy,pr*0.5,0,Math.PI*2);ctx.stroke();
+          ctx.strokeStyle='rgba(150,150,220,0.3)';ctx.lineWidth=1.5;
+          ctx.strokeRect(r.x+3,r.y+3,r.w-6,r.h-6);
+        }
+      }
+      ctx.shadowBlur=0;
+    }
+
+    // HUD
+    ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(0,0,W,W*0.09);
+    ctx.fillStyle='#FFD740';ctx.font=`bold ${Math.floor(W*0.035)}px monospace`;ctx.textAlign='left';
+    ctx.fillText(`Score: ${score}`,W*0.02,W*0.06);
+    ctx.fillStyle='#B3E5FC';ctx.textAlign='center';
+    ctx.fillText(`Round ${round}`,W/2,W*0.06);
+    ctx.fillStyle='#FF8A65';ctx.textAlign='right';
+    ctx.fillText(`Moves: ${moves}`,W*0.98,W*0.06);
+
+    // Blackout zones count
+    if(blackoutZones.length>0){
+      ctx.fillStyle='#FF5252';ctx.textAlign='center';ctx.font=`${Math.floor(W*0.025)}px monospace`;
+      ctx.fillText(`Blackout zones: ${blackoutZones.length}`,W/2,W*0.09-2);
+    }
+
+    // Round transition
+    if(roundTransition){
+      ctx.fillStyle=`rgba(0,0,0,${Math.min(1,roundTransTimer/60)*0.5})`;
+      ctx.fillRect(0,0,W,H);
+      ctx.fillStyle='#69F0AE';ctx.font=`bold ${Math.floor(W*0.08)}px monospace`;ctx.textAlign='center';
+      ctx.fillText('ROUND CLEAR!',W/2,H*0.45);
+      ctx.fillStyle='#FFD740';ctx.font=`${Math.floor(W*0.05)}px monospace`;
+      ctx.fillText(`Round ${round+1} starting...`,W/2,H*0.55);
+    }
+  }
+
+  // Menu
+  if(state==='menu'){
+    // Animated bg cards
+    const t=Date.now()*0.001;
+    for(let i=0;i<12;i++){
+      const x=W*0.1+((i%4))*W*0.25;
+      const y=H*0.15+Math.floor(i/4)*H*0.25+Math.sin(t+i)*10;
+      ctx.fillStyle=`rgba(40,40,70,${0.3+Math.sin(t+i*0.5)*0.1})`;
+      ctx.fillRect(x,y,W*0.15,W*0.2);
+      ctx.strokeStyle='rgba(100,100,180,0.2)';ctx.lineWidth=1;
+      ctx.strokeRect(x,y,W*0.15,W*0.2);
+    }
+    ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#E040FB';ctx.font=`bold ${Math.floor(W*0.11)}px monospace`;ctx.textAlign='center';
+    ctx.fillText('BLACKOUT',W/2,H*0.22);
+    ctx.fillStyle='#B3E5FC';ctx.font=`${Math.floor(W*0.035)}px monospace`;
+    ctx.fillText('Match card pairs from memory!',W/2,H*0.32);
+    ctx.fillStyle='#FF8A65';
+    ctx.fillText('Every 2 matches, zones go DARK',W/2,H*0.39);
+    ctx.fillText('Hidden cards - you must remember!',W/2,H*0.45);
+    ctx.fillStyle='#69F0AE';
+    ctx.fillText('Larger grids each round',W/2,H*0.52);
+    ctx.fillStyle='#fff';ctx.font=`${Math.floor(W*0.05)}px monospace`;
+    const p=0.8+Math.sin(Date.now()*0.004)*0.2;ctx.globalAlpha=p;
+    ctx.fillText('TAP TO START',W/2,H*0.68);ctx.globalAlpha=1;
+    // Decorative symbols
+    drawSymbol('heart','#FF5252',W*0.2,H*0.8,60);
+    drawSymbol('star','#FFD740',W*0.4,H*0.82,60);
+    drawSymbol('diamond','#40C4FF',W*0.6,H*0.8,60);
+    drawSymbol('moon','#FFFF00',W*0.8,H*0.82,60);
+  }
+
+  // Game over
+  if(state==='over'){
+    ctx.fillStyle='rgba(0,0,0,0.7)';ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#E040FB';ctx.font=`bold ${Math.floor(W*0.1)}px monospace`;ctx.textAlign='center';
+    ctx.fillText('BLACKOUT',W/2,H*0.25);
+    ctx.fillStyle='#FFD740';ctx.font=`${Math.floor(W*0.06)}px monospace`;
+    ctx.fillText(`Score: ${score}`,W/2,H*0.38);
+    ctx.fillStyle='#B3E5FC';ctx.font=`${Math.floor(W*0.04)}px monospace`;
+    ctx.fillText(`Rounds: ${round} | Moves: ${moves}`,W/2,H*0.46);
+    ctx.fillStyle='#aaa';ctx.fillText(`Best: ${bestScore}`,W/2,H*0.54);
+    ctx.fillStyle='#fff';ctx.font=`${Math.floor(W*0.045)}px monospace`;
+    const p=0.8+Math.sin(Date.now()*0.004)*0.2;ctx.globalAlpha=p;
+    ctx.fillText('TAP TO RETRY',W/2,H*0.68);ctx.globalAlpha=1;
+  }
+}
+
+// Note: No explicit game over condition for Blackout - it's endless rounds
+// Add a timer-based ending or let player play forever
+// Let's add: game ends if player makes 5 consecutive mismatches
+let consecutiveMisses=0;
+const origHandleTap=handleTap;
+
+function handleTap(tx,ty){
+  if(state!=='play'||lockInput)return;
+  for(const card of cards){
+    if(card.matched||card.flipped)continue;
+    const r=getCardRect(card);
+    if(tx>=r.x&&tx<=r.x+r.w&&ty>=r.y&&ty<=r.y+r.h){
+      card.flipped=true;
+      flipped.push(card);
+      moves++;
+      playFlip();
+      cardFlipAnims.push({card,timer:10});
+      if(flipped.length===2){
+        lockInput=true;
+        const f0=flipped[0],f1=flipped[1];
+        setTimeout(()=>{
+          if(f0.symbol===f1.symbol){
+            f0.matched=true;f1.matched=true;
+            matchCount++;matchesSinceBlackout++;
+            consecutiveMisses=0;
+            score+=10+(round*5);
+            playMatch();
+            if(matchesSinceBlackout>=2){
+              matchesSinceBlackout=0;
+              const unmatched=cards.filter(c=>!c.matched);
+              if(unmatched.length>2){
+                setTimeout(()=>addBlackoutZone(),400);
+              }else{lockInput=false;}
+            }else{lockInput=false;}
+            if(cards.every(c=>c.matched)){
+              score+=Math.max(0,50-moves)*2;
+              playRoundClear();
+              roundTransition=true;roundTransTimer=120;
+              setTimeout(()=>{round++;initRound();},2000);
+            }
+          }else{
+            consecutiveMisses++;
+            playMismatch();
+            if(consecutiveMisses>=8){
+              setTimeout(()=>{
+                state='over';
+                if(score>bestScore)bestScore=score;
+              },500);
+            }
+            setTimeout(()=>{
+              f0.flipped=false;f1.flipped=false;
+              if(!blackoutPending)lockInput=false;
+            },600);
+          }
+          flipped=[];
+        },500);
+      }
+      break;
+    }
+  }
+}
+
+canvas.addEventListener('pointerdown',e=>{
+  e.preventDefault();
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  if(state==='menu'){initGame();return;}
+  if(state==='over'){initGame();return;}
+  const rect=canvas.getBoundingClientRect();
+  handleTap(e.clientX-rect.left,e.clientY-rect.top);
+});
+canvas.addEventListener('touchstart',e=>e.preventDefault(),{passive:false});
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

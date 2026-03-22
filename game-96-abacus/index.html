@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>ABACUS</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H;
+function resize(){
+  const r=Math.min(window.innerWidth/480,window.innerHeight/720);
+  W=480;H=720;
+  canvas.width=W;canvas.height=H;
+  canvas.style.width=(W*r)+'px';
+  canvas.style.height=(H*r)+'px';
+}
+resize();
+window.addEventListener('resize',resize);
+
+// Audio
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playSound(freq,dur,type='sine'){
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(0.15,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+  o.connect(g);g.connect(audioCtx.destination);
+  o.start();o.stop(audioCtx.currentTime+dur);
+}
+function clickSound(){playSound(600,0.08,'square');}
+function correctSound(){playSound(523,0.1);setTimeout(()=>playSound(659,0.1),100);setTimeout(()=>playSound(784,0.15),200);}
+function wrongSound(){playSound(200,0.3,'sawtooth');}
+
+// Game state
+const STATE={MENU:0,PLAY:1,OVER:2};
+let state=STATE.MENU;
+let score=0,lives=3,targetNum=0,timer=0,maxTime=15,level=1;
+let flash=0,flashColor='';
+let shakeTime=0;
+
+// Abacus: 4 rows (thousands, hundreds, tens, ones)
+// Each row has 9 beads, positioned left (active) or right (inactive)
+// Value of row = number of beads slid to left
+const ROWS=4;
+const BEADS_PER_ROW=9;
+const beadColors=['#e74c3c','#3498db','#2ecc71','#f39c12'];
+const beadNames=['Thousands','Hundreds','Tens','Ones'];
+let beads=[];// beads[row][i] = {left: bool}
+
+const frameLeft=40,frameRight=440,frameTop=180,frameBottom=600;
+const rowHeight=(frameBottom-frameTop)/(ROWS+1);
+const beadRadius=18;
+const beadSpacing=40;
+
+function initBeads(){
+  beads=[];
+  for(let r=0;r<ROWS;r++){
+    beads[r]=[];
+    for(let i=0;i<BEADS_PER_ROW;i++){
+      beads[r].push({left:false});
+    }
+  }
+}
+
+function getBeadPos(row,index){
+  const y=frameTop+rowHeight*(row+1);
+  const leftCount=beads[row].filter(b=>b.left).length;
+  let x;
+  if(beads[row][index].left){
+    // find position among left beads
+    let li=0;
+    for(let i=0;i<index;i++) if(beads[row][i].left) li++;
+    x=frameLeft+30+li*beadSpacing;
+  } else {
+    let ri=0;
+    for(let i=0;i<index;i++) if(!beads[row][i].left) ri++;
+    x=frameRight-30-ri*beadSpacing;
+  }
+  return {x,y};
+}
+
+function getRowValue(row){
+  return beads[row].filter(b=>b.left).length;
+}
+
+function getCurrentNumber(){
+  let n=0;
+  n+=getRowValue(0)*1000;
+  n+=getRowValue(1)*100;
+  n+=getRowValue(2)*10;
+  n+=getRowValue(3)*1;
+  return n;
+}
+
+function generateTarget(){
+  let max=10;
+  if(level>=2) max=100;
+  if(level>=4) max=1000;
+  if(level>=7) max=9999;
+  targetNum=Math.floor(Math.random()*(max-1))+1;
+  timer=maxTime;
+  initBeads();
+}
+
+function checkAnswer(){
+  if(getCurrentNumber()===targetNum){
+    score++;
+    level++;
+    if(maxTime>6) maxTime-=0.5;
+    flash=1;flashColor='#2ecc71';
+    correctSound();
+    generateTarget();
+  }
+}
+
+function submitAnswer(){
+  if(getCurrentNumber()===targetNum){
+    checkAnswer();
+  } else {
+    lives--;
+    flash=1;flashColor='#e74c3c';
+    shakeTime=0.3;
+    wrongSound();
+    if(lives<=0){
+      state=STATE.OVER;
+    } else {
+      generateTarget();
+    }
+  }
+}
+
+// Input
+let dragging=null;
+let dragRow=-1;
+
+function getCanvasPos(e){
+  const rect=canvas.getBoundingClientRect();
+  const scaleX=W/rect.width,scaleY=H/rect.height;
+  const t=e.touches?e.touches[0]:e;
+  return {x:(t.clientX-rect.left)*scaleX, y:(t.clientY-rect.top)*scaleY};
+}
+
+function handleDown(e){
+  e.preventDefault();
+  audioCtx.resume();
+  const p=getCanvasPos(e);
+
+  if(state===STATE.MENU){state=STATE.PLAY;score=0;lives=3;level=1;maxTime=15;initBeads();generateTarget();return;}
+  if(state===STATE.OVER){state=STATE.MENU;return;}
+
+  if(state===STATE.PLAY){
+    // Check submit button
+    if(p.x>170&&p.x<310&&p.y>frameBottom+20&&p.y<frameBottom+70){
+      submitAnswer();
+      return;
+    }
+
+    // Check bead click
+    for(let r=0;r<ROWS;r++){
+      for(let i=0;i<BEADS_PER_ROW;i++){
+        const bp=getBeadPos(r,i);
+        const dx=p.x-bp.x,dy=p.y-bp.y;
+        if(dx*dx+dy*dy<beadRadius*beadRadius*1.5){
+          // Toggle bead
+          beads[r][i].left=!beads[r][i].left;
+          clickSound();
+          // Auto-check
+          if(getCurrentNumber()===targetNum){
+            setTimeout(()=>{if(state===STATE.PLAY)checkAnswer();},300);
+          }
+          return;
+        }
+      }
+    }
+  }
+}
+
+canvas.addEventListener('mousedown',handleDown);
+canvas.addEventListener('touchstart',handleDown);
+
+// Draw
+function drawFrame(){
+  // Wood frame
+  const sx=shakeTime>0?Math.sin(shakeTime*50)*5:0;
+  ctx.save();
+  ctx.translate(sx,0);
+
+  // Frame background
+  ctx.fillStyle='#8B4513';
+  ctx.fillRect(frameLeft-10,frameTop-10,frameRight-frameLeft+20,frameBottom-frameTop+20);
+  ctx.fillStyle='#DEB887';
+  ctx.fillRect(frameLeft,frameTop,frameRight-frameLeft,frameBottom-frameTop);
+
+  // Rods
+  for(let r=0;r<ROWS;r++){
+    const y=frameTop+rowHeight*(r+1);
+    ctx.strokeStyle='#5D3A1A';
+    ctx.lineWidth=4;
+    ctx.beginPath();
+    ctx.moveTo(frameLeft,y);
+    ctx.lineTo(frameRight,y);
+    ctx.stroke();
+
+    // Row label
+    ctx.fillStyle='#5D3A1A';
+    ctx.font='bold 11px Arial';
+    ctx.textAlign='center';
+    ctx.fillText(beadNames[r],W/2,y-rowHeight/2+15);
+  }
+
+  // Beads
+  for(let r=0;r<ROWS;r++){
+    for(let i=0;i<BEADS_PER_ROW;i++){
+      const bp=getBeadPos(r,i);
+      // Shadow
+      ctx.beginPath();
+      ctx.arc(bp.x+2,bp.y+2,beadRadius,0,Math.PI*2);
+      ctx.fillStyle='rgba(0,0,0,0.3)';
+      ctx.fill();
+      // Bead
+      ctx.beginPath();
+      ctx.arc(bp.x,bp.y,beadRadius,0,Math.PI*2);
+      const grad=ctx.createRadialGradient(bp.x-5,bp.y-5,2,bp.x,bp.y,beadRadius);
+      grad.addColorStop(0,'#fff');
+      grad.addColorStop(0.3,beadColors[r]);
+      grad.addColorStop(1,darken(beadColors[r],0.5));
+      ctx.fillStyle=grad;
+      ctx.fill();
+      ctx.strokeStyle='rgba(0,0,0,0.3)';
+      ctx.lineWidth=1;
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
+function darken(hex,amount){
+  let r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  r=Math.floor(r*(1-amount));g=Math.floor(g*(1-amount));b=Math.floor(b*(1-amount));
+  return `rgb(${r},${g},${b})`;
+}
+
+function drawHUD(){
+  // Target number
+  ctx.fillStyle='#f1c40f';
+  ctx.font='bold 22px Arial';
+  ctx.textAlign='center';
+  ctx.fillText('TARGET NUMBER',W/2,40);
+  ctx.font='bold 56px Arial';
+  ctx.fillText(targetNum,W/2,100);
+
+  // Current
+  ctx.font='bold 18px Arial';
+  ctx.fillStyle='#ecf0f1';
+  ctx.fillText('Your answer: '+getCurrentNumber(),W/2,135);
+
+  // Timer bar
+  const tw=300,tx=(W-tw)/2,ty=150;
+  ctx.fillStyle='#333';
+  ctx.fillRect(tx,ty,tw,12);
+  const pct=Math.max(0,timer/maxTime);
+  ctx.fillStyle=pct>0.3?'#2ecc71':'#e74c3c';
+  ctx.fillRect(tx,ty,tw*pct,12);
+
+  // Lives
+  ctx.font='20px Arial';
+  ctx.textAlign='left';
+  ctx.fillStyle='#e74c3c';
+  for(let i=0;i<lives;i++) ctx.fillText('\u2764',15+i*30,30);
+
+  // Score
+  ctx.textAlign='right';
+  ctx.fillStyle='#ecf0f1';
+  ctx.font='bold 18px Arial';
+  ctx.fillText('Score: '+score,W-15,30);
+
+  // Submit button
+  const bx=170,by=frameBottom+20,bw=140,bh=50;
+  ctx.fillStyle='#27ae60';
+  ctx.beginPath();
+  ctx.roundRect(bx,by,bw,bh,10);
+  ctx.fill();
+  ctx.fillStyle='#fff';
+  ctx.font='bold 22px Arial';
+  ctx.textAlign='center';
+  ctx.fillText('SUBMIT',W/2,by+33);
+}
+
+function drawMenu(){
+  ctx.fillStyle='#1a1a2e';
+  ctx.fillRect(0,0,W,H);
+
+  // Decorative beads
+  const t=Date.now()/1000;
+  for(let i=0;i<20;i++){
+    const x=W/2+Math.sin(t+i*0.7)*150;
+    const y=200+i*25+Math.sin(t*2+i)*10;
+    ctx.beginPath();
+    ctx.arc(x,y,12,0,Math.PI*2);
+    ctx.fillStyle=beadColors[i%4];
+    ctx.fill();
+  }
+
+  ctx.fillStyle='#f1c40f';
+  ctx.font='bold 64px Arial';
+  ctx.textAlign='center';
+  ctx.fillText('ABACUS',W/2,120);
+
+  ctx.fillStyle='#ecf0f1';
+  ctx.font='20px Arial';
+  ctx.fillText('Slide beads to match the target number',W/2,160);
+  ctx.fillText('Tap beads to move them left/right',W/2,190);
+
+  ctx.fillStyle='#f39c12';
+  ctx.font='bold 28px Arial';
+  ctx.fillText('TAP TO START',W/2,H-100);
+}
+
+function drawGameOver(){
+  ctx.fillStyle='#1a1a2e';
+  ctx.fillRect(0,0,W,H);
+
+  ctx.fillStyle='#e74c3c';
+  ctx.font='bold 56px Arial';
+  ctx.textAlign='center';
+  ctx.fillText('GAME OVER',W/2,200);
+
+  ctx.fillStyle='#f1c40f';
+  ctx.font='bold 80px Arial';
+  ctx.fillText(score,W/2,340);
+  ctx.font='24px Arial';
+  ctx.fillStyle='#ecf0f1';
+  ctx.fillText('Numbers Matched',W/2,380);
+  ctx.fillText('Level reached: '+level,W/2,420);
+
+  ctx.fillStyle='#f39c12';
+  ctx.font='bold 24px Arial';
+  ctx.fillText('TAP TO CONTINUE',W/2,H-100);
+}
+
+let lastTime=0;
+function update(ts){
+  const dt=(ts-lastTime)/1000;
+  lastTime=ts;
+
+  ctx.fillStyle='#16213e';
+  ctx.fillRect(0,0,W,H);
+
+  if(state===STATE.MENU){drawMenu();}
+  else if(state===STATE.OVER){drawGameOver();}
+  else if(state===STATE.PLAY){
+    timer-=dt;
+    if(shakeTime>0) shakeTime-=dt;
+    if(flash>0){
+      flash-=dt*3;
+      ctx.fillStyle=flashColor;
+      ctx.globalAlpha=flash*0.3;
+      ctx.fillRect(0,0,W,H);
+      ctx.globalAlpha=1;
+    }
+    if(timer<=0){
+      timer=0;
+      submitAnswer();
+    }
+    drawFrame();
+    drawHUD();
+  }
+
+  requestAnimationFrame(update);
+}
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

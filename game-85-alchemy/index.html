@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>ALCHEMY</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H;
+function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight}
+resize();window.addEventListener('resize',resize);
+
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playSound(freq,dur,type='sine'){
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(0.2,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.01,audioCtx.currentTime+dur);
+  o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+dur);
+}
+function playDiscover(){playSound(523,0.15);setTimeout(()=>playSound(659,0.15),100);setTimeout(()=>playSound(784,0.25),200)}
+function playFail(){playSound(200,0.2,'square')}
+function playDrag(){playSound(400,0.05,'triangle')}
+function playTick(){playSound(600,0.03)}
+
+// Element definitions
+const ELEMENTS=[
+  {id:0,name:'Fire',symbol:'F',color:'#ff4400',bg:'#441100',basic:true},
+  {id:1,name:'Water',symbol:'W',color:'#0088ff',bg:'#001144',basic:true},
+  {id:2,name:'Earth',symbol:'E',color:'#88aa22',bg:'#223300',basic:true},
+  {id:3,name:'Air',symbol:'A',color:'#aaddff',bg:'#223344',basic:true},
+  {id:4,name:'Steam',symbol:'St',color:'#ccddee',bg:'#334455'},
+  {id:5,name:'Mud',symbol:'Mu',color:'#775533',bg:'#332211'},
+  {id:6,name:'Lava',symbol:'La',color:'#ff6600',bg:'#442200'},
+  {id:7,name:'Dust',symbol:'Du',color:'#ccbb99',bg:'#443322'},
+  {id:8,name:'Rain',symbol:'Ra',color:'#4488cc',bg:'#112233'},
+  {id:9,name:'Storm',symbol:'So',color:'#6644aa',bg:'#221133'},
+  {id:10,name:'Plant',symbol:'Pl',color:'#33cc33',bg:'#114411'},
+  {id:11,name:'Swamp',symbol:'Sw',color:'#446633',bg:'#112211'},
+  {id:12,name:'Glass',symbol:'Gl',color:'#aaeeff',bg:'#224455'},
+  {id:13,name:'Metal',symbol:'Me',color:'#aaaacc',bg:'#333344'},
+  {id:14,name:'Ice',symbol:'Ic',color:'#88ddff',bg:'#113344'},
+  {id:15,name:'Cloud',symbol:'Cl',color:'#ddeeff',bg:'#334455'},
+  {id:16,name:'Lightning',symbol:'Li',color:'#ffff00',bg:'#444400'},
+  {id:17,name:'Energy',symbol:'En',color:'#ffaa00',bg:'#443300'},
+  {id:18,name:'Life',symbol:'Li',color:'#ff66aa',bg:'#441133'},
+  {id:19,name:'Sand',symbol:'Sa',color:'#ddcc88',bg:'#443311'},
+  {id:20,name:'Obsidian',symbol:'Ob',color:'#443355',bg:'#110022'},
+  {id:21,name:'Smoke',symbol:'Sm',color:'#888888',bg:'#333333'},
+  {id:22,name:'Fog',symbol:'Fo',color:'#99aabb',bg:'#334444'},
+  {id:23,name:'Tree',symbol:'Tr',color:'#228833',bg:'#113311'},
+  {id:24,name:'Diamond',symbol:'Di',color:'#aaffff',bg:'#225555'},
+  {id:25,name:'Volcano',symbol:'Vo',color:'#cc3300',bg:'#441100'},
+  {id:26,name:'Snow',symbol:'Sn',color:'#eeeeff',bg:'#445566'},
+  {id:27,name:'Crystal',symbol:'Cr',color:'#dd88ff',bg:'#331144'},
+  {id:28,name:'Brick',symbol:'Br',color:'#cc6633',bg:'#442211'},
+  {id:29,name:'Magma',symbol:'Mg',color:'#ff3300',bg:'#440000'},
+];
+
+// Recipes: [a,b] => result
+const RECIPES=[
+  [0,1,4],[1,2,5],[0,2,6],[2,3,7],[1,3,8],[0,3,9],
+  [1,2,10],[5,1,11],[0,19,12],[2,0,13],[1,3,14],[4,3,15],
+  [9,1,16],[0,3,17],[10,1,18],[2,3,19],[6,1,20],[0,2,21],
+  [4,14,22],[10,2,23],[13,0,24],[6,2,25],[14,3,26],[12,2,27],
+  [5,0,28],[6,0,29],
+];
+
+let state='menu'; // menu, play, gameover
+let discovered=new Set([0,1,2,3]);
+let dragging=null, dragX=0,dragY=0,dragStartX=0,dragStartY=0;
+let combineTarget=null;
+let particles=[];
+let timer=120, timerStart=0, lastTick=0;
+let score=0, scrollY=0;
+let newDiscovery=null, newDiscoveryTimer=0;
+let gridCols, cellSize;
+
+function getGridLayout(){
+  cellSize=Math.min(70,W/6);
+  gridCols=Math.floor((W-20)/cellSize);
+  return{cellSize,gridCols};
+}
+
+function getElementPos(idx){
+  const{cellSize,gridCols}=getGridLayout();
+  const row=Math.floor(idx/gridCols);
+  const col=idx%gridCols;
+  const totalW=gridCols*cellSize;
+  const offsetX=(W-totalW)/2;
+  return{x:offsetX+col*cellSize+cellSize/2,y:100+row*cellSize+cellSize/2-scrollY};
+}
+
+function findRecipe(a,b){
+  for(const r of RECIPES){
+    if((r[0]===a&&r[1]===b)||(r[0]===b&&r[1]===a))return r[2];
+  }
+  return-1;
+}
+
+function getDiscoveredArray(){return Array.from(discovered).sort((a,b)=>a-b)}
+
+function drawElement(el,x,y,size,alpha=1){
+  ctx.globalAlpha=alpha;
+  ctx.fillStyle=el.bg;
+  const r=size/2-3;
+  ctx.beginPath();
+  ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle=el.color;ctx.lineWidth=2;
+  ctx.stroke();
+  // inner glow
+  const grad=ctx.createRadialGradient(x,y,0,x,y,r);
+  grad.addColorStop(0,el.color+'44');grad.addColorStop(1,'transparent');
+  ctx.fillStyle=grad;ctx.fill();
+  // symbol
+  ctx.fillStyle=el.color;
+  ctx.font=`bold ${Math.floor(size*0.28)}px monospace`;
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(el.symbol,x,y-2);
+  // name
+  ctx.font=`${Math.floor(size*0.16)}px monospace`;
+  ctx.fillText(el.name,x,y+size*0.2);
+  ctx.globalAlpha=1;
+}
+
+function drawParticles(){
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];
+    p.x+=p.vx;p.y+=p.vy;p.vy+=0.05;p.life--;
+    ctx.globalAlpha=p.life/p.maxLife;
+    ctx.fillStyle=p.color;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.size,0,Math.PI*2);ctx.fill();
+    if(p.life<=0)particles.splice(i,1);
+  }
+  ctx.globalAlpha=1;
+}
+
+function spawnCombineParticles(x,y,color){
+  for(let i=0;i<25;i++){
+    const angle=Math.random()*Math.PI*2;
+    const speed=Math.random()*5+2;
+    particles.push({x,y,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed,
+      life:40+Math.random()*20,maxLife:60,color,size:Math.random()*4+2});
+  }
+}
+
+function drawMenu(){
+  const grad=ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,'#1a0a2e');grad.addColorStop(0.5,'#2a1a3e');grad.addColorStop(1,'#0a0a1e');
+  ctx.fillStyle=grad;ctx.fillRect(0,0,W,H);
+  // floating elements
+  const t=Date.now()*0.001;
+  for(let i=0;i<4;i++){
+    const el=ELEMENTS[i];
+    const ex=W*0.25+i*(W*0.18);
+    const ey=H*0.5+Math.sin(t+i*1.5)*30;
+    drawElement(el,ex,ey,60);
+  }
+  // connecting lines
+  ctx.strokeStyle='rgba(255,200,100,0.3)';ctx.lineWidth=1;
+  for(let i=0;i<3;i++){
+    ctx.beginPath();
+    ctx.moveTo(W*0.25+i*(W*0.18),H*0.5);
+    ctx.lineTo(W*0.25+(i+1)*(W*0.18),H*0.5);
+    ctx.stroke();
+  }
+  ctx.fillStyle='#fff';ctx.font=`bold ${Math.min(55,W*0.11)}px monospace`;ctx.textAlign='center';
+  ctx.fillText('ALCHEMY',W/2,H*0.2);
+  ctx.fillStyle='#aaa';ctx.font=`${Math.min(18,W*0.035)}px monospace`;
+  ctx.fillText('Combine elements to discover new ones!',W/2,H*0.28);
+  ctx.fillText('Drag one element onto another',W/2,H*0.33);
+  ctx.fillStyle='#ffaa00';ctx.font=`bold ${Math.min(24,W*0.045)}px monospace`;
+  const pulse=Math.sin(Date.now()*0.005)*0.2+0.8;ctx.globalAlpha=pulse;
+  ctx.fillText('TAP TO START',W/2,H*0.85);ctx.globalAlpha=1;
+}
+
+function drawGame(){
+  // background
+  const grad=ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,'#1a0a2e');grad.addColorStop(1,'#0a0a1e');
+  ctx.fillStyle=grad;ctx.fillRect(0,0,W,H);
+  // subtle grid pattern
+  ctx.strokeStyle='rgba(255,255,255,0.03)';ctx.lineWidth=1;
+  for(let x=0;x<W;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}
+  for(let y=0;y<H;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}
+  // HUD
+  ctx.fillStyle='#fff';ctx.font='bold 16px monospace';ctx.textAlign='left';
+  ctx.fillText(`Discovered: ${discovered.size}/${ELEMENTS.length}`,10,25);
+  ctx.textAlign='right';
+  const elapsed=Math.floor((Date.now()-timerStart)/1000);
+  const remaining=Math.max(0,timer-elapsed);
+  const mins=Math.floor(remaining/60);
+  const secs=remaining%60;
+  ctx.fillStyle=remaining<30?'#ff4444':'#fff';
+  ctx.fillText(`${mins}:${secs.toString().padStart(2,'0')}`,W-10,25);
+  if(remaining<=0){state='gameover';score=discovered.size;return}
+  // hint bar
+  ctx.fillStyle='rgba(255,255,255,0.05)';ctx.fillRect(0,40,W,2);
+  // draw discovered elements
+  const arr=getDiscoveredArray();
+  const{cellSize:cs}=getGridLayout();
+  for(let i=0;i<arr.length;i++){
+    const el=ELEMENTS[arr[i]];
+    const pos=getElementPos(i);
+    if(pos.y<40||pos.y>H+cs)continue;
+    let alpha=1;
+    if(dragging&&dragging.id===arr[i])alpha=0.4;
+    drawElement(el,pos.x,pos.y,cs,alpha);
+  }
+  // undiscovered hints
+  ctx.fillStyle='rgba(255,255,255,0.08)';ctx.font='10px monospace';ctx.textAlign='center';
+  // draw dragging element
+  if(dragging){
+    drawElement(dragging,dragX,dragY,cellSize*1.2);
+    // highlight potential target
+    if(combineTarget!==null){
+      const arr2=getDiscoveredArray();
+      const idx=arr2.indexOf(combineTarget);
+      if(idx>=0){
+        const pos=getElementPos(idx);
+        ctx.strokeStyle='#ffaa00';ctx.lineWidth=3;
+        ctx.beginPath();ctx.arc(pos.x,pos.y,cs/2+4,0,Math.PI*2);ctx.stroke();
+      }
+    }
+  }
+  // new discovery animation
+  if(newDiscovery!==null&&newDiscoveryTimer>0){
+    newDiscoveryTimer--;
+    const el=ELEMENTS[newDiscovery];
+    const scale=1+Math.sin((60-newDiscoveryTimer)*0.15)*0.3;
+    const alpha=newDiscoveryTimer/60;
+    ctx.globalAlpha=alpha;
+    ctx.fillStyle='rgba(0,0,0,0.5)';
+    ctx.fillRect(W/2-120,H/2-60,240,120);
+    ctx.strokeStyle=el.color;ctx.lineWidth=2;
+    ctx.strokeRect(W/2-120,H/2-60,240,120);
+    drawElement(el,W/2,H/2-10,80*scale,alpha);
+    ctx.fillStyle='#ffaa00';ctx.font='bold 14px monospace';ctx.textAlign='center';
+    ctx.globalAlpha=alpha;
+    ctx.fillText('NEW DISCOVERY!',W/2,H/2+45);
+    ctx.globalAlpha=1;
+  }
+  drawParticles();
+}
+
+function drawGameOver(){
+  const grad=ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,'#1a0a2e');grad.addColorStop(1,'#0a0a1e');
+  ctx.fillStyle=grad;ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#fff';ctx.font=`bold ${Math.min(45,W*0.09)}px monospace`;ctx.textAlign='center';
+  ctx.fillText('TIME UP!',W/2,H*0.2);
+  ctx.fillStyle='#ffaa00';ctx.font=`bold ${Math.min(32,W*0.06)}px monospace`;
+  ctx.fillText(`${discovered.size} / ${ELEMENTS.length}`,W/2,H*0.35);
+  ctx.fillStyle='#aaa';ctx.font=`${Math.min(18,W*0.035)}px monospace`;
+  ctx.fillText('Elements Discovered',W/2,H*0.4);
+  // show all discovered
+  const arr=getDiscoveredArray();
+  const cols=Math.min(8,Math.floor(W/50));
+  const sz=40;
+  for(let i=0;i<arr.length;i++){
+    const row=Math.floor(i/cols),col=i%cols;
+    const totalW2=cols*sz;
+    const ox=(W-totalW2)/2;
+    const el=ELEMENTS[arr[i]];
+    drawElement(el,ox+col*sz+sz/2,H*0.48+row*sz+sz/2,sz*0.9);
+  }
+  ctx.fillStyle='#4CAF50';ctx.font=`bold ${Math.min(22,W*0.04)}px monospace`;
+  const pulse=Math.sin(Date.now()*0.005)*0.2+0.8;ctx.globalAlpha=pulse;
+  ctx.fillText('TAP TO PLAY AGAIN',W/2,H*0.9);ctx.globalAlpha=1;
+}
+
+function getElementAtPos(x,y){
+  const arr=getDiscoveredArray();
+  const{cellSize:cs}=getGridLayout();
+  for(let i=0;i<arr.length;i++){
+    const pos=getElementPos(i);
+    const dx=x-pos.x,dy=y-pos.y;
+    if(Math.sqrt(dx*dx+dy*dy)<cs/2)return arr[i];
+  }
+  return-1;
+}
+
+function handleDown(x,y){
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  if(state==='menu'){
+    state='play';discovered=new Set([0,1,2,3]);
+    timerStart=Date.now();timer=120;scrollY=0;
+    playDrag();return;
+  }
+  if(state==='gameover'){
+    state='play';discovered=new Set([0,1,2,3]);
+    timerStart=Date.now();timer=120;scrollY=0;particles=[];
+    playDrag();return;
+  }
+  if(state==='play'){
+    const elId=getElementAtPos(x,y);
+    if(elId>=0){
+      dragging=ELEMENTS[elId];dragX=x;dragY=y;
+      dragStartX=x;dragStartY=y;
+      playDrag();
+    }
+  }
+}
+
+function handleMove(x,y){
+  if(dragging){
+    dragX=x;dragY=y;
+    const elId=getElementAtPos(x,y);
+    combineTarget=(elId>=0&&elId!==dragging.id)?elId:null;
+  }
+}
+
+function handleUp(x,y){
+  if(dragging&&combineTarget!==null){
+    const result=findRecipe(dragging.id,combineTarget);
+    if(result>=0&&!discovered.has(result)){
+      discovered.add(result);
+      newDiscovery=result;newDiscoveryTimer=60;
+      const el=ELEMENTS[result];
+      spawnCombineParticles(dragX,dragY,el.color);
+      playDiscover();
+    } else if(result>=0&&discovered.has(result)){
+      // already discovered
+      playFail();
+      spawnCombineParticles(dragX,dragY,'#666');
+    } else {
+      playFail();
+    }
+  }
+  dragging=null;combineTarget=null;
+}
+
+canvas.addEventListener('mousedown',e=>{e.preventDefault();handleDown(e.clientX,e.clientY)});
+canvas.addEventListener('mousemove',e=>{e.preventDefault();handleMove(e.clientX,e.clientY)});
+canvas.addEventListener('mouseup',e=>{e.preventDefault();handleUp(e.clientX,e.clientY)});
+canvas.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];handleDown(t.clientX,t.clientY)},{passive:false});
+canvas.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];handleMove(t.clientX,t.clientY)},{passive:false});
+canvas.addEventListener('touchend',e=>{e.preventDefault();const t=e.changedTouches[0];handleUp(t.clientX,t.clientY)},{passive:false});
+
+// scroll with two-finger or wheel
+canvas.addEventListener('wheel',e=>{
+  if(state==='play'){scrollY+=e.deltaY*0.5;scrollY=Math.max(0,scrollY)}
+},{passive:true});
+
+function gameLoop(){
+  ctx.clearRect(0,0,W,H);
+  if(state==='menu')drawMenu();
+  else if(state==='play')drawGame();
+  else if(state==='gameover')drawGameOver();
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

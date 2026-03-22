@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>FIREFLY</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H;
+function resize(){W=canvas.width=Math.min(window.innerWidth,480);H=canvas.height=Math.min(window.innerHeight,720);}
+resize();window.addEventListener('resize',resize);
+
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playSound(freq,dur,type='sine',vol=0.1){
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(vol,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+  o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+dur);
+}
+function sndCatch(){playSound(800,0.15);setTimeout(()=>playSound(1000,0.1),60);setTimeout(()=>playSound(1200,0.12),120);}
+function sndMiss(){playSound(400,0.1,'triangle',0.05);}
+function sndOwl(){playSound(250,0.3,'triangle',0.1);setTimeout(()=>playSound(200,0.4,'triangle',0.08),200);}
+function sndOwlCatch(){playSound(180,0.2,'sawtooth',0.08);}
+
+const FIREFLY_TYPES=[
+  {color:'#ffcc00',glow:'rgba(255,200,0,',name:'Gold',points:10},
+  {color:'#00ff88',glow:'rgba(0,255,130,',name:'Green',points:20},
+  {color:'#4488ff',glow:'rgba(60,130,255,',name:'Blue',points:30},
+  {color:'#ff66ff',glow:'rgba(255,100,255,',name:'Pink',points:50},
+];
+
+let state='menu',score=0,timer=60,fireflies=[],jar={flies:[],glow:0};
+let owl={active:false,x:0,y:0,targetX:0,targetY:0,speed:3,timer:0,flap:0};
+let particles=[],trees=[],stars=[];
+let lastTime=0,spawnTimer=0,tapEffects=[];
+let totalCaught=0;
+
+function generateTrees(){
+  trees=[];
+  for(let i=0;i<8;i++){
+    trees.push({
+      x:i*W/7-20+Math.random()*30,
+      h:H*0.3+Math.random()*H*0.25,
+      w:30+Math.random()*40,
+      shade:Math.random()*20
+    });
+  }
+}
+
+function generateStars(){
+  stars=[];
+  for(let i=0;i<60;i++){
+    stars.push({x:Math.random()*W,y:Math.random()*H*0.4,size:Math.random()*2+0.5,twinkle:Math.random()*Math.PI*2});
+  }
+}
+
+function spawnFirefly(){
+  const type=FIREFLY_TYPES[Math.floor(Math.random()*FIREFLY_TYPES.length)];
+  const ff={
+    ...type,
+    x:Math.random()*W*0.8+W*0.1,
+    y:Math.random()*H*0.5+H*0.1,
+    vx:(Math.random()-0.5)*1.5,
+    vy:(Math.random()-0.5)*1,
+    pulse:Math.random()*Math.PI*2,
+    pulseSpeed:0.03+Math.random()*0.02,
+    size:4+Math.random()*2,
+    alive:true,
+    fleeing:false,fleeTimer:0,
+    bobPhase:Math.random()*Math.PI*2
+  };
+  fireflies.push(ff);
+}
+
+function initGame(){
+  score=0;timer=60;fireflies=[];jar={flies:[],glow:0};
+  particles=[];tapEffects=[];totalCaught=0;
+  owl={active:false,x:-50,y:H*0.3,targetX:0,targetY:0,speed:3,timer:200,flap:0,targetFF:null};
+  spawnTimer=0;
+  generateTrees();generateStars();
+  for(let i=0;i<8;i++)spawnFirefly();
+}
+
+function getPos(e){
+  const rect=canvas.getBoundingClientRect();
+  return{x:(e.touches?e.touches[0].clientX:e.clientX)-rect.left,
+         y:(e.touches?e.touches[0].clientY:e.clientY)-rect.top};
+}
+
+function tryCapture(x,y){
+  tapEffects.push({x,y,r:0,alpha:1});
+  let caught=false;
+  for(let i=fireflies.length-1;i>=0;i--){
+    const f=fireflies[i];
+    if(!f.alive)continue;
+    const dx=f.x-x,dy=f.y-y;
+    if(Math.sqrt(dx*dx+dy*dy)<30){
+      f.alive=false;
+      score+=f.points;totalCaught++;
+      jar.flies.push({color:f.color,glow:f.glow,y:Math.random(),pulse:Math.random()*Math.PI*2});
+      jar.glow=Math.min(1,jar.glow+0.08);
+      sndCatch();
+      // Sparkles
+      for(let j=0;j<10;j++){
+        particles.push({x:f.x,y:f.y,vx:(Math.random()-0.5)*4,vy:(Math.random()-0.5)*4-1,
+          life:1,color:f.color,size:Math.random()*3+1});
+      }
+      caught=true;
+      // Make nearby flies flee
+      for(const other of fireflies){
+        if(other.alive&&other!==f){
+          const d=Math.sqrt((other.x-x)**2+(other.y-y)**2);
+          if(d<80){other.fleeing=true;other.fleeTimer=30;
+            other.vx+=(other.x-x)/d*3;other.vy+=(other.y-y)/d*3;}
+        }
+      }
+      fireflies.splice(i,1);
+      break;
+    }
+  }
+  if(!caught)sndMiss();
+}
+
+canvas.addEventListener('mousedown',e=>{
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  if(state==='menu'){state='play';initGame();return;}
+  if(state==='over'){state='menu';return;}
+  tryCapture(getPos(e).x,getPos(e).y);
+});
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  if(state==='menu'){state='play';initGame();return;}
+  if(state==='over'){state='menu';return;}
+  tryCapture(getPos(e).x,getPos(e).y);
+},{passive:false});
+
+function updateOwl(dt){
+  owl.timer-=dt;
+  if(!owl.active){
+    if(owl.timer<=0&&fireflies.length>2){
+      owl.active=true;
+      owl.x=Math.random()>0.5?W+40:-40;
+      owl.y=H*0.15+Math.random()*H*0.2;
+      // Pick a target firefly
+      const aliveFF=fireflies.filter(f=>f.alive);
+      if(aliveFF.length>0){
+        owl.targetFF=aliveFF[Math.floor(Math.random()*aliveFF.length)];
+      }
+      sndOwl();
+    }
+    return;
+  }
+
+  owl.flap+=0.15*dt;
+
+  if(owl.targetFF&&owl.targetFF.alive){
+    const dx=owl.targetFF.x-owl.x,dy=owl.targetFF.y-owl.y;
+    const dist=Math.sqrt(dx*dx+dy*dy);
+    if(dist>5){
+      owl.x+=dx/dist*owl.speed*dt;
+      owl.y+=dy/dist*owl.speed*dt;
+    }
+    if(dist<20){
+      // Owl catches firefly
+      const f=owl.targetFF;
+      f.alive=false;
+      const idx=fireflies.indexOf(f);
+      if(idx>=0)fireflies.splice(idx,1);
+      sndOwlCatch();
+      for(let j=0;j<5;j++){
+        particles.push({x:f.x,y:f.y,vx:(Math.random()-0.5)*2,vy:(Math.random()-0.5)*2,
+          life:0.8,color:'#553',size:2});
+      }
+      owl.targetFF=null;
+    }
+  }else{
+    // Fly off screen
+    owl.x+=owl.x<W/2?-3*dt:3*dt;
+    owl.y-=1*dt;
+  }
+
+  // Off screen = deactivate
+  if(owl.x<-60||owl.x>W+60||owl.y<-60){
+    owl.active=false;
+    owl.timer=Math.max(100,300-timer*2);
+  }
+}
+
+function update(dt){
+  if(state!=='play')return;
+  timer-=dt/60;
+  if(timer<=0){timer=0;state='over';playSound(300,0.5,'triangle',0.1);}
+
+  // Spawn fireflies
+  spawnTimer-=dt;
+  if(spawnTimer<=0&&fireflies.length<10){
+    spawnFirefly();
+    spawnTimer=Math.max(20,60-totalCaught*0.5);
+  }
+
+  // Update fireflies
+  for(const f of fireflies){
+    if(!f.alive)continue;
+    f.pulse+=f.pulseSpeed*dt;
+    f.bobPhase+=0.02*dt;
+
+    if(f.fleeing){
+      f.fleeTimer-=dt;
+      if(f.fleeTimer<=0){f.fleeing=false;f.vx*=0.3;f.vy*=0.3;}
+    }else{
+      f.vx+=(Math.random()-0.5)*0.1*dt;
+      f.vy+=(Math.random()-0.5)*0.08*dt+Math.sin(f.bobPhase)*0.02;
+    }
+
+    // Damping
+    f.vx*=0.99;f.vy*=0.99;
+    f.x+=f.vx*dt;f.y+=f.vy*dt;
+
+    // Bounds
+    if(f.x<20){f.x=20;f.vx=Math.abs(f.vx);}
+    if(f.x>W-20){f.x=W-20;f.vx=-Math.abs(f.vx);}
+    if(f.y<30){f.y=30;f.vy=Math.abs(f.vy);}
+    if(f.y>H-130){f.y=H-130;f.vy=-Math.abs(f.vy);}
+
+    const spd=Math.sqrt(f.vx*f.vx+f.vy*f.vy);
+    if(spd>3){f.vx*=3/spd;f.vy*=3/spd;}
+  }
+
+  // Owl
+  updateOwl(dt);
+
+  // Particles
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];
+    p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=0.05*dt;
+    p.life-=0.02*dt;
+    if(p.life<=0)particles.splice(i,1);
+  }
+
+  // Tap effects
+  for(let i=tapEffects.length-1;i>=0;i--){
+    tapEffects[i].r+=2*dt;tapEffects[i].alpha-=0.04*dt;
+    if(tapEffects[i].alpha<=0)tapEffects.splice(i,1);
+  }
+
+  // Jar glow decay
+  jar.glow*=0.998;
+}
+
+function drawTree(t){
+  // Trunk
+  ctx.fillStyle=`rgb(${15+t.shade},${20+t.shade},${10+t.shade})`;
+  ctx.fillRect(t.x+t.w*0.35,H-t.h,t.w*0.3,t.h);
+  // Canopy
+  ctx.fillStyle=`rgb(${8+t.shade},${18+t.shade},${8+t.shade})`;
+  ctx.beginPath();
+  ctx.moveTo(t.x-10,H-t.h+20);
+  ctx.lineTo(t.x+t.w/2,H-t.h-40);
+  ctx.lineTo(t.x+t.w+10,H-t.h+20);
+  ctx.closePath();ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(t.x-5,H-t.h-10);
+  ctx.lineTo(t.x+t.w/2,H-t.h-70);
+  ctx.lineTo(t.x+t.w+5,H-t.h-10);
+  ctx.closePath();ctx.fill();
+}
+
+function drawFirefly(f){
+  const brightness=0.4+Math.sin(f.pulse)*0.6;
+  const glowR=f.size*3+brightness*8;
+
+  // Outer glow
+  const grad=ctx.createRadialGradient(f.x,f.y,0,f.x,f.y,glowR);
+  grad.addColorStop(0,f.glow+(brightness*0.8)+')');
+  grad.addColorStop(0.5,f.glow+(brightness*0.3)+')');
+  grad.addColorStop(1,f.glow+'0)');
+  ctx.fillStyle=grad;
+  ctx.beginPath();ctx.arc(f.x,f.y,glowR,0,Math.PI*2);ctx.fill();
+
+  // Body
+  ctx.fillStyle=f.color;ctx.globalAlpha=0.6+brightness*0.4;
+  ctx.beginPath();ctx.arc(f.x,f.y,f.size*0.5,0,Math.PI*2);ctx.fill();
+
+  // Bright center
+  ctx.fillStyle='#fff';ctx.globalAlpha=brightness*0.7;
+  ctx.beginPath();ctx.arc(f.x,f.y,f.size*0.25,0,Math.PI*2);ctx.fill();
+  ctx.globalAlpha=1;
+
+  // Tiny wings
+  ctx.fillStyle='rgba(255,255,255,0.15)';
+  ctx.beginPath();ctx.ellipse(f.x-3,f.y-3,3,1.5,Math.sin(f.pulse*3)*0.3,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.ellipse(f.x+3,f.y-3,3,1.5,-Math.sin(f.pulse*3)*0.3,0,Math.PI*2);ctx.fill();
+}
+
+function drawOwl(){
+  if(!owl.active)return;
+  const x=owl.x,y=owl.y;
+  const wingAngle=Math.sin(owl.flap)*0.5;
+
+  ctx.save();ctx.translate(x,y);
+
+  // Wings
+  ctx.fillStyle='#3a2a1a';
+  ctx.save();ctx.rotate(wingAngle);
+  ctx.beginPath();ctx.ellipse(-20,0,22,8,0,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+  ctx.save();ctx.rotate(-wingAngle);
+  ctx.beginPath();ctx.ellipse(20,0,22,8,0,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+
+  // Body
+  ctx.fillStyle='#4a3520';
+  ctx.beginPath();ctx.ellipse(0,5,12,18,0,0,Math.PI*2);ctx.fill();
+
+  // Head
+  ctx.fillStyle='#5a4530';
+  ctx.beginPath();ctx.arc(0,-12,10,0,Math.PI*2);ctx.fill();
+
+  // Eyes
+  ctx.fillStyle='#ff0';
+  ctx.beginPath();ctx.arc(-5,-14,4,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(5,-14,4,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#000';
+  ctx.beginPath();ctx.arc(-5,-14,2,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(5,-14,2,0,Math.PI*2);ctx.fill();
+
+  // Beak
+  ctx.fillStyle='#a80';
+  ctx.beginPath();ctx.moveTo(-3,-10);ctx.lineTo(0,-7);ctx.lineTo(3,-10);ctx.closePath();ctx.fill();
+
+  // Ear tufts
+  ctx.fillStyle='#4a3520';
+  ctx.beginPath();ctx.moveTo(-8,-18);ctx.lineTo(-10,-26);ctx.lineTo(-4,-20);ctx.closePath();ctx.fill();
+  ctx.beginPath();ctx.moveTo(8,-18);ctx.lineTo(10,-26);ctx.lineTo(4,-20);ctx.closePath();ctx.fill();
+
+  ctx.restore();
+}
+
+function drawJar(){
+  const jx=W/2,jy=H-50,jw=50,jh=70;
+  const left=jx-jw/2,top=jy-jh;
+
+  // Jar body
+  ctx.fillStyle='rgba(180,200,220,0.1)';
+  ctx.beginPath();
+  ctx.moveTo(left+5,top+10);ctx.lineTo(left,jy);ctx.lineTo(left+jw,jy);ctx.lineTo(left+jw-5,top+10);
+  ctx.closePath();ctx.fill();
+
+  // Glass outline
+  ctx.strokeStyle='rgba(180,220,255,0.3)';ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(left+5,top+10);ctx.lineTo(left,jy);ctx.lineTo(left+jw,jy);ctx.lineTo(left+jw-5,top+10);
+  ctx.closePath();ctx.stroke();
+
+  // Lid
+  ctx.fillStyle='rgba(150,150,150,0.4)';
+  ctx.fillRect(left+2,top+5,jw-4,8);
+
+  // Captured fireflies glow inside jar
+  for(let i=0;i<jar.flies.length;i++){
+    const jf=jar.flies[i];
+    const fx=jx+(Math.sin(Date.now()*0.002+i*1.5))*15;
+    const fy=top+15+(jh-20)*jf.y;
+    const brightness=0.5+Math.sin(Date.now()*0.003+jf.pulse)*0.5;
+
+    const grad=ctx.createRadialGradient(fx,fy,0,fx,fy,12);
+    grad.addColorStop(0,jf.glow+(brightness*0.5)+')');
+    grad.addColorStop(1,jf.glow+'0)');
+    ctx.fillStyle=grad;
+    ctx.beginPath();ctx.arc(fx,fy,12,0,Math.PI*2);ctx.fill();
+
+    ctx.fillStyle=jf.color;ctx.globalAlpha=brightness*0.6;
+    ctx.beginPath();ctx.arc(fx,fy,2,0,Math.PI*2);ctx.fill();
+    ctx.globalAlpha=1;
+  }
+
+  // Overall jar glow
+  if(jar.flies.length>0){
+    const grad=ctx.createRadialGradient(jx,jy-jh/2,0,jx,jy-jh/2,jw);
+    grad.addColorStop(0,`rgba(255,240,180,${jar.glow*0.2})`);
+    grad.addColorStop(1,'rgba(255,240,180,0)');
+    ctx.fillStyle=grad;
+    ctx.beginPath();ctx.arc(jx,jy-jh/2,jw,0,Math.PI*2);ctx.fill();
+  }
+
+  // Count
+  ctx.fillStyle='#fff';ctx.font='bold 14px Arial';ctx.textAlign='center';
+  ctx.fillText(jar.flies.length,jx,jy+16);
+}
+
+function draw(){
+  // Night sky
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#050818');bg.addColorStop(0.4,'#0a1225');bg.addColorStop(1,'#0a2015');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+
+  // Stars
+  if(state!=='menu'){
+    for(const s of stars){
+      s.twinkle+=0.02;
+      ctx.fillStyle=`rgba(255,255,255,${0.3+Math.sin(s.twinkle)*0.3})`;
+      ctx.beginPath();ctx.arc(s.x,s.y,s.size,0,Math.PI*2);ctx.fill();
+    }
+  }
+
+  // Moon
+  ctx.fillStyle='rgba(220,220,200,0.15)';
+  ctx.beginPath();ctx.arc(W*0.8,H*0.1,35,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='rgba(240,240,220,0.25)';
+  ctx.beginPath();ctx.arc(W*0.8,H*0.1,25,0,Math.PI*2);ctx.fill();
+
+  // Ground
+  ctx.fillStyle='#0a1a0a';ctx.fillRect(0,H-80,W,80);
+  ctx.fillStyle='#0c1f0c';
+  // Grass tufts
+  for(let gx=0;gx<W;gx+=8){
+    const gh=5+Math.sin(gx*0.3)*3;
+    ctx.fillRect(gx,H-80-gh,3,gh+2);
+  }
+
+  if(state==='menu'){
+    // Animated fireflies on menu
+    const t=Date.now()*0.001;
+    for(let i=0;i<6;i++){
+      const fx=W*0.2+i*W*0.12+Math.sin(t+i)*20;
+      const fy=H*0.35+Math.cos(t*0.7+i*1.5)*30;
+      const b=0.4+Math.sin(t*2+i)*0.6;
+      const col=FIREFLY_TYPES[i%FIREFLY_TYPES.length];
+      const grad=ctx.createRadialGradient(fx,fy,0,fx,fy,15);
+      grad.addColorStop(0,col.glow+b*0.6+')');
+      grad.addColorStop(1,col.glow+'0)');
+      ctx.fillStyle=grad;ctx.beginPath();ctx.arc(fx,fy,15,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle=col.color;ctx.globalAlpha=b;
+      ctx.beginPath();ctx.arc(fx,fy,3,0,Math.PI*2);ctx.fill();
+      ctx.globalAlpha=1;
+    }
+
+    for(const t of trees)drawTree(t.x?t:Object.assign(t,{x:Math.random()*W,h:H*0.3,w:35,shade:10}));
+
+    ctx.fillStyle='#ffe080';
+    ctx.font='bold 48px Arial';ctx.textAlign='center';
+    ctx.shadowColor='#ff8';ctx.shadowBlur=20;
+    ctx.fillText('FIREFLY',W/2,H*0.2);
+    ctx.shadowBlur=0;
+    ctx.font='16px Arial';ctx.fillStyle='#acd';
+    ctx.fillText('Tap fireflies to capture them!',W/2,H*0.58);
+    ctx.fillText('Watch out for the owl!',W/2,H*0.63);
+    ctx.fillStyle='#fc0';ctx.fillText('Gold=10',W*0.2,H*0.70);
+    ctx.fillStyle='#0f8';ctx.fillText('Green=20',W*0.4,H*0.70);
+    ctx.fillStyle='#48f';ctx.fillText('Blue=30',W*0.6,H*0.70);
+    ctx.fillStyle='#f6f';ctx.fillText('Pink=50',W*0.8,H*0.70);
+    ctx.font='20px Arial';ctx.fillStyle='#fff';
+    ctx.fillText('Tap to Start',W/2,H*0.82);
+    return;
+  }
+
+  // Trees
+  for(const t of trees)drawTree(t);
+
+  // Tap effects
+  for(const te of tapEffects){
+    ctx.strokeStyle=`rgba(255,255,200,${te.alpha})`;ctx.lineWidth=2;
+    ctx.beginPath();ctx.arc(te.x,te.y,te.r,0,Math.PI*2);ctx.stroke();
+  }
+
+  // Fireflies
+  for(const f of fireflies)if(f.alive)drawFirefly(f);
+
+  // Owl
+  drawOwl();
+
+  // Particles
+  for(const p of particles){
+    ctx.globalAlpha=p.life;ctx.fillStyle=p.color;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.size,0,Math.PI*2);ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  // Jar
+  drawJar();
+
+  // HUD
+  ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(0,0,W,36);
+  ctx.font='bold 16px Arial';ctx.textAlign='left';
+  ctx.fillStyle='#ffe080';ctx.fillText('Score: '+score,10,25);
+  ctx.textAlign='center';
+  ctx.fillStyle=timer<10?'#f55':'#fff';
+  ctx.fillText(Math.ceil(timer)+'s',W/2,25);
+  ctx.textAlign='right';ctx.fillStyle='#aad';
+  ctx.fillText('Caught: '+totalCaught,W-10,25);
+
+  // Owl warning
+  if(owl.active){
+    ctx.fillStyle='rgba(200,100,0,0.7)';ctx.font='bold 14px Arial';ctx.textAlign='center';
+    ctx.fillText('OWL!',owl.x,owl.y-35);
+  }
+
+  if(state==='over'){
+    ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(0,0,W,H);
+
+    ctx.shadowColor='#ff8';ctx.shadowBlur=15;
+    ctx.font='bold 42px Arial';ctx.textAlign='center';
+    ctx.fillStyle='#ffe080';ctx.fillText('NIGHT OVER',W/2,H*0.28);
+    ctx.shadowBlur=0;
+
+    ctx.font='26px Arial';ctx.fillStyle='#fff';
+    ctx.fillText('Score: '+score,W/2,H*0.39);
+    ctx.font='18px Arial';ctx.fillStyle='#aaa';
+    ctx.fillText('Fireflies caught: '+totalCaught,W/2,H*0.48);
+
+    // Show jar contents summary
+    const counts={};
+    for(const jf of jar.flies){
+      counts[jf.color]=(counts[jf.color]||0)+1;
+    }
+    let cy=H*0.55;
+    for(const[col,cnt] of Object.entries(counts)){
+      ctx.fillStyle=col;ctx.fillText(cnt+'x',W/2,cy);cy+=22;
+    }
+
+    ctx.font='20px Arial';ctx.fillStyle='#fff';
+    ctx.fillText('Tap to Continue',W/2,H*0.78);
+  }
+}
+
+function gameLoop(ts){
+  const dt=Math.min((ts-lastTime)/16.67,3);lastTime=ts;
+  update(dt);draw();
+  requestAnimationFrame(gameLoop);
+}
+generateTrees();generateStars();
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

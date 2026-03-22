@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>WELD</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+let W,H,scl;
+function resize(){
+  const vw=window.innerWidth,vh=window.innerHeight;
+  scl=Math.min(vw/375,vh/600);
+  W=Math.round(375*scl);H=Math.round(600*scl);
+  cv.width=W;cv.height=H;
+}
+resize();
+window.addEventListener('resize',()=>{resize();buildSeam();});
+
+const AC=new(window.AudioContext||window.webkitAudioContext)();
+let weldNode=null,weldGain=null;
+
+function playTone(freq,type,dur,vol=0.3,detune=0){
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.connect(g);g.connect(AC.destination);
+  o.type=type;o.frequency.value=freq;o.detune.value=detune;
+  g.gain.setValueAtTime(vol,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+dur);
+  o.start();o.stop(AC.currentTime+dur);
+}
+function playChord(freqs,type='sine',dur=0.6){
+  freqs.forEach((f,i)=>{
+    setTimeout(()=>playTone(f,type,dur,0.2),i*80);
+  });
+}
+function playBuzz(){
+  playTone(80,'sawtooth',0.4,0.3);
+  playTone(60,'square',0.4,0.2);
+}
+function startWeldSound(){
+  if(weldNode)return;
+  weldNode=AC.createOscillator();
+  const bpf=AC.createBiquadFilter();
+  weldGain=AC.createGain();
+  weldNode.type='sawtooth';
+  weldNode.frequency.value=120;
+  bpf.type='bandpass';
+  bpf.frequency.value=800;
+  bpf.Q.value=0.5;
+  weldNode.connect(bpf);bpf.connect(weldGain);weldGain.connect(AC.destination);
+  weldGain.gain.value=0.04;
+  weldNode.start();
+}
+function stopWeldSound(){
+  if(!weldNode)return;
+  weldGain.gain.setValueAtTime(weldGain.gain.value,AC.currentTime);
+  weldGain.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+0.1);
+  weldNode.stop(AC.currentTime+0.1);
+  weldNode=null;weldGain=null;
+}
+function sparkSound(){
+  if(Math.random()>0.08)return;
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.connect(g);g.connect(AC.destination);
+  o.type='sine';o.frequency.value=2000+Math.random()*3000;
+  g.gain.setValueAtTime(0.05,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+0.04);
+  o.start();o.stop(AC.currentTime+0.04);
+}
+
+// Seam definitions in design space
+const SEAM_DEFS=[
+  // 0: straight
+  {type:'straight',pts:[{x:80,y:300},{x:295,y:300}]},
+  // 1: S-curve
+  {type:'bezier',pts:[{x:80,y:200},{x:150,y:200},{x:225,y:400},{x:295,y:400}]},
+  // 2: zigzag
+  {type:'polyline',pts:[{x:80,y:250},{x:140,y:350},{x:200,y:250},{x:260,y:350},{x:295,y:300}]},
+  // 3: U-shape
+  {type:'polyline',pts:[{x:100,y:180},{x:100,y:420},{x:188,y:450},{x:275,y:420},{x:275,y:180}]},
+  // 4: wave
+  {type:'wave',pts:[{x:60,y:300},{x:120,y:220},{x:180,y:380},{x:240,y:220},{x:295,y:300}]},
+];
+
+let gs='start';
+let level=1,score=0,best=parseInt(localStorage.getItem('weld_best')||'0');
+let lives=3;
+let popups=[];
+let seamPts=[];// sampled points along seam
+let seamDef=null;
+let torch={x:0,y:0,active:false};
+let weldBead=[];// {x,y,q} q=0..1 quality
+let seamProgress=0;// index into seamPts of how far we've welded
+let lastPos={x:0,y:0};
+let lastTime=0;
+let sparks=[];
+let totalQuality=0;
+let qualityCount=0;
+let currentQuality=0;
+let seamComplete=false;
+let failFlash=0;
+let seamIdx=0;
+// preview animation for start screen
+let previewTorch={x:80,y:300,t:0};
+let previewBead=[];
+let previewT=0;
+
+function lerp(a,b,t){return a+(b-a)*t;}
+
+// Sample N points along a seam definition
+function sampleSeam(def,N=200){
+  const raw=[];
+  if(def.type==='straight'){
+    const [a,b]=def.pts;
+    for(let i=0;i<=N;i++){
+      const t=i/N;
+      raw.push({x:lerp(a.x,b.x,t)*scl,y:lerp(a.y,b.y,t)*scl});
+    }
+  } else if(def.type==='bezier'){
+    const [p0,p1,p2,p3]=def.pts;
+    for(let i=0;i<=N;i++){
+      const t=i/N;
+      const mt=1-t;
+      const x=mt*mt*mt*p0.x+3*mt*mt*t*p1.x+3*mt*t*t*p2.x+t*t*t*p3.x;
+      const y=mt*mt*mt*p0.y+3*mt*mt*t*p1.y+3*mt*t*t*p2.y+t*t*t*p3.y;
+      raw.push({x:x*scl,y:y*scl});
+    }
+  } else if(def.type==='polyline'||def.type==='wave'){
+    const pts=def.pts;
+    // quadratic bezier through each triplet
+    for(let seg=0;seg<pts.length-1;seg++){
+      const steps=Math.floor(N/(pts.length-1));
+      if(seg<pts.length-2){
+        const p0=pts[seg],p2=pts[seg+1],p1=pts[seg+1];
+        // straight for polyline segments
+        for(let i=0;i<steps;i++){
+          const t=i/steps;
+          raw.push({x:lerp(pts[seg].x,pts[seg+1].x,t)*scl,y:lerp(pts[seg].y,pts[seg+1].y,t)*scl});
+        }
+      } else {
+        for(let i=0;i<=steps;i++){
+          const t=i/steps;
+          raw.push({x:lerp(pts[seg].x,pts[seg+1].x,t)*scl,y:lerp(pts[seg].y,pts[seg+1].y,t)*scl});
+        }
+      }
+    }
+  }
+  // re-sample to be equidistant
+  const eq=[];
+  if(raw.length<2)return raw;
+  let totalLen=0;
+  const segLens=[0];
+  for(let i=1;i<raw.length;i++){
+    const dx=raw[i].x-raw[i-1].x,dy=raw[i].y-raw[i-1].y;
+    totalLen+=Math.sqrt(dx*dx+dy*dy);
+    segLens.push(totalLen);
+  }
+  for(let i=0;i<N;i++){
+    const target=totalLen*i/(N-1);
+    let lo=0,hi=raw.length-1;
+    while(hi-lo>1){
+      const mid=(lo+hi)>>1;
+      if(segLens[mid]<=target)lo=mid;else hi=mid;
+    }
+    const t=(target-segLens[lo])/(segLens[hi]-segLens[lo]+0.0001);
+    eq.push({x:lerp(raw[lo].x,raw[hi].x,t),y:lerp(raw[lo].y,raw[hi].y,t)});
+  }
+  return eq;
+}
+
+function buildSeam(){
+  const idx=seamIdx%SEAM_DEFS.length;
+  seamDef=SEAM_DEFS[idx];
+  seamPts=sampleSeam(seamDef,200);
+  weldBead=[];
+  seamProgress=0;
+  totalQuality=0;
+  qualityCount=0;
+  currentQuality=0;
+  seamComplete=false;
+  torch.active=false;
+}
+
+function startGame(){
+  level=1;score=0;lives=3;popups=[];seamIdx=0;
+  buildSeam();
+  gs='play';
+}
+
+function nextSeam(){
+  seamIdx++;
+  if(seamIdx%SEAM_DEFS.length===0)level++;
+  buildSeam();
+}
+
+function closestSeamPoint(px,py){
+  let minD=Infinity,minI=0;
+  for(let i=0;i<seamPts.length;i++){
+    const dx=seamPts[i].x-px,dy=seamPts[i].y-py;
+    const d=dx*dx+dy*dy;
+    if(d<minD){minD=d;minI=i;}
+  }
+  return{idx:minI,dist:Math.sqrt(minD)};
+}
+
+function getTolerance(){
+  if(level<=2)return 12*scl;
+  if(level<=4)return 10*scl;
+  return 8*scl;
+}
+
+function addPopup(x,y,text,col){
+  popups.push({x,y,text,life:1,col:col||'#fff'});
+}
+
+// Input
+let pointerDown=false;
+function getXY(e){
+  const r=cv.getBoundingClientRect();
+  const touch=e.touches?e.touches[0]:e;
+  return{x:(touch.clientX-r.left),y:(touch.clientY-r.top)};
+}
+
+cv.addEventListener('pointerdown',e=>{
+  if(AC.state==='suspended')AC.resume();
+  if(gs==='start'){gs='play';startGame();return;}
+  if(gs==='over'){gs='play';startGame();return;}
+  if(gs!=='play')return;
+  const{x,y}=getXY(e);
+  // Must start near seam start
+  const start=seamPts[0];
+  const dx=x-start.x,dy=y-start.y;
+  if(Math.sqrt(dx*dx+dy*dy)<30*scl){
+    torch={x,y,active:true};
+    pointerDown=true;
+    lastPos={x,y};
+    lastTime=performance.now();
+    startWeldSound();
+  }
+});
+cv.addEventListener('pointermove',e=>{
+  if(!pointerDown||gs!=='play')return;
+  const{x,y}=getXY(e);
+  torch.x=x;torch.y=y;
+});
+cv.addEventListener('pointerup',e=>{
+  if(!pointerDown)return;
+  pointerDown=false;
+  if(gs!=='play')return;
+  if(!seamComplete){
+    // weld broke
+    stopWeldSound();
+    torch.active=false;
+    playBuzz();
+    addPopup(W/2,H/2,'WELD BROKE!'+'#f44336');
+    lives--;
+    failFlash=30;
+    if(lives<=0){
+      if(score>best){best=score;localStorage.setItem('weld_best',best);}
+      gs='over';
+    } else {
+      buildSeam();
+    }
+  } else {
+    stopWeldSound();
+  }
+});
+
+// Sparks
+function addSparks(x,y,q){
+  const n=q>0.7?10:q>0.4?6:4;
+  for(let i=0;i<n;i++){
+    const ang=Math.random()*Math.PI*2;
+    const spd=(1+Math.random()*3)*scl;
+    sparks.push({x,y,vx:Math.cos(ang)*spd,vy:Math.sin(ang)*spd-2*scl,life:1,col:Math.random()>0.5?'#ff9800':'#fff'});
+  }
+}
+
+function updateSparks(dt){
+  for(let i=sparks.length-1;i>=0;i--){
+    const s=sparks[i];
+    s.x+=s.vx*dt/16;
+    s.y+=s.vy*dt/16;
+    s.vy+=0.3*scl*dt/16;
+    s.life-=dt/400;
+    if(s.life<=0)sparks.splice(i,1);
+  }
+}
+
+let last=0;
+function update(ts){
+  requestAnimationFrame(update);
+  const dt=Math.min(ts-last,50);
+  last=ts;
+
+  ctx.fillStyle='#1a1a1a';
+  ctx.fillRect(0,0,W,H);
+
+  if(gs==='start'){
+    drawStart(dt,ts);
+    return;
+  }
+  if(gs==='over'){
+    drawOver();
+    return;
+  }
+
+  // Play state
+  drawMetal();
+  drawSeam();
+  drawBead();
+
+  if(torch.active&&pointerDown){
+    const now=performance.now();
+    const elapsed=now-lastTime;
+    const dx=torch.x-lastPos.x,dy=torch.y-lastPos.y;
+    const dist=Math.sqrt(dx*dx+dy*dy);
+    const speed=elapsed>0?dist/(elapsed/1000):0;
+
+    // Quality from speed
+    const target=60*scl;
+    let speedQ;
+    if(speed>=40*scl&&speed<=90*scl){
+      const dev=Math.abs(speed-target)/(50*scl);
+      speedQ=1-Math.min(dev,1)*0.5;
+    } else if(speed<5*scl){
+      speedQ=0.1;
+    } else {
+      speedQ=0.3;
+    }
+
+    // Quality from closeness
+    const{idx,dist:seamDist}=closestSeamPoint(torch.x,torch.y);
+    const tol=getTolerance();
+    let distQ=seamDist<tol?1:seamDist<tol*2?1-(seamDist-tol)/tol:0;
+
+    currentQuality=speedQ*0.5+distQ*0.5;
+
+    if(seamDist>25*scl){
+      // too far off seam
+      stopWeldSound();
+      torch.active=false;
+      pointerDown=false;
+      playBuzz();
+      addPopup(W/2,H*0.4,'OFF SEAM!','#f44336');
+      lives--;
+      failFlash=30;
+      if(lives<=0){
+        if(score>best){best=score;localStorage.setItem('weld_best',best);}
+        gs='over';
+      } else {
+        buildSeam();
+      }
+      return;
+    }
+
+    // advance seam progress
+    if(idx>seamProgress) seamProgress=idx;
+
+    // add bead point
+    if(dist>2*scl||elapsed>100){
+      const col=currentQuality>0.7?'#69f0ae':currentQuality>0.4?'#ffd740':'#f44336';
+      weldBead.push({x:torch.x,y:torch.y,q:currentQuality,col});
+      totalQuality+=currentQuality;
+      qualityCount++;
+      addSparks(torch.x,torch.y,currentQuality);
+      sparkSound();
+      lastPos={x:torch.x,y:torch.y};
+      lastTime=now;
+    }
+
+    // Check if reached end
+    if(seamProgress>=seamPts.length-5){
+      seamComplete=true;
+      torch.active=false;
+      stopWeldSound();
+      const avgQ=qualityCount>0?totalQuality/qualityCount:0;
+      const seamLen=seamPts.length;
+      const earnedScore=Math.round(avgQ*seamLen/10*level);
+      score+=earnedScore;
+      if(score>best){best=score;localStorage.setItem('weld_best',best);}
+      addPopup(W/2,H*0.35,'+'+earnedScore,'#69f0ae');
+      playChord([440,554,659,880]);
+      setTimeout(()=>nextSeam(),1500);
+    }
+  }
+
+  updateSparks(dt);
+  drawSparks();
+  drawTorch();
+  drawGauge();
+  drawHUD();
+  drawPopups(dt);
+
+  if(failFlash>0){
+    ctx.fillStyle=`rgba(244,67,54,${failFlash/60*0.3})`;
+    ctx.fillRect(0,0,W,H);
+    failFlash=Math.max(0,failFlash-dt/16);
+  }
+}
+
+function drawMetal(){
+  const mx=30*scl,my=120*scl,mw=315*scl,mh=360*scl;
+  // brushed metal gradient
+  const g=ctx.createLinearGradient(mx,my,mx+mw,my);
+  g.addColorStop(0,'#222');
+  g.addColorStop(0.3,'#2e2e2e');
+  g.addColorStop(0.5,'#333');
+  g.addColorStop(0.7,'#2e2e2e');
+  g.addColorStop(1,'#222');
+  ctx.fillStyle=g;
+  ctx.strokeStyle='#444';
+  ctx.lineWidth=2*scl;
+  ctx.beginPath();
+  ctx.rect(mx,my,mw,mh);
+  ctx.fill();ctx.stroke();
+  // edge glow
+  ctx.shadowColor='#80d8ff';
+  ctx.shadowBlur=8*scl;
+  ctx.strokeStyle='#1a5070';
+  ctx.lineWidth=1*scl;
+  ctx.strokeRect(mx,my,mw,mh);
+  ctx.shadowBlur=0;
+}
+
+function drawSeam(){
+  if(!seamPts.length)return;
+  ctx.save();
+  ctx.setLineDash([6*scl,4*scl]);
+  ctx.strokeStyle='rgba(255,255,255,0.3)';
+  ctx.lineWidth=2*scl;
+  ctx.beginPath();
+  ctx.moveTo(seamPts[0].x,seamPts[0].y);
+  for(let i=1;i<seamPts.length;i++){
+    ctx.lineTo(seamPts[i].x,seamPts[i].y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+  // start indicator
+  ctx.beginPath();
+  ctx.arc(seamPts[0].x,seamPts[0].y,8*scl,0,Math.PI*2);
+  ctx.fillStyle='rgba(255,255,100,0.6)';
+  ctx.fill();
+  ctx.fillStyle='#fff';
+  ctx.font=`bold ${10*scl}px monospace`;
+  ctx.textAlign='center';
+  ctx.fillText('START',seamPts[0].x,seamPts[0].y-12*scl);
+  // end indicator
+  const ep=seamPts[seamPts.length-1];
+  ctx.beginPath();
+  ctx.arc(ep.x,ep.y,8*scl,0,Math.PI*2);
+  ctx.fillStyle='rgba(100,255,100,0.6)';
+  ctx.fill();
+}
+
+function drawBead(){
+  if(weldBead.length<2)return;
+  for(let i=1;i<weldBead.length;i++){
+    const a=weldBead[i-1],b=weldBead[i];
+    // shadow
+    ctx.beginPath();
+    ctx.moveTo(a.x+1*scl,a.y+2*scl);
+    ctx.lineTo(b.x+1*scl,b.y+2*scl);
+    ctx.strokeStyle='rgba(0,0,0,0.6)';
+    ctx.lineWidth=7*scl;
+    ctx.lineCap='round';
+    ctx.stroke();
+    // bead
+    ctx.beginPath();
+    ctx.moveTo(a.x,a.y);
+    ctx.lineTo(b.x,b.y);
+    ctx.strokeStyle=b.col;
+    ctx.lineWidth=5*scl;
+    ctx.stroke();
+  }
+}
+
+function drawTorch(){
+  if(!torch.active&&!seamComplete)return;
+  const{x,y}=torch;
+  const tol=getTolerance();
+  // tolerance circle
+  ctx.beginPath();
+  ctx.arc(x,y,tol,0,Math.PI*2);
+  ctx.strokeStyle='rgba(128,216,255,0.2)';
+  ctx.lineWidth=1*scl;
+  ctx.stroke();
+  // outer glow
+  ctx.shadowColor='#80d8ff';
+  ctx.shadowBlur=20*scl;
+  ctx.beginPath();
+  ctx.arc(x,y,8*scl,0,Math.PI*2);
+  ctx.fillStyle='#80d8ff';
+  ctx.fill();
+  ctx.shadowBlur=0;
+  // inner bright
+  ctx.beginPath();
+  ctx.arc(x,y,4*scl,0,Math.PI*2);
+  ctx.fillStyle='#fff';
+  ctx.fill();
+}
+
+function drawSparks(){
+  for(const s of sparks){
+    ctx.beginPath();
+    ctx.arc(s.x,s.y,2*scl*s.life,0,Math.PI*2);
+    ctx.fillStyle=s.col;
+    ctx.globalAlpha=s.life;
+    ctx.fill();
+    ctx.globalAlpha=1;
+  }
+}
+
+function drawGauge(){
+  // speed gauge on right side
+  const gx=W-28*scl,gy=150*scl,gw=16*scl,gh=200*scl;
+  ctx.fillStyle='#111';
+  ctx.strokeStyle='#444';
+  ctx.lineWidth=1*scl;
+  ctx.beginPath();
+  ctx.rect(gx,gy,gw,gh);
+  ctx.fill();ctx.stroke();
+  // target zone (40-90 out of max 150)
+  const maxSpd=150*scl;
+  const y1=gy+gh*(1-90*scl/maxSpd);
+  const y2=gy+gh*(1-40*scl/maxSpd);
+  ctx.fillStyle='rgba(105,240,174,0.3)';
+  ctx.fillRect(gx+1*scl,y1,gw-2*scl,y2-y1);
+  // quality bar
+  const qualH=gh*currentQuality;
+  const col=currentQuality>0.7?'#69f0ae':currentQuality>0.4?'#ffd740':'#f44336';
+  ctx.fillStyle=col;
+  ctx.fillRect(gx+2*scl,gy+gh-qualH,gw-4*scl,qualH);
+  ctx.fillStyle='#aaa';
+  ctx.font=`${8*scl}px monospace`;
+  ctx.textAlign='center';
+  ctx.fillText('Q',gx+gw/2,gy-5*scl);
+}
+
+function drawHUD(){
+  ctx.fillStyle='#fff';
+  ctx.font=`bold ${14*scl}px monospace`;
+  ctx.textAlign='left';
+  ctx.fillText('LV '+level,10*scl,22*scl);
+  ctx.textAlign='center';
+  ctx.fillText(score,W/2,22*scl);
+  ctx.textAlign='right';
+  ctx.fillText('BEST '+best,W-10*scl,22*scl);
+  // lives
+  for(let i=0;i<3;i++){
+    const hx=10*scl+i*22*scl,hy=40*scl;
+    ctx.fillStyle=i<lives?'#f44336':'#333';
+    drawHeart(hx,hy,8*scl);
+  }
+  // quality label
+  const ql=currentQuality>0.7?'GOOD':currentQuality>0.4?'OK':'POOR';
+  const qc=currentQuality>0.7?'#69f0ae':currentQuality>0.4?'#ffd740':'#f44336';
+  ctx.fillStyle=qc;
+  ctx.font=`bold ${11*scl}px monospace`;
+  ctx.textAlign='left';
+  ctx.fillText(ql,10*scl,60*scl);
+  // seam label
+  ctx.fillStyle='#888';
+  ctx.textAlign='center';
+  ctx.font=`${10*scl}px monospace`;
+  ctx.fillText('SEAM '+(seamIdx%SEAM_DEFS.length+1)+'/'+SEAM_DEFS.length,W/2,55*scl);
+}
+
+function drawHeart(x,y,r){
+  ctx.beginPath();
+  ctx.moveTo(x,y+r*0.3);
+  ctx.bezierCurveTo(x,y-r*0.3,x-r,y-r*0.3,x-r,y+r*0.3);
+  ctx.bezierCurveTo(x-r,y+r*0.8,x,y+r*1.3,x,y+r*1.5);
+  ctx.bezierCurveTo(x,y+r*1.3,x+r,y+r*0.8,x+r,y+r*0.3);
+  ctx.bezierCurveTo(x+r,y-r*0.3,x,y-r*0.3,x,y+r*0.3);
+  ctx.fill();
+}
+
+function drawPopups(dt){
+  for(let i=popups.length-1;i>=0;i--){
+    const p=popups[i];
+    p.y-=dt/30;
+    p.life-=dt/1000;
+    if(p.life<=0){popups.splice(i,1);continue;}
+    ctx.globalAlpha=Math.min(p.life*2,1);
+    ctx.fillStyle=p.col||'#fff';
+    ctx.font=`bold ${16*scl}px monospace`;
+    ctx.textAlign='center';
+    ctx.fillText(p.text,p.x,p.y);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Animated start screen
+let startPreviewBead=[];
+let startPreviewT=0;
+let startPreviewDir=1;
+let startSeamPts=[];
+
+function initStartPreview(){
+  startSeamPts=sampleSeam(SEAM_DEFS[1],200);
+  startPreviewBead=[];
+  startPreviewT=0;
+}
+initStartPreview();
+
+function drawStart(dt,ts){
+  // animated background
+  ctx.fillStyle='#1a1a1a';
+  ctx.fillRect(0,0,W,H);
+  // draw animated metal plate
+  const mx=30*scl,my=160*scl,mw=315*scl,mh=280*scl;
+  const g=ctx.createLinearGradient(mx,my,mx+mw,my);
+  g.addColorStop(0,'#222');g.addColorStop(0.5,'#333');g.addColorStop(1,'#222');
+  ctx.fillStyle=g;
+  ctx.strokeStyle='#444';
+  ctx.lineWidth=2*scl;
+  ctx.beginPath();ctx.rect(mx,my,mw,mh);ctx.fill();ctx.stroke();
+  // draw seam
+  if(startSeamPts.length>1){
+    ctx.setLineDash([6*scl,4*scl]);
+    ctx.strokeStyle='rgba(255,255,255,0.2)';
+    ctx.lineWidth=2*scl;
+    ctx.beginPath();
+    ctx.moveTo(startSeamPts[0].x,startSeamPts[0].y);
+    for(const p of startSeamPts)ctx.lineTo(p.x,p.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  // animate preview torch along seam
+  startPreviewT+=dt*0.0012;
+  if(startPreviewT>1)startPreviewT=0;
+  const si=Math.floor(startPreviewT*(startSeamPts.length-1));
+  if(startSeamPts[si]){
+    const tx=startSeamPts[si].x,ty=startSeamPts[si].y;
+    // add bead
+    const q=0.5+0.5*Math.sin(ts*0.003);
+    const col=q>0.7?'#69f0ae':q>0.4?'#ffd740':'#f44336';
+    startPreviewBead.push({x:tx,y:ty,col});
+    if(startPreviewBead.length>si+1)startPreviewBead.length=si+1;
+    if(startPreviewT<0.02)startPreviewBead=[];
+    // draw bead
+    for(let i=1;i<startPreviewBead.length;i++){
+      const a=startPreviewBead[i-1],b=startPreviewBead[i];
+      ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);
+      ctx.strokeStyle=b.col;ctx.lineWidth=5*scl;ctx.lineCap='round';ctx.stroke();
+    }
+    // torch glow
+    ctx.shadowColor='#80d8ff';ctx.shadowBlur=20*scl;
+    ctx.beginPath();ctx.arc(tx,ty,8*scl,0,Math.PI*2);
+    ctx.fillStyle='#80d8ff';ctx.fill();ctx.shadowBlur=0;
+    ctx.beginPath();ctx.arc(tx,ty,4*scl,0,Math.PI*2);
+    ctx.fillStyle='#fff';ctx.fill();
+    // sparks
+    if(Math.random()>0.5){
+      for(let i=0;i<3;i++){
+        const a=Math.random()*Math.PI*2;
+        const r=10*scl+Math.random()*15*scl;
+        ctx.beginPath();ctx.arc(tx+Math.cos(a)*r*Math.random(),ty+Math.sin(a)*r*Math.random(),1.5*scl,0,Math.PI*2);
+        ctx.fillStyle=Math.random()>0.5?'#ff9800':'#fff';
+        ctx.globalAlpha=Math.random();ctx.fill();ctx.globalAlpha=1;
+      }
+    }
+  }
+  // Title
+  ctx.fillStyle='#80d8ff';
+  ctx.shadowColor='#80d8ff';ctx.shadowBlur=15*scl;
+  ctx.font=`bold ${52*scl}px monospace`;
+  ctx.textAlign='center';
+  ctx.fillText('WELD',W/2,100*scl);
+  ctx.shadowBlur=0;
+  ctx.fillStyle='#aaa';
+  ctx.font=`${14*scl}px monospace`;
+  ctx.fillText('Guide the torch along the seam',W/2,125*scl);
+  ctx.fillStyle='rgba(255,255,255,0.15)';
+  ctx.fillRect(W/2-80*scl,480*scl,160*scl,44*scl);
+  ctx.strokeStyle='#80d8ff';ctx.lineWidth=2*scl;
+  ctx.strokeRect(W/2-80*scl,480*scl,160*scl,44*scl);
+  ctx.fillStyle='#fff';
+  ctx.font=`bold ${16*scl}px monospace`;
+  ctx.fillText('TAP TO START',W/2,507*scl);
+  // HI
+  ctx.fillStyle='#ffd740';
+  ctx.font=`${12*scl}px monospace`;
+  ctx.fillText('BEST: '+best,W/2,460*scl);
+}
+
+function drawOver(){
+  ctx.fillStyle='rgba(0,0,0,0.8)';
+  ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#f44336';
+  ctx.shadowColor='#f44336';ctx.shadowBlur=15*scl;
+  ctx.font=`bold ${48*scl}px monospace`;
+  ctx.textAlign='center';
+  ctx.fillText('GAME OVER',W/2,200*scl);
+  ctx.shadowBlur=0;
+  ctx.fillStyle='#fff';
+  ctx.font=`${18*scl}px monospace`;
+  ctx.fillText('SCORE: '+score,W/2,270*scl);
+  ctx.fillStyle='#ffd740';
+  ctx.fillText('BEST: '+best,W/2,300*scl);
+  ctx.fillStyle='rgba(255,255,255,0.15)';
+  ctx.fillRect(W/2-80*scl,360*scl,160*scl,44*scl);
+  ctx.strokeStyle='#f44336';ctx.lineWidth=2*scl;
+  ctx.strokeRect(W/2-80*scl,360*scl,160*scl,44*scl);
+  ctx.fillStyle='#fff';
+  ctx.font=`bold ${16*scl}px monospace`;
+  ctx.fillText('TAP TO RETRY',W/2,387*scl);
+}
+
+buildSeam();
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

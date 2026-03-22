@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>GRIDLOCK</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+let W,H,scl;
+function resize(){
+  const vw=window.innerWidth,vh=window.innerHeight;
+  scl=Math.min(vw/375,vh/600);
+  W=Math.round(375*scl);H=Math.round(600*scl);
+  cv.width=W;cv.height=H;
+}
+resize();
+window.addEventListener('resize',()=>{resize();});
+
+if(!CanvasRenderingContext2D.prototype.roundRect){
+  CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h,r){
+    r=Math.min(typeof r==='number'?r:r[0],Math.abs(w)/2,Math.abs(h)/2);
+    this.moveTo(x+r,y);this.lineTo(x+w-r,y);this.arcTo(x+w,y,x+w,y+r,r);
+    this.lineTo(x+w,y+h-r);this.arcTo(x+w,y+h,x+w-r,y+h,r);
+    this.lineTo(x+r,y+h);this.arcTo(x,y+h,x,y+h-r,r);
+    this.lineTo(x,y+r);this.arcTo(x,y,x+r,y,r);this.closePath();
+  };
+}
+
+const AC=new(window.AudioContext||window.webkitAudioContext)();
+function sfx(type){
+  try{
+    const t=AC.currentTime;
+    if(type==='slide'){
+      const o=AC.createOscillator(),g=AC.createGain();
+      o.connect(g);g.connect(AC.destination);
+      o.type='sine';o.frequency.value=220;
+      g.gain.setValueAtTime(0.08,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.1);
+      o.start(t);o.stop(t+0.1);
+    } else if(type==='win'){
+      [523,659,784,1047,1319].forEach((f,i)=>{
+        const o=AC.createOscillator(),g=AC.createGain();
+        o.connect(g);g.connect(AC.destination);
+        o.type='triangle';o.frequency.value=f;
+        g.gain.setValueAtTime(0.18,t+i*0.08);g.gain.exponentialRampToValueAtTime(0.001,t+i*0.08+0.2);
+        o.start(t+i*0.08);o.stop(t+i*0.08+0.25);
+      });
+    } else if(type==='timeout'){
+      const o=AC.createOscillator(),g=AC.createGain();
+      o.connect(g);g.connect(AC.destination);
+      o.type='sawtooth';
+      o.frequency.setValueAtTime(440,t);o.frequency.linearRampToValueAtTime(110,t+0.5);
+      g.gain.setValueAtTime(0.2,t);g.gain.linearRampToValueAtTime(0,t+0.5);
+      o.start(t);o.stop(t+0.55);
+    } else if(type==='levelup'){
+      [784,988,1175,1568].forEach((f,i)=>{
+        const o=AC.createOscillator(),g=AC.createGain();
+        o.connect(g);g.connect(AC.destination);
+        o.type='triangle';o.frequency.value=f;
+        g.gain.setValueAtTime(0.2,t+i*0.1);g.gain.exponentialRampToValueAtTime(0.001,t+i*0.1+0.18);
+        o.start(t+i*0.1);o.stop(t+i*0.1+0.2);
+      });
+    } else if(type==='over'){
+      [330,262,196,147].forEach((f,i)=>{
+        const o=AC.createOscillator(),g=AC.createGain();
+        o.connect(g);g.connect(AC.destination);
+        o.type='square';o.frequency.value=f;
+        g.gain.setValueAtTime(0.15,t+i*0.14);g.gain.exponentialRampToValueAtTime(0.001,t+i*0.14+0.12);
+        o.start(t+i*0.14);o.stop(t+i*0.14+0.15);
+      });
+    }
+  }catch(e){}
+}
+
+// ── Puzzles ────────────────────────────────────────────────────────────────────
+// Each car: {id, axis:'h'|'v', row, col, len, isExit}
+// Grid is 6×6. Exit car always axis:'h', row:2, must reach col>=4.
+const PUZZLES=[
+  // Puzzle 1 - easy
+  [
+    {id:0,axis:'h',row:2,col:0,len:2,isExit:true},
+    {id:1,axis:'v',row:0,col:2,len:3},
+    {id:2,axis:'h',row:0,col:3,len:2},
+    {id:3,axis:'v',row:3,col:0,len:2},
+    {id:4,axis:'h',row:4,col:1,len:2},
+    {id:5,axis:'v',row:1,col:4,len:2},
+  ],
+  // Puzzle 2
+  [
+    {id:0,axis:'h',row:2,col:0,len:2,isExit:true},
+    {id:1,axis:'v',row:0,col:2,len:2},
+    {id:2,axis:'v',row:2,col:3,len:3},
+    {id:3,axis:'h',row:1,col:3,len:2},
+    {id:4,axis:'v',row:3,col:0,len:3},
+    {id:5,axis:'h',row:5,col:1,len:3},
+    {id:6,axis:'h',row:0,col:0,len:2},
+  ],
+  // Puzzle 3
+  [
+    {id:0,axis:'h',row:2,col:1,len:2,isExit:true},
+    {id:1,axis:'v',row:0,col:3,len:3},
+    {id:2,axis:'h',row:0,col:0,len:3},
+    {id:3,axis:'v',row:3,col:1,len:2},
+    {id:4,axis:'h',row:4,col:2,len:3},
+    {id:5,axis:'v',row:0,col:5,len:3},
+    {id:6,axis:'h',row:3,col:3,len:2},
+    {id:7,axis:'v',row:1,col:0,len:2},
+  ],
+  // Puzzle 4
+  [
+    {id:0,axis:'h',row:2,col:0,len:2,isExit:true},
+    {id:1,axis:'v',row:0,col:2,len:2},
+    {id:2,axis:'h',row:2,col:3,len:2},
+    {id:3,axis:'v',row:0,col:4,len:3},
+    {id:4,axis:'h',row:4,col:0,len:3},
+    {id:5,axis:'v',row:3,col:3,len:3},
+    {id:6,axis:'h',row:0,col:0,len:2},
+    {id:7,axis:'v',row:1,col:1,len:2},
+  ],
+  // Puzzle 5
+  [
+    {id:0,axis:'h',row:2,col:0,len:2,isExit:true},
+    {id:1,axis:'v',row:0,col:2,len:3},
+    {id:2,axis:'v',row:3,col:2,len:2},
+    {id:3,axis:'h',row:3,col:3,len:2},
+    {id:4,axis:'v',row:0,col:4,len:2},
+    {id:5,axis:'h',row:0,col:0,len:2},
+    {id:6,axis:'v',row:2,col:5,len:2},
+    {id:7,axis:'h',row:5,col:1,len:3},
+    {id:8,axis:'v',row:1,col:3,len:2},
+  ],
+  // Puzzle 6
+  [
+    {id:0,axis:'h',row:2,col:0,len:2,isExit:true},
+    {id:1,axis:'v',row:0,col:2,len:3},
+    {id:2,axis:'h',row:3,col:2,len:3},
+    {id:3,axis:'v',row:0,col:5,len:3},
+    {id:4,axis:'h',row:0,col:0,len:2},
+    {id:5,axis:'v',row:0,col:3,len:2},
+    {id:6,axis:'h',row:4,col:0,len:2},
+    {id:7,axis:'v',row:4,col:3,len:2},
+    {id:8,axis:'h',row:5,col:3,len:3},
+  ],
+  // Puzzle 7
+  [
+    {id:0,axis:'h',row:2,col:0,len:2,isExit:true},
+    {id:1,axis:'v',row:0,col:2,len:2},
+    {id:2,axis:'v',row:2,col:2,len:2},
+    {id:3,axis:'v',row:0,col:3,len:2},
+    {id:4,axis:'h',row:2,col:3,len:2},
+    {id:5,axis:'v',row:2,col:5,len:4},
+    {id:6,axis:'h',row:0,col:0,len:2},
+    {id:7,axis:'h',row:4,col:0,len:3},
+    {id:8,axis:'v',row:3,col:3,len:2},
+    {id:9,axis:'h',row:1,col:3,len:2},
+  ],
+  // Puzzle 8
+  [
+    {id:0,axis:'h',row:2,col:0,len:2,isExit:true},
+    {id:1,axis:'v',row:0,col:2,len:3},
+    {id:2,axis:'h',row:3,col:2,len:2},
+    {id:3,axis:'v',row:3,col:4,len:3},
+    {id:4,axis:'h',row:5,col:0,len:2},
+    {id:5,axis:'v',row:0,col:3,len:3},
+    {id:6,axis:'h',row:0,col:3,len:3},
+    {id:7,axis:'v',row:1,col:0,len:2},
+    {id:8,axis:'h',row:4,col:2,len:2},
+    {id:9,axis:'v',row:0,col:5,len:2},
+  ],
+];
+
+const CAR_COLORS=['#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#e74c3c','#27ae60','#8e44ad','#2980b9'];
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let gs='start';
+let score=0,lives=3,level=1,moves=0;
+let best=+localStorage.getItem('gridlock_best')||0;
+let popups=[];
+let cars=[];       // current car states: {id,axis,row,col,len,isExit,color}
+let puzzleIdx=0;
+let timeLeft=45;
+let timerRunning=false;
+let drag=null;     // {car, startPx, startCell, axis, origRow, origCol, currentOffset}
+let winAnim=0;     // >0 = playing win animation
+let shakeT=0;
+let lastSlideCell=0;
+
+// Grid layout
+let GX,GY,CELL;  // grid origin, cell size
+function calcGrid(){
+  CELL=Math.floor(Math.min(W*0.85,H*0.55)/6);
+  GX=Math.floor((W-CELL*6)/2);
+  GY=Math.floor(H*0.22);
+}
+
+function loadPuzzle(idx){
+  calcGrid();
+  const template=PUZZLES[idx%PUZZLES.length];
+  cars=template.map((c,i)=>({
+    ...c,
+    color:c.isExit?'#e74c3c':CAR_COLORS[i%CAR_COLORS.length],
+    drawCol:c.col,
+    drawRow:c.row,
+    slideOff:0,   // pixel offset during drag
+    winSlide:0,   // for win animation
+  }));
+  moves=0;
+}
+
+function getTimeForLevel(lv){
+  return Math.max(20,45-lv*2);
+}
+
+function startRound(){
+  timeLeft=getTimeForLevel(level);
+  timerRunning=true;
+  winAnim=0;
+  drag=null;
+}
+
+function resetGame(){
+  score=0;lives=3;level=1;puzzleIdx=0;moves=0;shakeT=0;
+  popups=[];drag=null;winAnim=0;
+  loadPuzzle(puzzleIdx);
+  startRound();
+}
+
+// ── Collision logic ───────────────────────────────────────────────────────────
+function buildOccupancy(excludeId){
+  const occ=new Set();
+  cars.forEach(c=>{
+    if(c.id===excludeId) return;
+    for(let i=0;i<c.len;i++){
+      if(c.axis==='h') occ.add(`${c.row},${c.col+i}`);
+      else occ.add(`${c.row+i},${c.col}`);
+    }
+  });
+  return occ;
+}
+
+function clampMove(car,delta){
+  // delta in cells (signed)
+  const occ=buildOccupancy(car.id);
+  let maxPos,minPos;
+  if(car.axis==='h'){
+    minPos=0;maxPos=6-car.len;
+    for(let d=1;d<=Math.abs(delta);d++){
+      const nd=delta>0?d:-d;
+      const testCol=car.col+nd;
+      const checkCol=delta>0?car.col+car.len-1+d:car.col-d;
+      if(checkCol<0||checkCol>=6){return delta>0?d-1:-(d-1);}
+      if(occ.has(`${car.row},${checkCol}`)){return delta>0?d-1:-(d-1);}
+    }
+    return delta;
+  } else {
+    for(let d=1;d<=Math.abs(delta);d++){
+      const checkRow=delta>0?car.row+car.len-1+d:car.row-d;
+      if(checkRow<0||checkRow>=6){return delta>0?d-1:-(d-1);}
+      if(occ.has(`${checkRow},${car.col}`)){return delta>0?d-1:-(d-1);}
+    }
+    return delta;
+  }
+}
+
+// ── Input helpers ─────────────────────────────────────────────────────────────
+function getCell(px,py){
+  const c=Math.floor((px-GX)/CELL);
+  const r=Math.floor((py-GY)/CELL);
+  return {r,c};
+}
+
+function carAtCell(r,c){
+  return cars.find(car=>{
+    for(let i=0;i<car.len;i++){
+      if(car.axis==='h'&&car.row===r&&car.col+i===c) return true;
+      if(car.axis==='v'&&car.col===c&&car.row+i===r) return true;
+    }
+    return false;
+  });
+}
+
+// ── Drawing ───────────────────────────────────────────────────────────────────
+function drawHeart(x,y,size,col){
+  ctx.save();ctx.fillStyle=col;
+  ctx.beginPath();
+  ctx.moveTo(x,y+size*0.3);
+  ctx.bezierCurveTo(x,y,x-size,y,x-size,y+size*0.4);
+  ctx.bezierCurveTo(x-size,y+size*0.8,x,y+size*1.1,x,y+size*1.3);
+  ctx.bezierCurveTo(x,y+size*1.1,x+size,y+size*0.8,x+size,y+size*0.4);
+  ctx.bezierCurveTo(x+size,y,x,y,x,y+size*0.3);
+  ctx.fill();ctx.restore();
+}
+
+function drawGrid(){
+  ctx.save();
+  // Grid BG
+  ctx.fillStyle='rgba(13,17,23,0.9)';
+  ctx.beginPath();
+  ctx.roundRect(GX-3*scl,GY-3*scl,CELL*6+6*scl,CELL*6+6*scl,4*scl);
+  ctx.fill();
+
+  // Grid lines
+  ctx.strokeStyle='rgba(255,255,255,0.08)';
+  ctx.lineWidth=scl;
+  for(let i=0;i<=6;i++){
+    ctx.beginPath();
+    ctx.moveTo(GX+i*CELL,GY);ctx.lineTo(GX+i*CELL,GY+CELL*6);ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(GX,GY+i*CELL);ctx.lineTo(GX+CELL*6,GY+i*CELL);ctx.stroke();
+  }
+
+  // Exit indicator
+  const exitY=GY+2*CELL+CELL*0.5;
+  ctx.fillStyle='rgba(231,76,60,0.25)';
+  ctx.fillRect(GX+CELL*6,GY+CELL*2,20*scl,CELL);
+  ctx.strokeStyle='rgba(231,76,60,0.7)';
+  ctx.lineWidth=2*scl;
+  ctx.beginPath();
+  ctx.moveTo(GX+CELL*6+4*scl,exitY-6*scl);
+  ctx.lineTo(GX+CELL*6+14*scl,exitY);
+  ctx.lineTo(GX+CELL*6+4*scl,exitY+6*scl);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawCar(car){
+  ctx.save();
+  let px,py,pw,ph;
+  const pad=4*scl;
+  if(car.axis==='h'){
+    px=GX+car.col*CELL+pad+(car===drag?.car?drag.slideOff:0);
+    py=GY+car.row*CELL+pad;
+    pw=CELL*car.len-pad*2;ph=CELL-pad*2;
+  } else {
+    px=GX+car.col*CELL+pad;
+    py=GY+car.row*CELL+pad+(car===drag?.car?drag.slideOff:0);
+    pw=CELL-pad*2;ph=CELL*car.len-pad*2;
+  }
+
+  // Win slide for exit car
+  if(car.isExit && winAnim>0){
+    px+=winAnim*CELL*2;
+  }
+
+  const isSelected=drag&&drag.car===car;
+  ctx.shadowColor=isSelected?car.color:'transparent';
+  ctx.shadowBlur=isSelected?10*scl:0;
+
+  ctx.beginPath();
+  ctx.roundRect(px,py,pw,ph,5*scl);
+  // Gradient fill
+  const grd=ctx.createLinearGradient(px,py,px,py+ph);
+  grd.addColorStop(0,car.color);
+  grd.addColorStop(1,shadeColor(car.color,-40));
+  ctx.fillStyle=isSelected?lightenColor(car.color,30):grd;
+  ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.2)';
+  ctx.lineWidth=scl;
+  ctx.stroke();
+
+  // Arrow on exit car
+  if(car.isExit){
+    ctx.fillStyle='rgba(255,255,255,0.9)';
+    ctx.font=`bold ${Math.floor(CELL*0.4)}px monospace`;
+    ctx.textAlign='center';
+    ctx.textBaseline='middle';
+    ctx.fillText('→',px+pw/2,py+ph/2);
+  }
+  ctx.restore();
+}
+
+function shadeColor(col,amt){
+  const n=parseInt(col.slice(1),16);
+  const r=Math.max(0,Math.min(255,((n>>16)&0xff)+amt));
+  const g=Math.max(0,Math.min(255,((n>>8)&0xff)+amt));
+  const b=Math.max(0,Math.min(255,(n&0xff)+amt));
+  return `rgb(${r},${g},${b})`;
+}
+function lightenColor(col,amt){return shadeColor(col,amt);}
+
+function drawTimerBar(){
+  const maxT=getTimeForLevel(level);
+  const frac=Math.max(0,timeLeft/maxT);
+  const bx=GX,by=GY-16*scl,bw=CELL*6,bh=7*scl;
+  ctx.save();
+  ctx.fillStyle='rgba(255,255,255,0.08)';
+  ctx.beginPath();ctx.roundRect(bx,by,bw,bh,3*scl);ctx.fill();
+  const col=frac>0.5?`hsl(${120*frac},80%,50%)`:`hsl(${120*frac},90%,50%)`;
+  ctx.fillStyle=col;
+  ctx.beginPath();ctx.roundRect(bx,by,bw*frac,bh,3*scl);ctx.fill();
+  ctx.restore();
+}
+
+function drawHUD(){
+  ctx.save();
+  ctx.font=`bold ${11*scl}px monospace`;
+  ctx.fillStyle='#3a7bd5';
+  ctx.textAlign='left';ctx.textBaseline='top';
+  ctx.fillText(`LVL ${level}`,10*scl,10*scl);
+  ctx.fillStyle='#6a8a9a';
+  ctx.fillText(`MOVES ${moves}`,10*scl,24*scl);
+
+  ctx.textAlign='center';
+  ctx.fillStyle='#c8d8e0';
+  ctx.font=`bold ${15*scl}px monospace`;
+  ctx.fillText(Math.floor(score),W/2,10*scl);
+
+  ctx.textAlign='right';
+  ctx.fillStyle='#3a5060';
+  ctx.font=`bold ${11*scl}px monospace`;
+  ctx.fillText(`BEST ${best}`,W-10*scl,10*scl);
+
+  // Hearts
+  for(let i=0;i<3;i++){
+    drawHeart(W-10*scl-i*18*scl,26*scl,5*scl,i<lives?'#e74c3c':'#2a3a44');
+  }
+  ctx.restore();
+}
+
+function drawPopups(){
+  for(let i=popups.length-1;i>=0;i--){
+    const p=popups[i];
+    ctx.save();
+    ctx.globalAlpha=p.life;
+    ctx.font=`bold ${13*scl}px monospace`;
+    ctx.fillStyle=p.col||'#ffcc44';
+    ctx.textAlign='center';
+    ctx.fillText(p.text,p.x,p.y);
+    ctx.restore();
+    p.y-=0.5;p.life-=0.02;
+    if(p.life<=0) popups.splice(i,1);
+  }
+}
+
+function drawBackground(){
+  ctx.fillStyle='#0d1117';
+  ctx.fillRect(0,0,W,H);
+  // Subtle grid glow
+  ctx.save();
+  const grd=ctx.createRadialGradient(W/2,GY+CELL*3,0,W/2,GY+CELL*3,CELL*4);
+  grd.addColorStop(0,'rgba(52,152,219,0.04)');
+  grd.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=grd;
+  ctx.fillRect(0,0,W,H);
+  ctx.restore();
+}
+
+function drawStart(ts){
+  ctx.fillStyle='#0d1117';ctx.fillRect(0,0,W,H);
+  calcGrid();
+  // Draw a static demo puzzle
+  const demoCars=PUZZLES[0].map((c,i)=>({
+    ...c,color:c.isExit?'#e74c3c':CAR_COLORS[i%CAR_COLORS.length],
+    slideOff:0,winSlide:0
+  }));
+  drawGrid();
+  demoCars.forEach(c=>drawCar(c));
+
+  // Dark overlay
+  ctx.fillStyle='rgba(13,17,23,0.6)';ctx.fillRect(0,0,W,H);
+
+  // Title
+  ctx.save();
+  ctx.textAlign='center';
+  ctx.font=`bold ${52*scl}px monospace`;
+  ctx.fillStyle='#3498db';
+  ctx.shadowColor='rgba(52,152,219,0.6)';
+  ctx.shadowBlur=20*scl;
+  ctx.fillText('GRIDLOCK',W/2,H*0.2);
+  ctx.shadowBlur=0;
+
+  ctx.font=`${10*scl}px monospace`;
+  ctx.fillStyle='#2a4a6a';
+  ctx.fillText('SLIDE CARS · FREE THE RED CAR · BEAT THE CLOCK',W/2,H*0.28);
+
+  const pulse=0.7+0.3*Math.sin(ts*0.004);
+  ctx.globalAlpha=pulse;
+  ctx.font=`bold ${15*scl}px monospace`;
+  ctx.fillStyle='#3498db';
+  ctx.fillText('TAP TO START',W/2,H*0.87);
+  ctx.restore();
+}
+
+function drawOver(){
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';
+  ctx.font=`bold ${40*scl}px monospace`;
+  ctx.fillStyle='#e74c3c';
+  ctx.shadowColor='rgba(231,76,60,0.5)';ctx.shadowBlur=15*scl;
+  ctx.fillText('GRIDLOCK',W/2,H*0.33);
+  ctx.shadowBlur=0;
+
+  ctx.font=`bold ${52*scl}px monospace`;
+  ctx.fillStyle='#fff';
+  ctx.fillText(Math.floor(score),W/2,H*0.47);
+
+  ctx.font=`${11*scl}px monospace`;
+  ctx.fillStyle='#3a5060';
+  ctx.fillText('BEST  '+best,W/2,H*0.56);
+
+  const pulse=0.7+0.3*Math.sin(last*0.004);
+  ctx.globalAlpha=pulse;
+  ctx.font=`bold ${14*scl}px monospace`;
+  ctx.fillStyle='#3498db';
+  ctx.fillText('TAP TO PLAY AGAIN',W/2,H*0.72);
+  ctx.restore();
+}
+
+// ── Game logic ─────────────────────────────────────────────────────────────────
+let last=0;
+function update(ts){
+  requestAnimationFrame(update);
+  const dt=Math.min(ts-last,50);last=ts;
+
+  if(gs==='start'){drawStart(ts);return;}
+  if(gs==='over'){
+    drawBackground();drawGrid();cars.forEach(c=>drawCar(c));
+    drawHUD();drawPopups();drawOver();return;
+  }
+
+  // Timer
+  if(timerRunning && winAnim===0){
+    timeLeft-=dt/1000;
+    if(timeLeft<=0){
+      timeLeft=0;timerRunning=false;
+      lives--;sfx('timeout');
+      shakeT=300;
+      popups.push({x:W/2,y:GY+CELL*3,text:'TIME OUT!',life:1,col:'#e74c3c'});
+      if(lives<=0){
+        if(Math.floor(score)>best){best=Math.floor(score);localStorage.setItem('gridlock_best',best);}
+        gs='over';sfx('over');
+      } else {
+        setTimeout(()=>{loadPuzzle(puzzleIdx);startRound();},1000);
+      }
+    }
+  }
+
+  // Win animation
+  if(winAnim>0){
+    winAnim=Math.min(winAnim+dt/500,1);
+    if(winAnim>=1){
+      winAnim=0;
+      puzzleIdx++;
+      level++;
+      if(level>1) sfx('levelup');
+      loadPuzzle(puzzleIdx);
+      startRound();
+    }
+  }
+
+  // Shake
+  let sx=0,sy=0;
+  if(shakeT>0){
+    sx=(Math.random()-0.5)*5*scl*(shakeT/300);
+    sy=(Math.random()-0.5)*3*scl*(shakeT/300);
+    shakeT-=dt;
+  }
+
+  ctx.save();
+  if(sx||sy) ctx.translate(sx,sy);
+  drawBackground();
+  drawGrid();
+  drawTimerBar();
+  cars.forEach(c=>drawCar(c));
+  drawHUD();
+  drawPopups();
+  ctx.restore();
+}
+
+// ── Pointer input ──────────────────────────────────────────────────────────────
+let ptrStart=null;
+cv.addEventListener('pointerdown',e=>{
+  e.preventDefault();
+  AC.resume();
+  if(gs==='start'){
+    gs='play';calcGrid();loadPuzzle(puzzleIdx);startRound();return;
+  }
+  if(gs==='over'){gs='play';resetGame();return;}
+  if(winAnim>0) return;
+  const rect=cv.getBoundingClientRect();
+  const px=e.clientX-rect.left,py=e.clientY-rect.top;
+  const {r,c}=getCell(px,py);
+  if(r<0||r>=6||c<0||c>=6) return;
+  const car=carAtCell(r,c);
+  if(!car) return;
+  drag={car,startPx:{x:px,y:py},origRow:car.row,origCol:car.col,slideOff:0,lastCell:0};
+  ptrStart={x:px,y:py};
+},{passive:false});
+
+cv.addEventListener('pointermove',e=>{
+  e.preventDefault();
+  if(!drag||gs!=='play') return;
+  const rect=cv.getBoundingClientRect();
+  const px=e.clientX-rect.left,py=e.clientY-rect.top;
+  const rawDelta=drag.car.axis==='h'?(px-drag.startPx.x):(py-drag.startPx.y);
+  const cellDelta=Math.round(rawDelta/CELL);
+  const allowed=clampMove(drag.car,cellDelta);
+  const pixelOff=rawDelta;
+  // Clamp pixel to allowed range
+  const maxPx=allowed*CELL;
+  const minPx=clampMove(drag.car,-100)*CELL;
+  drag.slideOff=Math.max(minPx*CELL/Math.abs(minPx||1)*Math.abs(minPx),Math.min(maxPx,pixelOff));
+  drag.slideOff=Math.max(allowed<0?allowed*CELL:-(drag.car.axis==='h'?drag.car.col:drag.car.row)*CELL,
+                 Math.min(allowed*CELL, rawDelta));
+
+  // Snap and count moves
+  if(cellDelta!==drag.lastCell && Math.abs(rawDelta)>CELL*0.3){
+    drag.lastCell=cellDelta;
+  }
+},{passive:false});
+
+cv.addEventListener('pointerup',e=>{
+  e.preventDefault();
+  if(!drag||gs!=='play') return;
+  const rect=cv.getBoundingClientRect();
+  const px=e.clientX-rect.left,py=e.clientY-rect.top;
+  const rawDelta=drag.car.axis==='h'?(px-drag.startPx.x):(py-drag.startPx.y);
+  const cellDelta=Math.round(rawDelta/CELL);
+  const allowed=clampMove(drag.car,cellDelta);
+
+  if(allowed!==0){
+    moves++;
+    if(drag.car.axis==='h') drag.car.col+=allowed;
+    else drag.car.row+=allowed;
+    sfx('slide');
+
+    // Check win: exit car at col >= 4
+    if(drag.car.isExit && drag.car.col>=4){
+      // Win!
+      timerRunning=false;
+      const bonus=Math.floor(timeLeft*10*level);
+      score+=bonus;
+      popups.push({x:W/2,y:GY+CELL*1.5,text:`+${bonus} SOLVED!`,life:1.2,col:'#2ecc71'});
+      sfx('win');
+      if(Math.floor(score)>best){best=Math.floor(score);localStorage.setItem('gridlock_best',best);}
+      winAnim=0.01;
+    }
+  }
+  drag.slideOff=0;
+  drag=null;
+},{passive:false});
+
+cv.addEventListener('pointercancel',e=>{
+  if(drag){drag.slideOff=0;drag=null;}
+},{passive:false});
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

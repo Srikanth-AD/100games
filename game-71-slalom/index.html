@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>SLALOM</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+let W,H,scl;
+function resize(){
+  const vw=window.innerWidth,vh=window.innerHeight;
+  scl=Math.min(vw/375,vh/600);
+  W=Math.round(375*scl);H=Math.round(600*scl);
+  cv.width=W;cv.height=H;
+}
+resize();
+window.addEventListener('resize',resize);
+const AC=new(window.AudioContext||window.webkitAudioContext)();
+
+let skiHum=null,skiGain=null;
+function startSkiHum(freq){
+  if(!skiHum){
+    skiHum=AC.createOscillator();skiGain=AC.createGain();
+    skiHum.type='sine';skiHum.connect(skiGain);skiGain.connect(AC.destination);
+    skiGain.gain.value=0.05;skiHum.start();
+  }
+  skiHum.frequency.value=freq;
+}
+function stopSkiHum(){
+  if(!skiHum)return;
+  skiGain.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+0.2);
+  skiHum.stop(AC.currentTime+0.2);skiHum=null;skiGain=null;
+}
+function playGatePass(){
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.connect(g);g.connect(AC.destination);
+  o.type='sine';o.frequency.value=660;
+  g.gain.setValueAtTime(0.2,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+0.25);
+  o.start();o.stop(AC.currentTime+0.25);
+}
+function playPenalty(){
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.connect(g);g.connect(AC.destination);
+  o.type='square';o.frequency.value=120;
+  g.gain.setValueAtTime(0.3,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+0.5);
+  o.start();o.stop(AC.currentTime+0.5);
+}
+function playSpray(){
+  const buf=AC.createBuffer(1,AC.sampleRate*0.1,AC.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.exp(-i/(AC.sampleRate*0.04));
+  const src=AC.createBufferSource(),bpf=AC.createBiquadFilter(),g=AC.createGain();
+  bpf.type='bandpass';bpf.frequency.value=3000;bpf.Q.value=0.5;
+  src.buffer=buf;src.connect(bpf);bpf.connect(g);g.connect(AC.destination);
+  g.gain.setValueAtTime(0.1,AC.currentTime);src.start();
+}
+
+let gs='start',level=1,score=0,best=parseInt(localStorage.getItem('slalom_best')||'0');
+let lives=3,popups=[];
+let skierX=187.5,skierVX=0;
+let worldY=0,scrollSpeed=0;
+let gatesPassed=0,totalPenalty=0;
+let elapsedTime=0;
+let gates=[],snowParticles=[],speedLines=[];
+let pointerHeld=false,pointerX=0;
+let lastTurnVX=0,prevSkierX=0;
+let penaltyFlash=0;
+let icyPatches=[];
+let trees=[];
+let frameT=0;
+
+const GATE_SPACING=200;// design units between gates
+const SKIER_Y_FRAC=0.4;
+
+function gateWidth(){
+  return Math.max(80,(160-level*12));
+}
+
+function startGame(){
+  level=1;score=0;lives=3;popups=[];
+  skierX=187.5;skierVX=0;worldY=0;
+  scrollSpeed=2.5;gatesPassed=0;totalPenalty=0;elapsedTime=0;
+  gates=[];snowParticles=[];speedLines=[];icyPatches=[];trees=[];
+  penaltyFlash=0;
+  spawnInitialGates();
+  spawnTrees();
+  gs='play';
+  startSkiHum(120);
+}
+
+function spawnInitialGates(){
+  for(let i=0;i<8;i++){
+    spawnGate(-i*GATE_SPACING-300);
+  }
+}
+
+function spawnGate(yOff){
+  const cx=60+Math.random()*(375-120);
+  const w=gateWidth();
+  const col=gates.length%2===0?'#f44336':'#1565c0';
+  gates.push({x:cx,y:yOff||-(gates.length*GATE_SPACING+300),w,passed:false,miss:false,flash:0,col});
+}
+
+function spawnTrees(){
+  trees=[];
+  for(let i=0;i<20;i++){
+    const side=Math.random()<0.5?-1:1;
+    const tx=side>0?310+Math.random()*40:25+Math.random()*40;
+    trees.push({x:tx,y:-i*200-Math.random()*150,h:15+Math.random()*25,col:'#1a5c1a'});
+  }
+}
+
+function getXY(e){
+  const r=cv.getBoundingClientRect();
+  const t=e.touches?e.touches[0]:e;
+  return{x:(t.clientX-r.left)/scl,y:(t.clientY-r.top)/scl};
+}
+
+cv.addEventListener('pointerdown',e=>{
+  if(AC.state==='suspended')AC.resume();
+  if(gs==='start'){gs='play';startGame();return;}
+  if(gs==='over'){gs='play';startGame();return;}
+  if(gs!=='play')return;
+  const{x}=getXY(e);
+  pointerHeld=true;pointerX=x;
+});
+cv.addEventListener('pointermove',e=>{
+  if(!pointerHeld)return;
+  const{x}=getXY(e);pointerX=x;
+});
+cv.addEventListener('pointerup',()=>{pointerHeld=false;});
+cv.addEventListener('pointercancel',()=>{pointerHeld=false;});
+
+let last=0;
+function update(ts){
+  requestAnimationFrame(update);
+  const dt=Math.min(ts-last,50);last=ts;
+  frameT=ts;
+  if(gs==='start'){
+    drawStart(ts);return;
+  }
+  if(gs==='over'){
+    drawOver();return;
+  }
+
+  const sec=dt/1000;
+  elapsedTime+=sec;
+
+  // speed up over time
+  scrollSpeed=2.5+level*0.4+elapsedTime*0.015;
+  const maxScroll=12;
+  if(scrollSpeed>maxScroll)scrollSpeed=maxScroll;
+
+  // check icy
+  let icy=false;
+  for(const ip of icyPatches){
+    const sy=ip.y+worldY*scl;
+    if(sy>H*SKIER_Y_FRAC-30*scl&&sy<H*SKIER_Y_FRAC+80*scl)icy=true;
+  }
+
+  // skier input
+  prevSkierX=skierX;
+  if(pointerHeld){
+    const targetX=pointerX;
+    const factor=icy?0.06:0.15;
+    skierVX+=(targetX-skierX)*factor;
+  } else {
+    skierVX*=icy?0.97:0.88;
+  }
+  // clamp
+  const maxVX=icy?6:8;
+  skierVX=Math.max(-maxVX,Math.min(maxVX,skierVX));
+  skierX+=skierVX*dt/16;
+  skierX=Math.max(15,Math.min(360,skierX));
+
+  // spray when turning hard
+  const turnDelta=Math.abs(skierVX-lastTurnVX);
+  if(turnDelta>1.5&&Math.random()>0.3){
+    playSpray();
+    for(let i=0;i<6;i++){
+      const ang=-Math.PI/2+(-0.5+Math.random())*1.5;
+      snowParticles.push({x:skierX*scl,y:H*SKIER_Y_FRAC+8*scl,vx:Math.cos(ang)*(1+Math.random()*3)*scl,vy:Math.sin(ang)*(1+Math.random()*2)*scl,life:1,r:Math.random()*3*scl+1*scl});
+    }
+  }
+  lastTurnVX=skierVX;
+
+  // scroll world
+  worldY+=scrollSpeed*dt/16;
+
+  // skiing particles
+  if(Math.abs(skierVX)>0.5||scrollSpeed>3){
+    for(let i=0;i<2;i++){
+      snowParticles.push({
+        x:skierX*scl+(-5+Math.random()*10)*scl,
+        y:H*SKIER_Y_FRAC+10*scl,
+        vx:(-skierVX*0.3+(-0.5+Math.random())*1)*scl,
+        vy:(Math.random()*2)*scl,
+        life:1,r:(Math.random()*2+0.5)*scl
+      });
+    }
+  }
+  for(let i=snowParticles.length-1;i>=0;i--){
+    const p=snowParticles[i];
+    p.x+=p.vx*dt/16;p.y+=p.vy*dt/16;p.life-=dt/400;
+    if(p.life<=0)snowParticles.splice(i,1);
+  }
+
+  // speed lines
+  if(scrollSpeed>4&&Math.random()>0.6){
+    speedLines.push({x:Math.random()*375*scl,y:0,len:(15+Math.random()*20)*scl,life:1,spd:scrollSpeed});
+  }
+  for(let i=speedLines.length-1;i>=0;i--){
+    const s=speedLines[i];
+    s.y+=scrollSpeed*dt/16*3;s.life-=dt/300;
+    if(s.life<=0||s.y>H)speedLines.splice(i,1);
+  }
+
+  // icy patches spawn
+  if(level>=2&&Math.random()<0.002*dt){
+    icyPatches.push({x:30+Math.random()*315,y:-worldY-100,w:80+Math.random()*100,h:40+Math.random()*30});
+  }
+  for(let i=icyPatches.length-1;i>=0;i--){
+    if((icyPatches[i].y+worldY)*scl>H+50*scl)icyPatches.splice(i,1);
+  }
+
+  // gate collision
+  for(const g of gates){
+    const gy=(g.y+worldY)*scl;
+    if(g.passed||g.miss)continue;
+    if(gy>H*SKIER_Y_FRAC-10*scl&&gy<H*SKIER_Y_FRAC+25*scl){
+      const gl=(g.x-g.w/2)*scl,gr=(g.x+g.w/2)*scl;
+      const sx=skierX*scl;
+      if(sx>=gl&&sx<=gr){
+        g.passed=true;g.flash=30;
+        gatesPassed++;
+        score+=10*level;
+        if(score>best){best=score;localStorage.setItem('slalom_best',best);}
+        addPopup(g.x*scl,gy-20*scl,'+'+10*level,'#69f0ae');
+        playGatePass();
+      } else {
+        // missed gate
+        g.miss=true;g.flash=45;
+        totalPenalty+=3;
+        penaltyFlash=40;
+        addPopup(skierX*scl,H*SKIER_Y_FRAC-30*scl,'PENALTY! +3s','#f44336');
+        playPenalty();
+      }
+    }
+  }
+
+  // spawn new gates
+  while(true){
+    const lastGate=gates.reduce((m,g)=>g.y<m?g.y:m,0);
+    if((lastGate+worldY)*scl>-200*scl){
+      spawnGate();
+    } else break;
+  }
+
+  // remove old gates
+  for(let i=gates.length-1;i>=0;i--){
+    if((gates[i].y+worldY)*scl>H+100*scl)gates.splice(i,1);
+  }
+  for(const g of gates)if(g.flash>0)g.flash=Math.max(0,g.flash-dt/16);
+
+  // trees
+  for(const t of trees){
+    if((t.y+worldY)*scl>H+100*scl){
+      t.y=-(worldY+100/scl+Math.random()*200);
+      t.x=Math.random()<0.5?310+Math.random()*40:5+Math.random()*30;
+    }
+  }
+
+  // level up
+  if(gatesPassed>0&&gatesPassed%15===0&&gatesPassed<15*(level+1)){
+    level++;
+    addPopup(W/2,H/2,'LEVEL '+level,'#ffd740');
+  }
+
+  // ski sound
+  startSkiHum(80+scrollSpeed*15);
+
+  if(penaltyFlash>0)penaltyFlash=Math.max(0,penaltyFlash-dt/16);
+
+  drawGame(ts);
+  drawHUD();
+  drawPopups(dt);
+}
+
+function drawGame(ts){
+  // background gradient
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#dce8f5');bg.addColorStop(1,'#eef3f8');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+
+  // subtle snow texture lines scrolling
+  ctx.strokeStyle='rgba(180,200,220,0.3)';ctx.lineWidth=1;
+  for(let i=0;i<20;i++){
+    const ly=((i*40+(worldY*scl*0.5))%H);
+    ctx.beginPath();ctx.moveTo(0,ly);ctx.lineTo(W,ly);ctx.stroke();
+  }
+
+  // icy patches
+  for(const ip of icyPatches){
+    const iy=(ip.y+worldY)*scl,ix=ip.x*scl,iw=ip.w*scl,ih=ip.h*scl;
+    ctx.fillStyle='rgba(150,200,255,0.2)';
+    ctx.fillRect(ix,iy,iw,ih);
+    ctx.strokeStyle='rgba(100,180,255,0.4)';ctx.lineWidth=1*scl;
+    ctx.strokeRect(ix,iy,iw,ih);
+    ctx.fillStyle='rgba(100,180,255,0.5)';ctx.font=`${10*scl}px monospace`;
+    ctx.textAlign='center';ctx.fillText('❄',ix+iw/2,iy+ih/2+4*scl);
+  }
+
+  // trees
+  for(const t of trees){
+    const tx=t.x*scl,ty=(t.y+worldY)*scl;
+    const th=t.h*scl,tw=th*0.7;
+    // trunk
+    ctx.fillStyle='#6d3b1e';ctx.fillRect(tx-2*scl,ty+th*0.7,4*scl,th*0.3);
+    // tree layers
+    for(let k=0;k<3;k++){
+      const ly=ty+k*th*0.3,lw=tw*(1-k*0.25),lh=th*0.45;
+      ctx.beginPath();
+      ctx.moveTo(tx,ly-lh*0.1);
+      ctx.lineTo(tx+lw/2,ly+lh*0.5);
+      ctx.lineTo(tx-lw/2,ly+lh*0.5);
+      ctx.closePath();
+      ctx.fillStyle=k===0?'#1a5c1a':k===1?'#256625':'#2e7a2e';ctx.fill();
+    }
+  }
+
+  // speed lines
+  if(scrollSpeed>4){
+    ctx.strokeStyle=`rgba(200,220,240,${Math.min(1,(scrollSpeed-4)/8)*0.6})`;
+    ctx.lineWidth=1*scl;
+    for(const s of speedLines){
+      ctx.globalAlpha=s.life*0.5;
+      ctx.beginPath();ctx.moveTo(s.x,s.y);ctx.lineTo(s.x,s.y+s.len);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+  }
+
+  // gates
+  for(const g of gates){
+    const gy=(g.y+worldY)*scl;
+    if(gy<-50*scl||gy>H+50*scl)continue;
+    const gl=(g.x-g.w/2)*scl,gr=(g.x+g.w/2)*scl;
+    const flash=g.flash>0;
+    const col=g.passed?(flash?'#69f0ae':g.col):g.miss?(flash?'#f44336':'#888'):g.col;
+    // left pole
+    ctx.fillStyle=col;
+    ctx.shadowColor=flash?'#fff':'rgba(0,0,0,0.3)';ctx.shadowBlur=flash?8*scl:2*scl;
+    ctx.fillRect(gl-4*scl,gy-30*scl,8*scl,40*scl);
+    // right pole
+    ctx.fillRect(gr-4*scl,gy-30*scl,8*scl,40*scl);
+    ctx.shadowBlur=0;
+    // flags
+    ctx.fillStyle=col;
+    ctx.beginPath();ctx.moveTo(gl,gy-30*scl);ctx.lineTo(gl+14*scl,gy-23*scl);ctx.lineTo(gl,gy-16*scl);ctx.closePath();ctx.fill();
+    ctx.beginPath();ctx.moveTo(gr,gy-30*scl);ctx.lineTo(gr-14*scl,gy-23*scl);ctx.lineTo(gr,gy-16*scl);ctx.closePath();ctx.fill();
+    // gate line
+    if(!g.passed&&!g.miss){
+      ctx.strokeStyle=`rgba(${col==='#f44336'?'244,67,54':'21,101,192'},0.3)`;
+      ctx.lineWidth=2*scl;ctx.setLineDash([6*scl,4*scl]);
+      ctx.beginPath();ctx.moveTo(gl,gy);ctx.lineTo(gr,gy);ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  // snow particles
+  for(const p of snowParticles){
+    ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
+    ctx.fillStyle=`rgba(255,255,255,${p.life*0.8})`;ctx.fill();
+  }
+
+  // skier
+  drawSkier(skierX*scl,H*SKIER_Y_FRAC);
+
+  // penalty flash
+  if(penaltyFlash>0){
+    ctx.fillStyle=`rgba(244,67,54,${penaltyFlash/60*0.25})`;ctx.fillRect(0,0,W,H);
+  }
+}
+
+function drawSkier(sx,sy){
+  const lean=skierVX*0.08;
+  ctx.save();
+  ctx.translate(sx,sy);
+  ctx.rotate(lean);
+  // shadow
+  ctx.fillStyle='rgba(0,0,0,0.15)';
+  ctx.beginPath();ctx.ellipse(0,12*scl,12*scl,4*scl,0,0,Math.PI*2);ctx.fill();
+  // skis
+  const skiLen=18*scl,skiW=3*scl;
+  ctx.fillStyle='#c62828';
+  ctx.save();ctx.rotate(0.15);
+  ctx.fillRect(-skiLen/2,-skiW/2+8*scl,skiLen,skiW);
+  ctx.restore();
+  ctx.save();ctx.rotate(-0.15);
+  ctx.fillRect(-skiLen/2+2*scl,-skiW/2+8*scl,skiLen,skiW);
+  ctx.restore();
+  // poles
+  ctx.strokeStyle='#555';ctx.lineWidth=1.5*scl;
+  ctx.beginPath();ctx.moveTo(-7*scl,-8*scl);ctx.lineTo(-12*scl,10*scl);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(7*scl,-8*scl);ctx.lineTo(12*scl,10*scl);ctx.stroke();
+  // body
+  ctx.fillStyle='#1565c0';
+  ctx.fillRect(-5*scl,-14*scl,10*scl,14*scl);
+  // head
+  ctx.fillStyle='#ffccbc';
+  ctx.beginPath();ctx.arc(0,-18*scl,6*scl,0,Math.PI*2);ctx.fill();
+  // helmet
+  ctx.fillStyle='#c62828';
+  ctx.beginPath();ctx.arc(0,-19*scl,6.5*scl,Math.PI,Math.PI*2);ctx.fill();
+  // goggles
+  ctx.fillStyle='rgba(0,0,0,0.6)';
+  ctx.beginPath();ctx.ellipse(-3*scl,-17*scl,2.5*scl,2*scl,0,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.ellipse(3*scl,-17*scl,2.5*scl,2*scl,0,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+
+function drawHUD(){
+  // semi-transparent HUD bar
+  ctx.fillStyle='rgba(0,0,0,0.45)';
+  ctx.fillRect(0,0,W,28*scl);
+  ctx.fillStyle='#fff';ctx.font=`bold ${13*scl}px monospace`;
+  ctx.textAlign='left';ctx.fillText('LV '+level,10*scl,20*scl);
+  ctx.textAlign='center';ctx.fillText(score,W/2,20*scl);
+  ctx.textAlign='right';ctx.fillText('BEST '+best,W-10*scl,20*scl);
+  for(let i=0;i<3;i++){
+    ctx.fillStyle=i<lives?'#f44336':'#333';
+    drawHeart(10*scl+i*20*scl,36*scl,7*scl);
+  }
+  // stats
+  ctx.fillStyle='rgba(0,0,0,0.4)';
+  ctx.fillRect(0,H-36*scl,W,36*scl);
+  ctx.fillStyle='#ddd';ctx.font=`${11*scl}px monospace`;
+  ctx.textAlign='left';
+  ctx.fillText('GATES: '+gatesPassed,8*scl,H-20*scl);
+  const spd=Math.round(scrollSpeed*10);
+  ctx.textAlign='center';
+  ctx.fillText(spd+' km/h',W/2,H-20*scl);
+  const t=Math.max(0,elapsedTime+totalPenalty);
+  const min=Math.floor(t/60),sec2=Math.floor(t%60);
+  ctx.textAlign='right';
+  ctx.fillStyle=totalPenalty>0?'#f44336':'#ddd';
+  ctx.fillText((min>0?min+':':'')+(sec2<10&&min>0?'0':'')+sec2+'s',W-8*scl,H-20*scl);
+  // penalty indicator
+  if(totalPenalty>0){
+    ctx.fillStyle='rgba(244,67,54,0.7)';
+    ctx.font=`${9*scl}px monospace`;
+    ctx.textAlign='right';
+    ctx.fillText('+'+Math.round(totalPenalty)+'s PEN',W-8*scl,H-8*scl);
+  }
+}
+
+function drawHeart(x,y,r){
+  ctx.beginPath();
+  ctx.moveTo(x,y+r*0.3);
+  ctx.bezierCurveTo(x,y-r*0.3,x-r,y-r*0.3,x-r,y+r*0.3);
+  ctx.bezierCurveTo(x-r,y+r*0.8,x,y+r*1.3,x,y+r*1.5);
+  ctx.bezierCurveTo(x,y+r*1.3,x+r,y+r*0.8,x+r,y+r*0.3);
+  ctx.bezierCurveTo(x+r,y-r*0.3,x,y-r*0.3,x,y+r*0.3);
+  ctx.fill();
+}
+
+function addPopup(x,y,text,col){popups.push({x,y,text,life:1.2,col:col||'#fff'});}
+
+function drawPopups(dt){
+  for(let i=popups.length-1;i>=0;i--){
+    const p=popups[i];
+    p.y-=dt/30;p.life-=dt/1200;
+    if(p.life<=0){popups.splice(i,1);continue;}
+    ctx.globalAlpha=Math.min(p.life,1);
+    ctx.fillStyle=p.col||'#fff';
+    ctx.shadowColor='rgba(0,0,0,0.7)';ctx.shadowBlur=4*scl;
+    ctx.font=`bold ${14*scl}px monospace`;
+    ctx.textAlign='center';ctx.fillText(p.text,p.x,p.y);
+    ctx.shadowBlur=0;ctx.globalAlpha=1;
+  }
+}
+
+// Animated start screen
+let startWorldY=0;
+let startGates=[];
+let startSkierX=187.5,startSkierVX=0.8;
+let startSnow=[];
+function initStartScreen(){
+  startGates=[];
+  for(let i=0;i<6;i++){
+    const cx=60+Math.random()*255;
+    const w=140;
+    startGates.push({x:cx,y:-i*180-200,w,col:i%2===0?'#f44336':'#1565c0'});
+  }
+  startSnow=[];
+}
+initStartScreen();
+
+function drawStart(ts){
+  startWorldY+=0.08*Math.min(ts-last,50)/16;
+  startSkierX+=startSkierVX;
+  if(startSkierX>310||startSkierX<65)startSkierVX*=-1;
+  startSnow.push({x:Math.random()*375*scl,y:0,vy:(1+Math.random()*2)*scl,life:1,r:Math.random()*2*scl+0.5*scl});
+  for(let i=startSnow.length-1;i>=0;i--){
+    startSnow[i].y+=startSnow[i].vy;
+    startSnow[i].life-=0.005;
+    if(startSnow[i].y>H||startSnow[i].life<=0)startSnow.splice(i,1);
+  }
+  // background
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#c8ddf0');bg.addColorStop(1,'#e8f2f8');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+  // snow lines
+  ctx.strokeStyle='rgba(180,200,220,0.3)';ctx.lineWidth=1;
+  for(let i=0;i<20;i++){
+    const ly=((i*40+(startWorldY*scl*25))%H);
+    ctx.beginPath();ctx.moveTo(0,ly);ctx.lineTo(W,ly);ctx.stroke();
+  }
+  // snow particles
+  for(const p of startSnow){
+    ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
+    ctx.fillStyle=`rgba(255,255,255,${p.life*0.7})`;ctx.fill();
+  }
+  // trees on sides
+  for(let i=0;i<4;i++){
+    for(const side of[30,330]){
+      const ty=((i*150+startWorldY*scl*50)%H-50);
+      const th=(20+i*5)*scl;
+      ctx.fillStyle='#6d3b1e';ctx.fillRect(side*scl-2*scl,ty+th*0.7,4*scl,th*0.35);
+      ctx.beginPath();ctx.moveTo(side*scl,ty);ctx.lineTo(side*scl+14*scl,ty+th*0.75);ctx.lineTo(side*scl-14*scl,ty+th*0.75);ctx.closePath();
+      ctx.fillStyle='#1a5c1a';ctx.fill();
+    }
+  }
+  // gates scrolling
+  for(const g of startGates){
+    const gy=(g.y+startWorldY*80)*scl;
+    if(gy>H+50*scl){g.y=-((startWorldY*80)+100/scl+Math.random()*100);g.x=60+Math.random()*255;}
+    if(gy<-50*scl)continue;
+    const gl=(g.x-g.w/2)*scl,gr=(g.x+g.w/2)*scl;
+    ctx.fillStyle=g.col;ctx.shadowColor=g.col;ctx.shadowBlur=4*scl;
+    ctx.fillRect(gl-4*scl,gy-30*scl,8*scl,40*scl);
+    ctx.fillRect(gr-4*scl,gy-30*scl,8*scl,40*scl);
+    ctx.shadowBlur=0;
+    ctx.beginPath();ctx.moveTo(gl,gy-30*scl);ctx.lineTo(gl+14*scl,gy-23*scl);ctx.lineTo(gl,gy-16*scl);ctx.closePath();ctx.fill();
+    ctx.beginPath();ctx.moveTo(gr,gy-30*scl);ctx.lineTo(gr-14*scl,gy-23*scl);ctx.lineTo(gr,gy-16*scl);ctx.closePath();ctx.fill();
+  }
+  // skier preview
+  drawSkier(startSkierX*scl,H*0.55);
+  // overlay gradient for title area
+  const ov=ctx.createLinearGradient(0,0,0,200*scl);
+  ov.addColorStop(0,'rgba(200,220,240,0.92)');ov.addColorStop(1,'rgba(200,220,240,0)');
+  ctx.fillStyle=ov;ctx.fillRect(0,0,W,200*scl);
+  // title
+  ctx.fillStyle='#1565c0';ctx.shadowColor='#1565c0';ctx.shadowBlur=12*scl;
+  ctx.font=`bold ${56*scl}px monospace`;ctx.textAlign='center';
+  ctx.fillText('SLALOM',W/2,85*scl);ctx.shadowBlur=0;
+  ctx.fillStyle='#333';ctx.font=`${13*scl}px monospace`;
+  ctx.fillText('Carve through every gate',W/2,108*scl);
+  ctx.fillText('Drag left & right to steer',W/2,124*scl);
+  // start button
+  ctx.fillStyle='rgba(255,255,255,0.8)';
+  ctx.fillRect(W/2-80*scl,490*scl,160*scl,44*scl);
+  ctx.strokeStyle='#1565c0';ctx.lineWidth=2*scl;
+  ctx.strokeRect(W/2-80*scl,490*scl,160*scl,44*scl);
+  ctx.fillStyle='#1565c0';ctx.font=`bold ${16*scl}px monospace`;
+  ctx.fillText('TAP TO START',W/2,517*scl);
+  ctx.fillStyle='#c62828';ctx.font=`${12*scl}px monospace`;
+  ctx.fillText('BEST: '+best,W/2,470*scl);
+}
+
+function drawOver(){
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#c8ddf0');bg.addColorStop(1,'#e8f2f8');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='rgba(0,0,0,0.7)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#c62828';ctx.shadowColor='#c62828';ctx.shadowBlur=15*scl;
+  ctx.font=`bold ${44*scl}px monospace`;ctx.textAlign='center';
+  ctx.fillText('GAME OVER',W/2,180*scl);ctx.shadowBlur=0;
+  ctx.fillStyle='#fff';ctx.font=`${16*scl}px monospace`;
+  ctx.fillText('SCORE: '+score,W/2,250*scl);
+  ctx.fillText('GATES: '+gatesPassed,W/2,278*scl);
+  const t=Math.max(0,elapsedTime+totalPenalty);
+  const min=Math.floor(t/60),sec2=Math.floor(t%60);
+  ctx.fillText('TIME: '+(min>0?min+':':'')+(sec2<10&&min>0?'0':'')+sec2+'s',W/2,306*scl);
+  ctx.fillStyle='#ffd740';ctx.fillText('BEST: '+best,W/2,340*scl);
+  ctx.fillStyle='rgba(255,255,255,0.15)';
+  ctx.fillRect(W/2-80*scl,380*scl,160*scl,44*scl);
+  ctx.strokeStyle='#c62828';ctx.lineWidth=2*scl;
+  ctx.strokeRect(W/2-80*scl,380*scl,160*scl,44*scl);
+  ctx.fillStyle='#fff';ctx.font=`bold ${16*scl}px monospace`;
+  ctx.fillText('TAP TO RETRY',W/2,407*scl);
+}
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

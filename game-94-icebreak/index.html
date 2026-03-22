@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>ICEBREAK</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+let W,H;
+function resize(){
+  const s=Math.min(window.innerWidth,window.innerHeight);
+  W=canvas.width=s;H=canvas.height=s;
+}
+resize();
+window.addEventListener('resize',resize);
+
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playSound(freq,dur,type='sine',vol=0.1){
+  const o=audioCtx.createOscillator();const g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(vol,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+  o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+dur);
+}
+function playCrack(){playSound(800+Math.random()*400,0.1,'square',0.08);playSound(1200+Math.random()*300,0.05,'sawtooth',0.05);}
+function playBreak(){playSound(300,0.3,'triangle',0.12);playSound(500,0.2,'sine',0.1);}
+function playFishFree(){playSound(600,0.2,'sine',0.12);playSound(900,0.15,'triangle',0.08);playSound(1200,0.1,'sine',0.06);}
+function playPenguinFall(){playSound(150,0.5,'sawtooth',0.15);playSound(100,0.7,'square',0.08);}
+
+let state='menu';
+let score=0;
+let bestScore=0;
+let timer=60;
+let level=1;
+let penalty=0;
+
+// Cracks
+let cracks=[];
+// Fish
+let fish=[];
+// Penguins
+let penguins=[];
+// Ice cells for thickness
+const GRID=12;
+let iceGrid=[];
+// Particles
+let particles=[];
+// Freed fish animations
+let freedFish=[];
+
+function initLevel(){
+  cracks=[];particles=[];freedFish=[];
+  const numFish=3+level*2;
+  const numPenguins=Math.min(level,5);
+  fish=[];penguins=[];
+  iceGrid=[];
+  // Init ice grid
+  for(let r=0;r<GRID;r++){
+    iceGrid[r]=[];
+    for(let c=0;c<GRID;c++){
+      const thick=Math.random()<0.3+level*0.05?2+Math.floor(Math.random()*2):1;
+      iceGrid[r][c]={hp:thick,maxHp:thick,broken:false};
+    }
+  }
+  // Place fish
+  for(let i=0;i<numFish;i++){
+    let fx,fy,ok;
+    do{
+      fx=40+Math.random()*(W-80);
+      fy=40+Math.random()*(H-80);
+      ok=true;
+      for(const f of fish)if(Math.hypot(fx-f.x,fy-f.y)<40)ok=false;
+      for(const p of penguins)if(Math.hypot(fx-p.x,fy-p.y)<50)ok=false;
+    }while(!ok&&fish.length<100);
+    fish.push({x:fx,y:fy,freed:false,swimAngle:Math.random()*Math.PI*2,phase:Math.random()*Math.PI*2,hitsNeeded:iceGrid[Math.floor(fy/H*GRID)]?2:2});
+  }
+  // Place penguins
+  for(let i=0;i<numPenguins;i++){
+    let px,py,ok;
+    do{
+      px=50+Math.random()*(W-100);
+      py=50+Math.random()*(H-100);
+      ok=true;
+      for(const f of fish)if(Math.hypot(px-f.x,py-f.y)<45)ok=false;
+      for(const p of penguins)if(Math.hypot(px-p.x,py-p.y)<50)ok=false;
+    }while(!ok&&penguins.length<100);
+    penguins.push({x:px,y:py,fallen:false,fallAnim:0,waddle:Math.random()*Math.PI*2});
+  }
+}
+
+function initGame(){
+  state='play';score=0;timer=60;level=1;penalty=0;
+  initLevel();
+}
+
+function getGridCell(x,y){
+  const c=Math.floor(x/W*GRID);
+  const r=Math.floor(y/H*GRID);
+  if(r<0||r>=GRID||c<0||c>=GRID)return null;
+  return{r,c};
+}
+
+function addCrack(x,y){
+  const numLines=3+Math.floor(Math.random()*4);
+  for(let i=0;i<numLines;i++){
+    const angle=(Math.PI*2/numLines)*i+Math.random()*0.5;
+    const len=20+Math.random()*40;
+    const segments=[];
+    let cx=x,cy=y;
+    const steps=5+Math.floor(Math.random()*5);
+    for(let s=0;s<steps;s++){
+      const t=s/steps;
+      const nx=cx+Math.cos(angle+(Math.random()-0.5)*0.8)*(len/steps);
+      const ny=cy+Math.sin(angle+(Math.random()-0.5)*0.8)*(len/steps);
+      segments.push({x:nx,y:ny});
+      cx=nx;cy=ny;
+    }
+    cracks.push({segments,alpha:1,age:0});
+  }
+}
+
+function handleTap(tx,ty){
+  if(state!=='play')return;
+  playCrack();
+  addCrack(tx,ty);
+  // Damage ice grid
+  const cell=getGridCell(tx,ty);
+  if(cell&&!iceGrid[cell.r][cell.c].broken){
+    iceGrid[cell.r][cell.c].hp--;
+    if(iceGrid[cell.r][cell.c].hp<=0){
+      iceGrid[cell.r][cell.c].broken=true;
+      playBreak();
+      // Ice particle burst
+      for(let i=0;i<10;i++){
+        particles.push({x:tx,y:ty,vx:(Math.random()-0.5)*6,vy:(Math.random()-0.5)*6,life:30,size:2+Math.random()*4,color:'#DDF4FF'});
+      }
+    }
+  }
+  // Check fish proximity
+  for(const f of fish){
+    if(f.freed)continue;
+    const dist=Math.hypot(tx-f.x,ty-f.y);
+    if(dist<35){
+      const fCell=getGridCell(f.x,f.y);
+      if(fCell&&iceGrid[fCell.r][fCell.c].broken){
+        f.freed=true;score+=10;
+        playFishFree();
+        freedFish.push({x:f.x,y:f.y,vy:-3,alpha:1,scale:1});
+        for(let i=0;i<12;i++){
+          particles.push({x:f.x,y:f.y,vx:(Math.random()-0.5)*5,vy:-Math.random()*4,life:40,size:3,color:'#4FC3F7'});
+        }
+      }
+    }
+  }
+  // Check penguin proximity
+  for(const p of penguins){
+    if(p.fallen)continue;
+    const dist=Math.hypot(tx-p.x,ty-p.y);
+    if(dist<40){
+      const pCell=getGridCell(p.x,p.y);
+      if(pCell&&iceGrid[pCell.r][pCell.c].broken){
+        // Even near broken ice counts
+      }
+      // Penguin falls if too many cracks nearby
+      let nearbyCracks=0;
+      for(const cr of cracks){
+        for(const s of cr.segments){
+          if(Math.hypot(s.x-p.x,s.y-p.y)<30)nearbyCracks++;
+        }
+      }
+      if(nearbyCracks>5||dist<20){
+        p.fallen=true;p.fallAnim=1;
+        score=Math.max(0,score-15);
+        penalty++;
+        playPenguinFall();
+      }
+    }
+  }
+  // Check if all fish freed
+  if(fish.every(f=>f.freed)){
+    level++;timer+=20;
+    initLevel();
+  }
+}
+
+canvas.addEventListener('pointerdown',e=>{
+  e.preventDefault();
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  if(state==='menu'){initGame();return;}
+  if(state==='over'){initGame();return;}
+  const rect=canvas.getBoundingClientRect();
+  handleTap(e.clientX-rect.left,e.clientY-rect.top);
+});
+canvas.addEventListener('touchstart',e=>e.preventDefault(),{passive:false});
+
+let lastTime=0;
+let timerAcc=0;
+function update(ts){
+  const dt=Math.min((ts-lastTime)/16.67,3);
+  lastTime=ts;
+
+  if(state==='play'){
+    timerAcc+=dt;
+    if(timerAcc>=60){timerAcc-=60;timer--;if(timer<=0){state='over';if(score>bestScore)bestScore=score;}}
+  }
+
+  // Crack fade
+  for(let i=cracks.length-1;i>=0;i--){
+    cracks[i].age+=dt;
+    if(cracks[i].age>300)cracks.splice(i,1);
+  }
+  // Particles
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];p.x+=p.vx;p.y+=p.vy;p.vx*=0.95;p.vy*=0.95;p.life-=dt;
+    if(p.life<=0)particles.splice(i,1);
+  }
+  // Freed fish
+  for(let i=freedFish.length-1;i>=0;i--){
+    const f=freedFish[i];f.vy-=0.05;f.y+=f.vy;f.alpha-=0.01;f.scale+=0.01;
+    if(f.alpha<=0)freedFish.splice(i,1);
+  }
+  // Penguin fall anim
+  for(const p of penguins){
+    if(p.fallen&&p.fallAnim>0)p.fallAnim-=0.02*dt;
+    if(!p.fallen)p.waddle+=0.03*dt;
+  }
+
+  draw();
+  requestAnimationFrame(update);
+}
+
+function draw(){
+  // Background - frozen lake
+  const bgGrad=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,W*0.7);
+  bgGrad.addColorStop(0,'#B3E5FC');
+  bgGrad.addColorStop(0.6,'#81D4FA');
+  bgGrad.addColorStop(1,'#4FC3F7');
+  ctx.fillStyle=bgGrad;
+  ctx.fillRect(0,0,W,H);
+
+  if(state==='play'||state==='over'){
+    // Draw ice grid
+    const cellW=W/GRID;const cellH=H/GRID;
+    for(let r=0;r<GRID;r++){
+      for(let c=0;c<GRID;c++){
+        const ice=iceGrid[r][c];
+        const x=c*cellW;const y=r*cellH;
+        if(ice.broken){
+          // Dark water
+          ctx.fillStyle='#1565C0';
+          ctx.fillRect(x,y,cellW,cellH);
+          // Water ripple
+          ctx.strokeStyle='rgba(100,180,255,0.3)';ctx.lineWidth=1;
+          const rr=5+Math.sin(Date.now()*0.003+r+c)*3;
+          ctx.beginPath();ctx.arc(x+cellW/2,y+cellH/2,rr,0,Math.PI*2);ctx.stroke();
+        }else{
+          const darkness=ice.hp/ice.maxHp;
+          const b=Math.floor(200+darkness*55);
+          ctx.fillStyle=`rgb(${b-40},${b-10},${b})`;
+          ctx.fillRect(x,y,cellW,cellH);
+          ctx.strokeStyle='rgba(255,255,255,0.15)';ctx.lineWidth=0.5;
+          ctx.strokeRect(x,y,cellW,cellH);
+          // Thickness indicator
+          if(ice.maxHp>1){
+            ctx.fillStyle='rgba(0,50,100,0.15)';
+            ctx.fillRect(x+2,y+2,cellW-4,cellH-4);
+          }
+        }
+      }
+    }
+
+    // Fish shadows (under ice)
+    for(const f of fish){
+      if(f.freed)continue;
+      f.phase+=0.02;
+      const sx=f.x+Math.sin(f.phase)*8;
+      const sy=f.y+Math.cos(f.phase*0.7)*5;
+      ctx.fillStyle='rgba(0,40,80,0.25)';
+      ctx.save();
+      ctx.translate(sx,sy);
+      ctx.rotate(Math.sin(f.phase)*0.2);
+      // Fish body
+      ctx.beginPath();
+      ctx.ellipse(0,0,14,7,0,0,Math.PI*2);
+      ctx.fill();
+      // Tail
+      ctx.beginPath();ctx.moveTo(-12,0);ctx.lineTo(-20,-6);ctx.lineTo(-20,6);ctx.closePath();ctx.fill();
+      ctx.restore();
+    }
+
+    // Cracks
+    for(const cr of cracks){
+      const alpha=Math.max(0,1-cr.age/400);
+      ctx.strokeStyle=`rgba(255,255,255,${alpha*0.9})`;
+      ctx.lineWidth=1.5;
+      ctx.beginPath();
+      if(cr.segments.length>0){
+        ctx.moveTo(cr.segments[0].x,cr.segments[0].y);
+        for(let i=1;i<cr.segments.length;i++){
+          ctx.lineTo(cr.segments[i].x,cr.segments[i].y);
+        }
+      }
+      ctx.stroke();
+      // Darker line beside it for depth
+      ctx.strokeStyle=`rgba(100,150,200,${alpha*0.4})`;
+      ctx.lineWidth=0.5;
+      ctx.beginPath();
+      if(cr.segments.length>0){
+        ctx.moveTo(cr.segments[0].x+1,cr.segments[0].y+1);
+        for(let i=1;i<cr.segments.length;i++){
+          ctx.lineTo(cr.segments[i].x+1,cr.segments[i].y+1);
+        }
+      }
+      ctx.stroke();
+    }
+
+    // Penguins
+    for(const p of penguins){
+      if(p.fallen){
+        if(p.fallAnim>0){
+          ctx.globalAlpha=p.fallAnim;
+          drawPenguin(p.x,p.y,p.waddle,true);
+          ctx.globalAlpha=1;
+        }
+        continue;
+      }
+      drawPenguin(p.x,p.y,p.waddle,false);
+    }
+
+    // Freed fish animations
+    for(const f of freedFish){
+      ctx.globalAlpha=f.alpha;
+      ctx.fillStyle='#FF8A65';
+      ctx.save();ctx.translate(f.x,f.y);ctx.scale(f.scale,f.scale);
+      ctx.beginPath();ctx.ellipse(0,0,14,7,0,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.moveTo(-12,0);ctx.lineTo(-20,-6);ctx.lineTo(-20,6);ctx.closePath();ctx.fill();
+      ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(6,- 2,2,0,Math.PI*2);ctx.fill();
+      ctx.restore();
+      ctx.globalAlpha=1;
+    }
+
+    // Particles
+    for(const p of particles){
+      ctx.globalAlpha=Math.max(0,p.life/40);
+      ctx.fillStyle=p.color;
+      ctx.beginPath();ctx.arc(p.x,p.y,p.size,0,Math.PI*2);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+
+    // HUD
+    ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(0,0,W,36);
+    ctx.fillStyle='#fff';ctx.font=`bold ${Math.floor(W*0.04)}px monospace`;ctx.textAlign='left';
+    ctx.fillText(`Fish: ${score}`,10,26);
+    ctx.textAlign='center';
+    const timeColor=timer<=10?'#FF4444':'#fff';
+    ctx.fillStyle=timeColor;
+    ctx.fillText(`${timer}s`,W/2,26);
+    ctx.fillStyle='#fff';ctx.textAlign='right';
+    ctx.fillText(`Lv ${level}`,W-10,26);
+
+    // Fish remaining count
+    const remaining=fish.filter(f=>!f.freed).length;
+    ctx.fillStyle='#FFD54F';ctx.textAlign='center';ctx.font=`${Math.floor(W*0.03)}px monospace`;
+    ctx.fillText(`${remaining} fish remaining`,W/2,H-12);
+  }
+
+  // Menu
+  if(state==='menu'){
+    ctx.fillStyle='rgba(0,30,60,0.7)';ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#B3E5FC';ctx.font=`bold ${Math.floor(W*0.11)}px monospace`;ctx.textAlign='center';
+    ctx.fillText('ICEBREAK',W/2,H*0.25);
+    ctx.fillStyle='#E1F5FE';ctx.font=`${Math.floor(W*0.035)}px monospace`;
+    ctx.fillText('Tap ice to crack it!',W/2,H*0.35);
+    ctx.fillText('Free the fish trapped below',W/2,H*0.41);
+    ctx.fillText('Dark ice = thicker (needs more taps)',W/2,H*0.47);
+    ctx.fillStyle='#FF8A65';ctx.fillText('Avoid cracking near penguins!',W/2,H*0.54);
+    ctx.fillStyle='#fff';ctx.font=`${Math.floor(W*0.05)}px monospace`;
+    const p=0.8+Math.sin(Date.now()*0.004)*0.2;ctx.globalAlpha=p;
+    ctx.fillText('TAP TO START',W/2,H*0.7);ctx.globalAlpha=1;
+    // Decorative penguin
+    drawPenguin(W/2,H*0.82,Date.now()*0.003,false);
+  }
+
+  // Game over
+  if(state==='over'){
+    ctx.fillStyle='rgba(0,20,50,0.7)';ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#4FC3F7';ctx.font=`bold ${Math.floor(W*0.1)}px monospace`;ctx.textAlign='center';
+    ctx.fillText('TIME UP!',W/2,H*0.25);
+    ctx.fillStyle='#FFD54F';ctx.font=`${Math.floor(W*0.06)}px monospace`;
+    ctx.fillText(`Fish freed: ${score}`,W/2,H*0.38);
+    ctx.fillStyle='#FF8A65';ctx.font=`${Math.floor(W*0.04)}px monospace`;
+    ctx.fillText(`Penguins lost: ${penalty}`,W/2,H*0.46);
+    ctx.fillStyle='#aaa';ctx.fillText(`Best: ${bestScore}`,W/2,H*0.54);
+    ctx.fillStyle='#fff';ctx.font=`${Math.floor(W*0.045)}px monospace`;
+    const p=0.8+Math.sin(Date.now()*0.004)*0.2;ctx.globalAlpha=p;
+    ctx.fillText('TAP TO RETRY',W/2,H*0.68);ctx.globalAlpha=1;
+  }
+}
+
+function drawPenguin(x,y,waddle,falling){
+  ctx.save();
+  ctx.translate(x,y);
+  if(falling)ctx.rotate(0.3);
+  const wobble=Math.sin(waddle)*3;
+  // Body
+  ctx.fillStyle='#263238';
+  ctx.beginPath();ctx.ellipse(0+wobble,0,12,16,0,0,Math.PI*2);ctx.fill();
+  // Belly
+  ctx.fillStyle='#ECEFF1';
+  ctx.beginPath();ctx.ellipse(0+wobble,2,7,12,0,0,Math.PI*2);ctx.fill();
+  // Head
+  ctx.fillStyle='#263238';
+  ctx.beginPath();ctx.arc(0+wobble,-14,8,0,Math.PI*2);ctx.fill();
+  // Eyes
+  ctx.fillStyle='#fff';
+  ctx.beginPath();ctx.arc(-3+wobble,-15,2.5,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(3+wobble,-15,2.5,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#000';
+  ctx.beginPath();ctx.arc(-3+wobble,-15,1.2,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(3+wobble,-15,1.2,0,Math.PI*2);ctx.fill();
+  // Beak
+  ctx.fillStyle='#FF8F00';
+  ctx.beginPath();ctx.moveTo(wobble,-12);ctx.lineTo(-3+wobble,-10);ctx.lineTo(3+wobble,-10);ctx.closePath();ctx.fill();
+  // Feet
+  ctx.fillStyle='#FF8F00';
+  ctx.fillRect(-6+wobble,14,5,3);
+  ctx.fillRect(2+wobble,14,5,3);
+  ctx.restore();
+}
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

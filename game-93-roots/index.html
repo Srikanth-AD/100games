@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>ROOTS</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+let W,H;
+function resize(){
+  W=canvas.width=Math.min(window.innerWidth,window.innerHeight*0.56);
+  H=canvas.height=Math.min(window.innerHeight,window.innerWidth*1.78);
+  if(W/H>0.56){W=H*0.56;canvas.width=W;}
+  else{H=W/0.56;canvas.height=H;}
+}
+resize();
+window.addEventListener('resize',resize);
+
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playSound(freq,dur,type='sine',vol=0.12){
+  const o=audioCtx.createOscillator();const g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(vol,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+  o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+dur);
+}
+function playWater(){playSound(600,0.3,'sine',0.1);playSound(800,0.2,'triangle',0.08);}
+function playToxic(){playSound(100,0.5,'sawtooth',0.15);playSound(80,0.7,'square',0.08);}
+function playGrow(){playSound(300+Math.random()*100,0.1,'triangle',0.05);}
+
+let state='menu';
+let score=0;
+let bestScore=0;
+let energy=100;
+const MAX_ENERGY=100;
+
+// Root segments
+let rootSegments=[];
+let rootTip={x:0,y:0};
+let rootDir={x:0,y:1}; // Growing downward
+let rootSpeed=1.2;
+let cameraY=0;
+let targetCameraY=0;
+
+// World objects
+let rocks=[];
+let waterPockets=[];
+let toxicWaste=[];
+let treeSize=1;
+let particles=[];
+
+const GROUND_TOP=0.12; // ratio where ground starts
+const CELL=20;
+
+function initGame(){
+  state='play';
+  score=0;energy=MAX_ENERGY;treeSize=1;
+  cameraY=0;targetCameraY=0;
+  const startX=W/2;
+  const startY=H*GROUND_TOP+30;
+  rootTip={x:startX,y:startY};
+  rootDir={x:0,y:1};
+  rootSegments=[{x:startX,y:startY}];
+  rocks=[];waterPockets=[];toxicWaste=[];particles=[];
+  generateWorld(startY,startY+H*5);
+}
+
+function generateWorld(fromY,toY){
+  // Rocks
+  for(let y=fromY;y<toY;y+=40){
+    for(let i=0;i<3;i++){
+      const rx=Math.random()*W;
+      const ry=y+Math.random()*40;
+      if(ry<H*GROUND_TOP+20)continue;
+      const rw=15+Math.random()*35;
+      const rh=15+Math.random()*25;
+      // Don't place too close to center start
+      if(ry<H*GROUND_TOP+80&&Math.abs(rx-W/2)<50)continue;
+      rocks.push({x:rx,y:ry,w:rw,h:rh,color:`hsl(${25+Math.random()*15},${40+Math.random()*20}%,${25+Math.random()*15}%)`});
+    }
+  }
+  // Water pockets
+  for(let y=fromY+60;y<toY;y+=100+Math.random()*80){
+    const wx=30+Math.random()*(W-60);
+    const wy=y+Math.random()*50;
+    waterPockets.push({x:wx,y:wy,r:12+Math.random()*8,collected:false,glow:0});
+  }
+  // Toxic waste
+  for(let y=fromY+100;y<toY;y+=120+Math.random()*100){
+    const tx=30+Math.random()*(W-60);
+    const ty=y+Math.random()*50;
+    toxicWaste.push({x:tx,y:ty,r:10+Math.random()*7,pulse:Math.random()*Math.PI*2});
+  }
+}
+
+let lastGenY=0;
+function ensureWorld(){
+  const needY=cameraY+H*3;
+  if(needY>lastGenY){
+    generateWorld(lastGenY,needY+H*2);
+    lastGenY=needY+H*2;
+  }
+  // Cleanup far above
+  rocks=rocks.filter(r=>r.y>cameraY-200);
+  waterPockets=waterPockets.filter(w=>w.y>cameraY-200);
+  toxicWaste=toxicWaste.filter(t=>t.y>cameraY-200);
+}
+
+let touchStart=null;
+let swipeDir=null;
+
+canvas.addEventListener('pointerdown',e=>{
+  e.preventDefault();
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  if(state==='menu'){initGame();lastGenY=H*GROUND_TOP+H*5;return;}
+  if(state==='over'){initGame();lastGenY=H*GROUND_TOP+H*5;return;}
+  const rect=canvas.getBoundingClientRect();
+  touchStart={x:e.clientX-rect.left,y:e.clientY-rect.top};
+});
+canvas.addEventListener('pointermove',e=>{
+  if(!touchStart||state!=='play')return;
+  const rect=canvas.getBoundingClientRect();
+  const cx=e.clientX-rect.left;
+  const cy=e.clientY-rect.top;
+  const dx=cx-touchStart.x;
+  const dy=cy-touchStart.y;
+  if(Math.abs(dx)>10||Math.abs(dy)>10){
+    // Direction based on swipe
+    if(Math.abs(dx)>Math.abs(dy)){
+      rootDir={x:dx>0?1:-1,y:0.3};
+    }else{
+      if(dy>0)rootDir={x:0,y:1};
+      else rootDir={x:0,y:-0.3}; // slight upward
+    }
+    const mag=Math.sqrt(rootDir.x*rootDir.x+rootDir.y*rootDir.y);
+    rootDir.x/=mag;rootDir.y/=mag;
+    // Ensure always some downward tendency
+    if(rootDir.y<0.15){rootDir.y=0.15;const m2=Math.sqrt(rootDir.x*rootDir.x+rootDir.y*rootDir.y);rootDir.x/=m2;rootDir.y/=m2;}
+  }
+});
+canvas.addEventListener('pointerup',e=>{
+  touchStart=null;
+});
+canvas.addEventListener('touchstart',e=>e.preventDefault(),{passive:false});
+
+// Tap-based direction: tap left side = go left, right = go right, center = down
+canvas.addEventListener('click',e=>{
+  if(state!=='play')return;
+  const rect=canvas.getBoundingClientRect();
+  const cx=(e.clientX-rect.left)/W;
+  if(cx<0.33){rootDir={x:-0.7,y:0.7};}
+  else if(cx>0.66){rootDir={x:0.7,y:0.7};}
+  else{rootDir={x:0,y:1};}
+  const mag=Math.sqrt(rootDir.x*rootDir.x+rootDir.y*rootDir.y);
+  rootDir.x/=mag;rootDir.y/=mag;
+});
+
+function checkCollisions(){
+  // Rocks
+  for(const r of rocks){
+    if(rootTip.x>r.x-r.w/2&&rootTip.x<r.x+r.w/2&&rootTip.y>r.y-r.h/2&&rootTip.y<r.y+r.h/2){
+      // Deflect
+      if(rootTip.x<r.x)rootDir.x=-0.8;
+      else rootDir.x=0.8;
+      rootDir.y=0.5;
+      const mag=Math.sqrt(rootDir.x*rootDir.x+rootDir.y*rootDir.y);
+      rootDir.x/=mag;rootDir.y/=mag;
+      playSound(150,0.1,'square',0.05);
+    }
+  }
+  // Water pockets
+  for(const w of waterPockets){
+    if(w.collected)continue;
+    const dx=rootTip.x-w.x;const dy=rootTip.y-w.y;
+    if(Math.sqrt(dx*dx+dy*dy)<w.r+5){
+      w.collected=true;
+      score+=10;
+      energy=Math.min(MAX_ENERGY,energy+25);
+      treeSize+=0.15;
+      playWater();
+      for(let i=0;i<15;i++){
+        particles.push({x:w.x,y:w.y,vx:(Math.random()-0.5)*4,vy:(Math.random()-0.5)*4,life:40,color:'#4FA4DE',size:3+Math.random()*3});
+      }
+    }
+  }
+  // Toxic waste
+  for(const t of toxicWaste){
+    const dx=rootTip.x-t.x;const dy=rootTip.y-t.y;
+    if(Math.sqrt(dx*dx+dy*dy)<t.r+5){
+      energy=0;
+      playToxic();
+      for(let i=0;i<20;i++){
+        particles.push({x:t.x,y:t.y,vx:(Math.random()-0.5)*5,vy:(Math.random()-0.5)*5,life:50,color:'#AAFF00',size:3+Math.random()*4});
+      }
+    }
+  }
+  // Boundaries
+  if(rootTip.x<5){rootTip.x=5;rootDir.x=0.5;}
+  if(rootTip.x>W-5){rootTip.x=W-5;rootDir.x=-0.5;}
+}
+
+let lastTime=0;
+function update(ts){
+  const dt=Math.min((ts-lastTime)/16.67,3);
+  lastTime=ts;
+
+  if(state==='play'){
+    // Grow root
+    const wobble=Math.sin(ts*0.005)*0.15;
+    rootTip.x+=((rootDir.x+wobble)*rootSpeed)*dt;
+    rootTip.y+=(rootDir.y*rootSpeed)*dt;
+    energy-=0.04*dt;
+    if(energy<=0){
+      state='over';
+      if(score>bestScore)bestScore=score;
+      playToxic();
+    }
+    // Add segment every few pixels
+    const last=rootSegments[rootSegments.length-1];
+    const segDist=Math.sqrt((rootTip.x-last.x)**2+(rootTip.y-last.y)**2);
+    if(segDist>4){
+      rootSegments.push({x:rootTip.x,y:rootTip.y});
+      if(Math.random()<0.1)playGrow();
+    }
+    // Camera follows root tip
+    targetCameraY=rootTip.y-H*0.5;
+    if(targetCameraY<0)targetCameraY=0;
+    cameraY+=(targetCameraY-cameraY)*0.05*dt;
+    checkCollisions();
+    ensureWorld();
+    // Score by depth
+    const depthScore=Math.floor((rootTip.y-H*GROUND_TOP)/10);
+    if(depthScore>score)score=depthScore;
+  }
+
+  // Particles
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];
+    p.x+=p.vx;p.y+=p.vy;p.life--;
+    if(p.life<=0)particles.splice(i,1);
+  }
+
+  draw();
+  requestAnimationFrame(update);
+}
+
+function draw(){
+  // Earth background
+  const earthGrad=ctx.createLinearGradient(0,0,0,H);
+  earthGrad.addColorStop(0,'#87CEEB');
+  earthGrad.addColorStop(GROUND_TOP-0.01,'#87CEEB');
+  earthGrad.addColorStop(GROUND_TOP,'#5C4033');
+  earthGrad.addColorStop(0.5,'#3B2716');
+  earthGrad.addColorStop(1,'#2A1A0E');
+  ctx.fillStyle=earthGrad;
+  ctx.fillRect(0,0,W,H);
+
+  ctx.save();
+  ctx.translate(0,-cameraY);
+
+  // Underground gradient
+  const ugGrad=ctx.createLinearGradient(0,H*GROUND_TOP,0,cameraY+H*2);
+  ugGrad.addColorStop(0,'#5C4033');
+  ugGrad.addColorStop(0.3,'#4A3228');
+  ugGrad.addColorStop(0.7,'#3B2716');
+  ugGrad.addColorStop(1,'#2A1A0E');
+  ctx.fillStyle=ugGrad;
+  ctx.fillRect(0,H*GROUND_TOP,W,cameraY+H*2-H*GROUND_TOP);
+
+  // Dirt texture dots
+  ctx.fillStyle='rgba(90,60,30,0.3)';
+  for(let i=0;i<40;i++){
+    const dx=(i*97+37)%W;
+    const dy=H*GROUND_TOP+((i*143+cameraY*0.3)%(H*2));
+    ctx.beginPath();ctx.arc(dx,dy,2,0,Math.PI*2);ctx.fill();
+  }
+
+  // Rocks
+  for(const r of rocks){
+    ctx.fillStyle=r.color;
+    ctx.beginPath();
+    ctx.ellipse(r.x,r.y,r.w/2,r.h/2,0,0,Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle='rgba(0,0,0,0.3)';ctx.lineWidth=1;ctx.stroke();
+  }
+
+  // Water pockets
+  for(const w of waterPockets){
+    if(w.collected)continue;
+    w.glow=(w.glow+0.03)%(Math.PI*2);
+    const glowR=w.r+3+Math.sin(w.glow)*2;
+    ctx.fillStyle='rgba(79,164,222,0.2)';
+    ctx.beginPath();ctx.arc(w.x,w.y,glowR+5,0,Math.PI*2);ctx.fill();
+    const wGrad=ctx.createRadialGradient(w.x-3,w.y-3,0,w.x,w.y,w.r);
+    wGrad.addColorStop(0,'#8ED6FF');
+    wGrad.addColorStop(0.7,'#4FA4DE');
+    wGrad.addColorStop(1,'#2E7BBF');
+    ctx.fillStyle=wGrad;
+    ctx.beginPath();ctx.arc(w.x,w.y,w.r,0,Math.PI*2);ctx.fill();
+    // Shine
+    ctx.fillStyle='rgba(255,255,255,0.5)';
+    ctx.beginPath();ctx.arc(w.x-w.r*0.3,w.y-w.r*0.3,w.r*0.25,0,Math.PI*2);ctx.fill();
+  }
+
+  // Toxic waste
+  for(const t of toxicWaste){
+    t.pulse+=0.04;
+    const pr=t.r+Math.sin(t.pulse)*2;
+    ctx.fillStyle='rgba(170,255,0,0.15)';
+    ctx.beginPath();ctx.arc(t.x,t.y,pr+8,0,Math.PI*2);ctx.fill();
+    const tGrad=ctx.createRadialGradient(t.x,t.y,0,t.x,t.y,pr);
+    tGrad.addColorStop(0,'#CCFF33');
+    tGrad.addColorStop(0.6,'#88CC00');
+    tGrad.addColorStop(1,'#557700');
+    ctx.fillStyle=tGrad;
+    ctx.beginPath();ctx.arc(t.x,t.y,pr,0,Math.PI*2);ctx.fill();
+    // Skull icon hint
+    ctx.fillStyle='rgba(0,0,0,0.4)';
+    ctx.font='bold 10px monospace';ctx.textAlign='center';
+    ctx.fillText('X',t.x,t.y+4);
+  }
+
+  // Root
+  if(rootSegments.length>1){
+    ctx.strokeStyle='#8B6914';
+    ctx.lineWidth=5;ctx.lineCap='round';ctx.lineJoin='round';
+    ctx.beginPath();
+    ctx.moveTo(rootSegments[0].x,rootSegments[0].y);
+    for(let i=1;i<rootSegments.length;i++){
+      ctx.lineTo(rootSegments[i].x,rootSegments[i].y);
+    }
+    ctx.stroke();
+    // Lighter center
+    ctx.strokeStyle='#B8860B';
+    ctx.lineWidth=2;
+    ctx.beginPath();
+    ctx.moveTo(rootSegments[0].x,rootSegments[0].y);
+    for(let i=1;i<rootSegments.length;i++){
+      ctx.lineTo(rootSegments[i].x,rootSegments[i].y);
+    }
+    ctx.stroke();
+    // Tip glow
+    ctx.fillStyle='rgba(255,220,100,0.5)';
+    ctx.beginPath();ctx.arc(rootTip.x,rootTip.y,6,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#FFE066';
+    ctx.beginPath();ctx.arc(rootTip.x,rootTip.y,3,0,Math.PI*2);ctx.fill();
+  }
+
+  // Particles
+  for(const p of particles){
+    const alpha=p.life/50;
+    ctx.fillStyle=p.color;ctx.globalAlpha=alpha;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.size,0,Math.PI*2);ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  // Tree at surface
+  const treeBaseX=W/2;
+  const treeBaseY=H*GROUND_TOP;
+  // Trunk
+  ctx.fillStyle='#5C4033';
+  const trunkW=8*treeSize;const trunkH=30*treeSize;
+  ctx.fillRect(treeBaseX-trunkW/2,treeBaseY-trunkH,trunkW,trunkH);
+  // Canopy
+  ctx.fillStyle='#228B22';
+  ctx.beginPath();ctx.arc(treeBaseX,treeBaseY-trunkH-15*treeSize,20*treeSize,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#32CD32';
+  ctx.beginPath();ctx.arc(treeBaseX-10*treeSize,treeBaseY-trunkH-8*treeSize,14*treeSize,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(treeBaseX+10*treeSize,treeBaseY-trunkH-8*treeSize,14*treeSize,0,Math.PI*2);ctx.fill();
+
+  // Sky area
+  ctx.fillStyle='#87CEEB';
+  ctx.fillRect(0,0,W,H*GROUND_TOP);
+  // Sun
+  ctx.fillStyle='#FFE066';
+  ctx.beginPath();ctx.arc(W*0.8,H*0.04,15,0,Math.PI*2);ctx.fill();
+  // Grass
+  ctx.fillStyle='#4A7C2E';
+  ctx.fillRect(0,treeBaseY-5,W,10);
+
+  ctx.restore();
+
+  // HUD - Energy bar
+  ctx.fillStyle='rgba(0,0,0,0.5)';
+  ctx.fillRect(W*0.05,10,W*0.6,16);
+  const ePct=energy/MAX_ENERGY;
+  const eColor=ePct>0.5?'#4FA4DE':ePct>0.25?'#FFB347':'#FF4444';
+  ctx.fillStyle=eColor;
+  ctx.fillRect(W*0.05+2,12,Math.max(0,(W*0.6-4)*ePct),12);
+  ctx.strokeStyle='#fff';ctx.lineWidth=1;
+  ctx.strokeRect(W*0.05,10,W*0.6,16);
+  ctx.fillStyle='#fff';ctx.font=`bold ${Math.floor(W*0.03)}px monospace`;ctx.textAlign='left';
+  ctx.fillText('ENERGY',W*0.05+4,22);
+
+  // Score
+  ctx.fillStyle='#fff';ctx.font=`bold ${Math.floor(W*0.045)}px monospace`;ctx.textAlign='right';
+  ctx.fillText(`${score}`,W*0.95,24);
+
+  // Direction indicators
+  if(state==='play'){
+    ctx.globalAlpha=0.2;
+    ctx.fillStyle='#fff';ctx.font=`${Math.floor(W*0.06)}px monospace`;ctx.textAlign='center';
+    ctx.fillText('<',W*0.1,H*0.5);
+    ctx.fillText('v',W*0.5,H*0.9);
+    ctx.fillText('>',W*0.9,H*0.5);
+    ctx.globalAlpha=1;
+  }
+
+  // Menu
+  if(state==='menu'){
+    ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#8B6914';ctx.font=`bold ${Math.floor(W*0.13)}px monospace`;ctx.textAlign='center';
+    ctx.fillText('ROOTS',W/2,H*0.28);
+    ctx.fillStyle='#B8860B';ctx.font=`${Math.floor(W*0.038)}px monospace`;
+    ctx.fillText('Grow roots to find water!',W/2,H*0.36);
+    ctx.fillText('Tap left/right/center to steer',W/2,H*0.42);
+    ctx.fillText('Avoid rocks & toxic waste',W/2,H*0.48);
+    ctx.fillStyle='#4FA4DE';ctx.fillText('Blue = water (energy + score)',W/2,H*0.55);
+    ctx.fillStyle='#AAFF00';ctx.fillText('Green = toxic (instant death)',W/2,H*0.60);
+    ctx.fillStyle='#fff';ctx.font=`${Math.floor(W*0.05)}px monospace`;
+    const p=0.8+Math.sin(Date.now()*0.004)*0.2;ctx.globalAlpha=p;
+    ctx.fillText('TAP TO START',W/2,H*0.75);ctx.globalAlpha=1;
+  }
+
+  // Game over
+  if(state==='over'){
+    ctx.fillStyle='rgba(0,0,0,0.65)';ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#FF6B35';ctx.font=`bold ${Math.floor(W*0.1)}px monospace`;ctx.textAlign='center';
+    ctx.fillText('WITHERED',W/2,H*0.28);
+    ctx.fillStyle='#FFD166';ctx.font=`${Math.floor(W*0.06)}px monospace`;
+    ctx.fillText(`Depth: ${score}`,W/2,H*0.4);
+    ctx.fillStyle='#aaa';ctx.font=`${Math.floor(W*0.04)}px monospace`;
+    ctx.fillText(`Best: ${bestScore}`,W/2,H*0.48);
+    ctx.fillStyle='#fff';ctx.font=`${Math.floor(W*0.045)}px monospace`;
+    const p=0.8+Math.sin(Date.now()*0.004)*0.2;ctx.globalAlpha=p;
+    ctx.fillText('TAP TO RETRY',W/2,H*0.63);ctx.globalAlpha=1;
+  }
+}
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

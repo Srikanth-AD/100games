@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>SEMAPHORE</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H;
+function resize(){
+  const r=Math.min(window.innerWidth/480,window.innerHeight/720);
+  W=480;H=720;canvas.width=W;canvas.height=H;
+  canvas.style.width=(W*r)+'px';canvas.style.height=(H*r)+'px';
+}
+resize();window.addEventListener('resize',resize);
+
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playSound(f,d,t='sine'){
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type=t;o.frequency.value=f;g.gain.setValueAtTime(0.12,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+d);
+  o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+d);
+}
+function correctSound(){playSound(660,0.1);setTimeout(()=>playSound(880,0.15),100);}
+function wrongSound(){playSound(200,0.25,'sawtooth');}
+function tickSound(){playSound(1000,0.03,'square');}
+
+// Semaphore positions: each letter = [leftArm angle, rightArm angle]
+// Angles in degrees: 0=up, 45=upper-right, 90=right, 135=lower-right, 180=down, 225=lower-left, 270=left, 315=upper-left
+// Using standard semaphore alphabet
+const semaphore={
+  'A':[225,180],'B':[270,180],'C':[315,180],'D':[0,180],'E':[180,135],'F':[180,90],'G':[180,45],
+  'H':[270,225],'I':[315,225],'J':[0,90],'K':[225,0],'L':[225,45],'M':[225,90],'N':[225,135],
+  'O':[270,315],'P':[270,0],'Q':[270,45],'R':[270,90],'S':[270,135],'T':[315,0],
+  'U':[315,45],'V':[0,135],'W':[45,90],'X':[45,135],'Y':[315,90],'Z':[135,90]
+};
+
+const wordList=['HELLO','WORLD','PEACE','OCEAN','LIGHT','BRAVE','STORM','DANCE','MAGIC','RIVER',
+  'FLAME','STONE','CLOUD','SWORD','TOWER','CROWN','HONOR','DREAM','SWIFT','NORTH',
+  'SOUTH','STARS','NIGHT','BLOOM','WHEAT','FORGE','QUEST','LUNAR','SOLAR','AMBER'];
+
+const STATE={MENU:0,PLAY:1,SIGNAL:2,INPUT:3,OVER:4};
+let state=STATE.MENU;
+let score=0,lives=3,level=1,wordsCompleted=0;
+let currentWord='',letterIdx=0,decodedLetters='';
+let signalTimer=0,signalDuration=2;
+let leftArmAngle=180,rightArmAngle=180,targetLeft=180,targetRight=180;
+let showChart=false;
+let inputLetters=[];// keyboard
+let flash=0,flashColor='';
+let correctLetters='';
+
+function newWord(){
+  currentWord=wordList[Math.floor(Math.random()*wordList.length)];
+  letterIdx=0;
+  decodedLetters='';
+  correctLetters='';
+  showNextLetter();
+}
+
+function showNextLetter(){
+  if(letterIdx>=currentWord.length){
+    // Word complete!
+    wordsCompleted++;
+    score+=currentWord.length*10+Math.floor(level*5);
+    level++;
+    if(signalDuration>0.8) signalDuration-=0.1;
+    correctSound();
+    flash=1;flashColor='#2ecc71';
+    setTimeout(()=>{if(state!==STATE.OVER) newWord();},1000);
+    return;
+  }
+  const letter=currentWord[letterIdx];
+  const [la,ra]=semaphore[letter];
+  targetLeft=la;targetRight=ra;
+  signalTimer=signalDuration;
+  state=STATE.SIGNAL;
+}
+
+function guessLetter(letter){
+  if(state===STATE.OVER||state===STATE.MENU) return;
+  const correct=currentWord[letterIdx];
+  if(letter===correct){
+    correctSound();
+    decodedLetters+=letter;
+    correctLetters+=letter;
+    letterIdx++;
+    score+=5;
+    flash=0.5;flashColor='#2ecc71';
+    showNextLetter();
+  } else {
+    wrongSound();
+    lives--;
+    decodedLetters+='_';
+    correctLetters+=correct;
+    letterIdx++;
+    flash=0.5;flashColor='#e74c3c';
+    if(lives<=0){state=STATE.OVER;return;}
+    showNextLetter();
+  }
+}
+
+function getCanvasPos(e){
+  const rect=canvas.getBoundingClientRect();
+  const sx=W/rect.width,sy=H/rect.height;
+  const t=e.touches?e.touches[0]:e;
+  return {x:(t.clientX-rect.left)*sx,y:(t.clientY-rect.top)*sy};
+}
+
+// Keyboard layout
+const kbRows=['QWERTYUIOP','ASDFGHJKL','ZXCVBNM'];
+const keyW=42,keyH=42,keyGap=4;
+
+function getKeyPos(letter){
+  for(let r=0;r<kbRows.length;r++){
+    const row=kbRows[r];
+    const idx=row.indexOf(letter);
+    if(idx>=0){
+      const totalW=row.length*(keyW+keyGap)-keyGap;
+      const startX=(W-totalW)/2;
+      const y=560+r*(keyH+keyGap);
+      return {x:startX+idx*(keyW+keyGap),y,w:keyW,h:keyH};
+    }
+  }
+  return null;
+}
+
+canvas.addEventListener('mousedown',handleDown);
+canvas.addEventListener('touchstart',handleDown);
+document.addEventListener('keydown',(e)=>{
+  const k=e.key.toUpperCase();
+  if(state===STATE.INPUT&&semaphore[k]){guessLetter(k);}
+  if(k==='H'&&state!==STATE.MENU&&state!==STATE.OVER) showChart=!showChart;
+});
+
+function handleDown(e){
+  e.preventDefault();audioCtx.resume();
+  const p=getCanvasPos(e);
+
+  if(state===STATE.MENU){state=STATE.PLAY;score=0;lives=3;level=1;wordsCompleted=0;signalDuration=2;newWord();return;}
+  if(state===STATE.OVER){state=STATE.MENU;return;}
+
+  // Toggle chart button
+  if(p.x>W-70&&p.x<W-10&&p.y>5&&p.y<40){
+    showChart=!showChart;return;
+  }
+
+  if(showChart){showChart=false;return;}
+
+  // Check keyboard
+  if(state===STATE.INPUT||state===STATE.SIGNAL){
+    for(const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'){
+      const kp=getKeyPos(letter);
+      if(kp&&p.x>kp.x&&p.x<kp.x+kp.w&&p.y>kp.y&&p.y<kp.y+kp.h){
+        if(state===STATE.SIGNAL) state=STATE.INPUT;
+        guessLetter(letter);
+        return;
+      }
+    }
+  }
+}
+
+function lerpAngle(a,b,t){
+  // Simple lerp for angles
+  let diff=b-a;
+  while(diff>180) diff-=360;
+  while(diff<-180) diff+=360;
+  return a+diff*t;
+}
+
+function drawStickFigure(lAngle,rAngle){
+  const cx=W/2,cy=280;
+  const headR=20,bodyLen=60,armLen=55,legLen=40;
+
+  // Body
+  ctx.strokeStyle='#ecf0f1';ctx.lineWidth=4;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(cx,cy+headR);ctx.lineTo(cx,cy+headR+bodyLen);ctx.stroke();
+
+  // Legs
+  ctx.beginPath();ctx.moveTo(cx,cy+headR+bodyLen);ctx.lineTo(cx-20,cy+headR+bodyLen+legLen);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(cx,cy+headR+bodyLen);ctx.lineTo(cx+20,cy+headR+bodyLen+legLen);ctx.stroke();
+
+  // Head
+  ctx.beginPath();ctx.arc(cx,cy,headR,0,Math.PI*2);ctx.fillStyle='#ecf0f1';ctx.fill();
+  // Eyes
+  ctx.fillStyle='#333';
+  ctx.beginPath();ctx.arc(cx-7,cy-4,3,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(cx+7,cy-4,3,0,Math.PI*2);ctx.fill();
+
+  // Arms with flags
+  const shoulderY=cy+headR+10;
+
+  // Left arm
+  const lRad=lAngle*Math.PI/180;
+  const lx=cx+Math.sin(lRad)*armLen*-1;
+  const ly=shoulderY-Math.cos(lRad)*armLen;
+  ctx.strokeStyle='#ecf0f1';ctx.lineWidth=4;
+  ctx.beginPath();ctx.moveTo(cx,shoulderY);ctx.lineTo(lx,ly);ctx.stroke();
+
+  // Left flag (red)
+  drawFlag(lx,ly,lAngle,'#e74c3c');
+
+  // Right arm
+  const rRad=rAngle*Math.PI/180;
+  const rx=cx+Math.sin(rRad)*armLen;
+  const ry=shoulderY-Math.cos(rRad)*armLen;
+  ctx.strokeStyle='#ecf0f1';ctx.lineWidth=4;
+  ctx.beginPath();ctx.moveTo(cx,shoulderY);ctx.lineTo(rx,ry);ctx.stroke();
+
+  // Right flag (yellow)
+  drawFlag(rx,ry,rAngle,'#f1c40f');
+}
+
+function drawFlag(x,y,angle,color){
+  const fSize=18;
+  const rad=angle*Math.PI/180;
+  ctx.save();ctx.translate(x,y);ctx.rotate(rad-Math.PI/2);
+  ctx.fillStyle=color;
+  ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(fSize,0);ctx.lineTo(fSize,-fSize);ctx.lineTo(0,0);ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,0.3)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(fSize,0);ctx.lineTo(fSize,-fSize);ctx.lineTo(0,0);ctx.stroke();
+  ctx.restore();
+}
+
+function drawKeyboard(){
+  for(let r=0;r<kbRows.length;r++){
+    for(let i=0;i<kbRows[r].length;i++){
+      const letter=kbRows[r][i];
+      const kp=getKeyPos(letter);
+      ctx.fillStyle='#2c3e50';
+      ctx.beginPath();ctx.roundRect(kp.x,kp.y,kp.w,kp.h,6);ctx.fill();
+      ctx.fillStyle='#ecf0f1';ctx.font='bold 18px Arial';ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(letter,kp.x+kp.w/2,kp.y+kp.h/2);
+    }
+  }
+}
+
+function drawHUD(){
+  ctx.fillStyle='#ecf0f1';ctx.font='bold 18px Arial';ctx.textAlign='left';
+  ctx.fillText('Score: '+score,15,30);
+
+  // Lives
+  ctx.fillStyle='#e74c3c';ctx.font='20px Arial';
+  for(let i=0;i<lives;i++) ctx.fillText('\u2764',15+i*30,60);
+
+  ctx.textAlign='right';ctx.fillStyle='#ecf0f1';ctx.font='16px Arial';
+  ctx.fillText('Level '+level,W-15,60);
+  ctx.fillText('Words: '+wordsCompleted,W-15,80);
+
+  // Chart toggle
+  ctx.fillStyle='#34495e';
+  ctx.beginPath();ctx.roundRect(W-65,8,55,28,6);ctx.fill();
+  ctx.fillStyle='#ecf0f1';ctx.font='12px Arial';ctx.textAlign='center';
+  ctx.fillText('CHART',W-38,26);
+
+  // Current word progress
+  ctx.font='bold 28px Arial';ctx.textAlign='center';
+  let display='';
+  for(let i=0;i<currentWord.length;i++){
+    if(i<decodedLetters.length) display+=correctLetters[i]+' ';
+    else if(i===letterIdx) display+='? ';
+    else display+='_ ';
+  }
+  ctx.fillStyle='#f1c40f';
+  ctx.fillText(display.trim(),W/2,180);
+
+  // Category label
+  ctx.font='16px Arial';ctx.fillStyle='#95a5a6';
+  ctx.fillText('Decode the word!',W/2,210);
+
+  // Signal timer bar
+  if(state===STATE.SIGNAL){
+    const bw=200,bx=(W-bw)/2,by=220;
+    ctx.fillStyle='#333';ctx.fillRect(bx,by,bw,8);
+    ctx.fillStyle='#3498db';ctx.fillRect(bx,by,bw*(signalTimer/signalDuration),8);
+  }
+}
+
+function drawChart(){
+  ctx.fillStyle='rgba(0,0,0,0.92)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#f1c40f';ctx.font='bold 24px Arial';ctx.textAlign='center';
+  ctx.fillText('SEMAPHORE CHART',W/2,35);
+
+  const cols=7,size=58;
+  const startX=(W-cols*size)/2;
+  const letters='ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+  for(let i=0;i<26;i++){
+    const col=i%cols,row=Math.floor(i/cols);
+    const x=startX+col*size+size/2;
+    const y=70+row*100+30;
+
+    // Mini figure
+    const [la,ra]=semaphore[letters[i]];
+    ctx.save();ctx.translate(x,y);ctx.scale(0.35,0.35);
+    // Simple mini version
+    ctx.strokeStyle='#ecf0f1';ctx.lineWidth=4;ctx.lineCap='round';
+    ctx.beginPath();ctx.arc(0,-30,10,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.moveTo(0,-20);ctx.lineTo(0,20);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(0,20);ctx.lineTo(-10,40);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(0,20);ctx.lineTo(10,40);ctx.stroke();
+
+    const armL=30;
+    const lRad=la*Math.PI/180;
+    const lxx=Math.sin(lRad)*armL*-1,lyy=-Math.cos(lRad)*armL;
+    ctx.strokeStyle='#e74c3c';ctx.beginPath();ctx.moveTo(0,-10);ctx.lineTo(lxx,-10+lyy);ctx.stroke();
+    const rRad=ra*Math.PI/180;
+    const rxx=Math.sin(rRad)*armL,ryy=-Math.cos(rRad)*armL;
+    ctx.strokeStyle='#f1c40f';ctx.beginPath();ctx.moveTo(0,-10);ctx.lineTo(rxx,-10+ryy);ctx.stroke();
+    ctx.restore();
+
+    ctx.fillStyle='#ecf0f1';ctx.font='bold 14px Arial';
+    ctx.fillText(letters[i],x,y+40);
+  }
+
+  ctx.fillStyle='#95a5a6';ctx.font='14px Arial';
+  ctx.fillText('Tap anywhere to close',W/2,H-30);
+}
+
+function drawMenu(){
+  ctx.fillStyle='#0d1117';ctx.fillRect(0,0,W,H);
+
+  // Animated figure
+  const t=Date.now()/1000;
+  const demoL=180+Math.sin(t)*90;
+  const demoR=180+Math.cos(t*1.3)*90;
+  drawStickFigure(demoL,demoR);
+
+  ctx.fillStyle='#f1c40f';ctx.font='bold 52px Arial';ctx.textAlign='center';
+  ctx.fillText('SEMAPHORE',W/2,100);
+  ctx.fillStyle='#ecf0f1';ctx.font='18px Arial';
+  ctx.fillText('Decode flag signals into letters!',W/2,130);
+  ctx.font='14px Arial';ctx.fillStyle='#95a5a6';
+  ctx.fillText('Watch the flags, then tap the correct letter',W/2,480);
+  ctx.fillText('Miss 3 letters and it\'s game over',W/2,505);
+  ctx.fillStyle='#f39c12';ctx.font='bold 28px Arial';
+  ctx.fillText('TAP TO START',W/2,H-80);
+}
+
+function drawGameOver(){
+  ctx.fillStyle='#0d1117';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#e74c3c';ctx.font='bold 56px Arial';ctx.textAlign='center';
+  ctx.fillText('GAME OVER',W/2,180);
+  ctx.fillStyle='#f1c40f';ctx.font='bold 80px Arial';
+  ctx.fillText(score,W/2,300);
+  ctx.font='24px Arial';ctx.fillStyle='#ecf0f1';
+  ctx.fillText('Points',W/2,340);
+  ctx.fillText('Words decoded: '+wordsCompleted,W/2,390);
+  ctx.fillText('Level: '+level,W/2,425);
+  ctx.fillStyle='#f39c12';ctx.font='bold 24px Arial';
+  ctx.fillText('TAP TO PLAY AGAIN',W/2,H-80);
+}
+
+let lastTime=0;
+function update(ts){
+  const dt=Math.min((ts-lastTime)/1000,0.05);lastTime=ts;
+
+  ctx.fillStyle='#0d1117';ctx.fillRect(0,0,W,H);
+
+  if(state===STATE.MENU){drawMenu();}
+  else if(state===STATE.OVER){drawGameOver();}
+  else{
+    // Animate arms
+    leftArmAngle=lerpAngle(leftArmAngle,targetLeft,dt*8);
+    rightArmAngle=lerpAngle(rightArmAngle,targetRight,dt*8);
+
+    if(state===STATE.SIGNAL){
+      signalTimer-=dt;
+      if(signalTimer<=0){
+        state=STATE.INPUT;
+      }
+    }
+
+    // Flash
+    if(flash>0){
+      flash-=dt*3;
+      ctx.fillStyle=flashColor;ctx.globalAlpha=flash*0.2;ctx.fillRect(0,0,W,H);ctx.globalAlpha=1;
+    }
+
+    drawStickFigure(leftArmAngle,rightArmAngle);
+    drawHUD();
+    drawKeyboard();
+
+    if(showChart) drawChart();
+  }
+
+  requestAnimationFrame(update);
+}
+requestAnimationFrame(update);
+</script>
+</body>
+</html>

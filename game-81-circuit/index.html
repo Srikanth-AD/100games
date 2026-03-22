@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>CIRCUIT</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H,state='menu',score=0,level=0,moves=0,timer=0,grid=[],gridW=5,gridH=5,cellSize,offsetX,offsetY,battery={},bulbs=[],powered=[],sparkles=[],levelComplete=false,completeTimer=0;
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+
+function playSound(freq,dur,type='sine'){
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(0.12,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+  o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+dur);
+}
+function playClick(){playSound(500,0.08,'square');}
+function playConnect(){playSound(800,0.2);playSound(1000,0.3);}
+function playWin(){[0,80,160,240,320].forEach((d,i)=>setTimeout(()=>playSound(523+i*80,0.25),d));}
+
+function resize(){
+  W=canvas.width=Math.min(window.innerWidth,window.innerHeight);
+  H=canvas.height=W;
+  cellSize=Math.floor(W*0.8/Math.max(gridW,gridH));
+  offsetX=(W-gridW*cellSize)/2;
+  offsetY=(H-gridH*cellSize)/2+W*0.05;
+}
+window.addEventListener('resize',resize);
+
+// Wire types: 0=empty, 1=straight, 2=corner, 3=T-junction, 4=cross
+// Each has a rotation 0-3 (90 deg increments)
+// Connections: directions [up,right,down,left] based on type+rotation
+const WIRE_CONNECTIONS={
+  0:()=>[0,0,0,0],
+  1:(r)=>{const c=[1,0,1,0];return rotateArr(c,r);},
+  2:(r)=>{const c=[1,1,0,0];return rotateArr(c,r);},
+  3:(r)=>{const c=[1,1,0,1];return rotateArr(c,r);},
+  4:()=>[1,1,1,1],
+};
+
+function rotateArr(a,r){
+  const c=[...a];
+  for(let i=0;i<r;i++){const t=c.pop();c.unshift(t);}
+  return c;
+}
+
+function getConnections(cell){
+  if(!cell||cell.type===0) return [0,0,0,0];
+  return WIRE_CONNECTIONS[cell.type](cell.rotation);
+}
+
+const levels=[
+  {w:4,h:4,bat:{x:0,y:1},bulbs:[{x:3,y:1}],walls:[]},
+  {w:4,h:4,bat:{x:0,y:0},bulbs:[{x:3,y:3}],walls:[{x:1,y:1},{x:2,y:2}]},
+  {w:5,h:4,bat:{x:0,y:2},bulbs:[{x:4,y:0},{x:4,y:3}],walls:[]},
+  {w:5,h:5,bat:{x:0,y:2},bulbs:[{x:4,y:0},{x:4,y:4}],walls:[{x:2,y:1},{x:2,y:3}]},
+  {w:5,h:5,bat:{x:0,y:2},bulbs:[{x:4,y:0},{x:4,y:2},{x:4,y:4}],walls:[{x:1,y:1},{x:3,y:3}]},
+  {w:6,h:5,bat:{x:0,y:2},bulbs:[{x:5,y:0},{x:5,y:2},{x:5,y:4}],walls:[{x:2,y:0},{x:2,y:4},{x:3,y:2}]},
+  {w:6,h:6,bat:{x:0,y:3},bulbs:[{x:5,y:0},{x:5,y:3},{x:5,y:5}],walls:[{x:1,y:1},{x:3,y:2},{x:2,y:4},{x:4,y:1}]},
+  {w:7,h:6,bat:{x:0,y:3},bulbs:[{x:6,y:0},{x:6,y:2},{x:6,y:5},{x:3,y:0}],walls:[{x:1,y:1},{x:2,y:3},{x:4,y:2},{x:5,y:4}]},
+];
+
+function initLevel(){
+  const lv=levels[level%levels.length];
+  gridW=lv.w;gridH=lv.h;
+  battery=lv.bat;bulbs=[...lv.bulbs];
+  moves=0;timer=0;levelComplete=false;completeTimer=0;
+  grid=[];
+  for(let y=0;y<gridH;y++){
+    grid[y]=[];
+    for(let x=0;x<gridW;x++){
+      const isWall=lv.walls.some(w=>w.x===x&&w.y===y);
+      const isBat=battery.x===x&&battery.y===y;
+      const isBulb=bulbs.some(b=>b.x===x&&b.y===y);
+      grid[y][x]={type:0,rotation:0,wall:isWall,battery:isBat,bulb:isBulb};
+    }
+  }
+  // Place battery as a source with all connections
+  grid[battery.y][battery.x].type=4;grid[battery.y][battery.x].fixed=true;
+  // Place bulbs as receivers with all connections
+  for(const b of bulbs){grid[b.y][b.x].type=4;grid[b.y][b.x].fixed=true;}
+  resize();
+  traceCircuit();
+}
+
+function traceCircuit(){
+  // BFS from battery
+  powered=[];
+  const visited=new Set();
+  const q=[`${battery.x},${battery.y}`];
+  visited.add(q[0]);
+  while(q.length>0){
+    const [cx,cy]=q.shift().split(',').map(Number);
+    powered.push({x:cx,y:cy});
+    const conn=getConnections(grid[cy][cx]);
+    const dirs=[[0,-1],[1,0],[0,1],[-1,0]];
+    for(let d=0;d<4;d++){
+      if(!conn[d]) continue;
+      const nx=cx+dirs[d][0],ny=cy+dirs[d][1];
+      if(nx<0||ny<0||nx>=gridW||ny>=gridH) continue;
+      const key=`${nx},${ny}`;
+      if(visited.has(key)) continue;
+      const nc=grid[ny][nx];
+      if(nc.wall||nc.type===0) continue;
+      const nconn=getConnections(nc);
+      const opposite=(d+2)%4;
+      if(nconn[opposite]){
+        visited.add(key);
+        q.push(key);
+      }
+    }
+  }
+  // Check if all bulbs powered
+  const allPowered=bulbs.every(b=>powered.some(p=>p.x===b.x&&p.y===b.y));
+  if(allPowered&&!levelComplete){
+    levelComplete=true;completeTimer=0;
+    score+=Math.max(50,500-moves*10-Math.floor(timer));
+    playWin();
+    setTimeout(()=>{level++;initLevel();},2000);
+  }
+}
+
+function drawCell(x,y,cell){
+  const px=offsetX+x*cellSize,py=offsetY+y*cellSize;
+  const isPowered=powered.some(p=>p.x===x&&p.y===y);
+  const t=Date.now()/1000;
+
+  // Background
+  if(cell.wall){
+    ctx.fillStyle='#2c2c2c';
+  } else {
+    ctx.fillStyle=isPowered?'#0a2a0a':'#0a0a1a';
+  }
+  ctx.fillRect(px+1,py+1,cellSize-2,cellSize-2);
+
+  if(cell.wall) return;
+
+  const cx=px+cellSize/2,cy=py+cellSize/2,r=cellSize*0.35;
+  const conn=getConnections(cell);
+  const wireColor=isPowered?'#00ff88':'#445';
+  const wireWidth=cellSize*0.12;
+
+  if(cell.type>0){
+    ctx.strokeStyle=wireColor;
+    ctx.lineWidth=wireWidth;
+    ctx.lineCap='round';
+    // Draw connections
+    const dirs=[[0,-1],[1,0],[0,1],[-1,0]];
+    for(let d=0;d<4;d++){
+      if(!conn[d]) continue;
+      ctx.beginPath();
+      ctx.moveTo(cx,cy);
+      ctx.lineTo(cx+dirs[d][0]*cellSize/2,cy+dirs[d][1]*cellSize/2);
+      ctx.stroke();
+    }
+    // Center dot
+    ctx.fillStyle=wireColor;
+    ctx.beginPath();ctx.arc(cx,cy,wireWidth*0.6,0,Math.PI*2);ctx.fill();
+
+    // Electricity animation
+    if(isPowered){
+      ctx.strokeStyle=`rgba(0,255,136,${0.3+Math.sin(t*10+x+y)*0.2})`;
+      ctx.lineWidth=wireWidth*1.8;
+      ctx.globalAlpha=0.3;
+      for(let d=0;d<4;d++){
+        if(!conn[d]) continue;
+        ctx.beginPath();ctx.moveTo(cx,cy);
+        ctx.lineTo(cx+dirs[d][0]*cellSize/2,cy+dirs[d][1]*cellSize/2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha=1;
+    }
+  }
+
+  // Battery icon
+  if(cell.battery){
+    ctx.fillStyle='#ff4444';
+    ctx.fillRect(cx-r*0.4,cy-r*0.6,r*0.8,r*1.2);
+    ctx.fillStyle='#fff';
+    ctx.font=`bold ${cellSize*0.25}px Arial`;
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText('+',cx,cy);
+  }
+
+  // Bulb icon
+  if(cell.bulb){
+    const glow=isPowered?'#ffff00':'#554400';
+    if(isPowered){
+      const grad=ctx.createRadialGradient(cx,cy,0,cx,cy,r*1.5);
+      grad.addColorStop(0,'rgba(255,255,0,0.4)');
+      grad.addColorStop(1,'rgba(255,255,0,0)');
+      ctx.fillStyle=grad;ctx.fillRect(px,py,cellSize,cellSize);
+    }
+    ctx.fillStyle=glow;
+    ctx.beginPath();ctx.arc(cx,cy-r*0.1,r*0.5,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='#888';ctx.lineWidth=2;ctx.stroke();
+  }
+}
+
+function drawMenu(){
+  ctx.fillStyle='#0a0a1a';ctx.fillRect(0,0,W,H);
+  const t=Date.now()/1000;
+  // Animated circuit lines
+  for(let i=0;i<8;i++){
+    const y=W*0.1+i*W*0.1;
+    ctx.strokeStyle=`hsl(${120+i*10},80%,${30+Math.sin(t*2+i)*15}%)`;
+    ctx.lineWidth=3;
+    ctx.beginPath();
+    for(let x=0;x<W;x+=5){
+      ctx.lineTo(x,y+Math.sin(x*0.02+t+i)*15);
+    }
+    ctx.stroke();
+  }
+  ctx.fillStyle='#00ff88';ctx.textAlign='center';
+  ctx.font=`bold ${W*0.1}px Arial`;
+  ctx.fillText('CIRCUIT',W/2,H*0.4);
+  ctx.fillStyle='#aaa';ctx.font=`${W*0.035}px Arial`;
+  ctx.fillText('Tap cells to place wire segments',W/2,H*0.5);
+  ctx.fillText('Connect battery to all bulbs',W/2,H*0.55);
+  ctx.fillStyle='#00ff88';ctx.font=`${W*0.05}px Arial`;
+  const pulse=0.8+Math.sin(t*3)*0.2;ctx.globalAlpha=pulse;
+  ctx.fillText('TAP TO START',W/2,H*0.72);
+  ctx.globalAlpha=1;
+}
+
+function drawGameOver(){
+  ctx.fillStyle='#0a0a1a';ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';
+  ctx.fillStyle='#00ff88';ctx.font=`bold ${W*0.08}px Arial`;
+  ctx.fillText('ALL CIRCUITS',W/2,H*0.3);
+  ctx.fillText('COMPLETE!',W/2,H*0.38);
+  ctx.fillStyle='#fff';ctx.font=`${W*0.05}px Arial`;
+  ctx.fillText('Levels: '+level,W/2,H*0.5);
+  ctx.fillText('Score: '+score,W/2,H*0.58);
+  ctx.fillStyle='#00ff88';ctx.font=`${W*0.04}px Arial`;
+  const pulse=0.8+Math.sin(Date.now()/300)*0.2;ctx.globalAlpha=pulse;
+  ctx.fillText('TAP TO PLAY AGAIN',W/2,H*0.72);
+  ctx.globalAlpha=1;
+}
+
+function drawGame(){
+  ctx.fillStyle='#0a0a1a';ctx.fillRect(0,0,W,H);
+
+  // Grid border
+  ctx.strokeStyle='#333';ctx.lineWidth=2;
+  ctx.strokeRect(offsetX-1,offsetY-1,gridW*cellSize+2,gridH*cellSize+2);
+
+  for(let y=0;y<gridH;y++)
+    for(let x=0;x<gridW;x++)
+      drawCell(x,y,grid[y][x]);
+
+  // HUD
+  ctx.fillStyle='#fff';ctx.textAlign='left';
+  ctx.font=`${W*0.04}px Arial`;
+  ctx.fillText('Level '+(level+1),10,W*0.05);
+  ctx.fillText('Moves: '+moves,10,W*0.1);
+  ctx.textAlign='right';
+  ctx.fillText('Score: '+score,W-10,W*0.05);
+  ctx.fillText('Time: '+Math.floor(timer)+'s',W-10,W*0.1);
+
+  // Wire palette at bottom
+  const palY=offsetY+gridH*cellSize+cellSize*0.5;
+  const palSize=cellSize*0.8;
+  ctx.fillStyle='#fff';ctx.textAlign='center';ctx.font=`${W*0.03}px Arial`;
+  ctx.fillText('Tap cell to cycle wire types',W/2,palY+palSize+W*0.04);
+
+  if(levelComplete){
+    ctx.fillStyle='rgba(0,255,136,0.3)';ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#00ff88';ctx.textAlign='center';
+    ctx.font=`bold ${W*0.07}px Arial`;
+    ctx.fillText('CONNECTED!',W/2,H*0.2);
+  }
+}
+
+let lastTime=0;
+function gameLoop(ts){
+  const dt=Math.min((ts-lastTime)/1000,0.05);lastTime=ts;
+  if(state==='play'&&!levelComplete) timer+=dt;
+  if(state==='menu') drawMenu();
+  else if(state==='play') drawGame();
+  else if(state==='gameover') drawGameOver();
+  requestAnimationFrame(gameLoop);
+}
+
+function getPos(e){
+  const r=canvas.getBoundingClientRect();
+  const t=e.touches?e.touches[0]:e;
+  return {x:(t.clientX-r.left)*(W/r.width),y:(t.clientY-r.top)*(H/r.height)};
+}
+
+function handleTap(e){
+  e.preventDefault();
+  const pos=getPos(e);
+  if(state==='menu'){
+    audioCtx.resume();state='play';level=0;score=0;initLevel();return;
+  }
+  if(state==='gameover'){state='menu';return;}
+  if(state==='play'&&!levelComplete){
+    const gx=Math.floor((pos.x-offsetX)/cellSize);
+    const gy=Math.floor((pos.y-offsetY)/cellSize);
+    if(gx>=0&&gx<gridW&&gy>=0&&gy<gridH){
+      const cell=grid[gy][gx];
+      if(cell.wall||cell.fixed) return;
+      // Cycle through wire types, then rotations
+      if(cell.type===0){cell.type=1;cell.rotation=0;}
+      else{
+        cell.rotation=(cell.rotation+1)%4;
+        if(cell.rotation===0){
+          cell.type++;
+          if(cell.type>4){cell.type=0;cell.rotation=0;}
+        }
+      }
+      moves++;
+      playClick();
+      traceCircuit();
+    }
+  }
+}
+
+canvas.addEventListener('mousedown',handleTap);
+canvas.addEventListener('touchstart',handleTap,{passive:false});
+canvas.addEventListener('touchmove',e=>e.preventDefault(),{passive:false});
+
+resize();
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

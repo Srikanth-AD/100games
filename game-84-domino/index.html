@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>DOMINO</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H;
+function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight}
+resize();window.addEventListener('resize',resize);
+
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playSound(freq,dur,type='sine'){
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(0.3,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.01,audioCtx.currentTime+dur);
+  o.connect(g);g.connect(audioCtx.destination);
+  o.start();o.stop(audioCtx.currentTime+dur);
+}
+function playClick(){playSound(800,0.05,'square')}
+function playTopple(){playSound(200+Math.random()*200,0.15,'triangle')}
+function playWin(){playSound(523,0.2);setTimeout(()=>playSound(659,0.2),150);setTimeout(()=>playSound(784,0.3),300)}
+function playFail(){playSound(200,0.4,'sawtooth')}
+
+let state='menu'; // menu, placing, toppling, win, fail, gameover
+let level=1, score=0, totalScore=0;
+let dominoes=[], particles=[];
+let targetX, targetY;
+let pushBtnX, pushBtnY, pushBtnR=30;
+let toppleIndex=0, toppleTimer=0;
+let placesLeft=0, maxPlaces=10;
+let groundY;
+
+class Domino {
+  constructor(x,y){
+    this.x=x;this.y=y;
+    this.w=12;this.h=50;
+    this.angle=0; // 0=standing, PI/2=fallen right, -PI/2=fallen left
+    this.standing=true;
+    this.falling=false;
+    this.fallDir=1;
+    this.fallSpeed=0;
+    this.isTarget=false;
+    this.dots=Math.floor(Math.random()*6)+1;
+  }
+  update(){
+    if(this.falling&&this.standing){
+      this.fallSpeed+=0.12;
+      this.angle+=this.fallDir*this.fallSpeed*0.05;
+      if(Math.abs(this.angle)>=Math.PI/2.2){
+        this.angle=this.fallDir*(Math.PI/2.2);
+        this.standing=false;
+        this.falling=false;
+        playTopple();
+        for(let i=0;i<8;i++){
+          particles.push({x:this.x,y:this.y-this.h/2,vx:(Math.random()-0.5)*4,vy:-Math.random()*4,life:30,color:'#fff'});
+        }
+      }
+    }
+  }
+  draw(){
+    ctx.save();
+    ctx.translate(this.x,this.y);
+    ctx.rotate(this.angle);
+    const grad=ctx.createLinearGradient(-this.w/2,-this.h,this.w/2,0);
+    if(this.isTarget){
+      grad.addColorStop(0,'#ff4444');grad.addColorStop(1,'#cc0000');
+    } else {
+      grad.addColorStop(0,'#ffffff');grad.addColorStop(1,'#cccccc');
+    }
+    ctx.fillStyle=grad;
+    ctx.shadowColor=this.isTarget?'#ff0000':'rgba(255,255,255,0.3)';
+    ctx.shadowBlur=5;
+    ctx.fillRect(-this.w/2,-this.h,this.w,this.h);
+    ctx.shadowBlur=0;
+    ctx.strokeStyle='#333';ctx.lineWidth=1;
+    ctx.strokeRect(-this.w/2,-this.h,this.w,this.h);
+    // divider line
+    ctx.beginPath();ctx.moveTo(-this.w/2,-this.h/2);ctx.lineTo(this.w/2,-this.h/2);ctx.stroke();
+    // dots
+    ctx.fillStyle=this.isTarget?'#fff':'#333';
+    const dotR=2;
+    const top=this.dots>3?3:this.dots;
+    const bot=this.dots-top;
+    this.drawDots(0,-this.h*0.75,top,dotR);
+    this.drawDots(0,-this.h*0.25,bot||Math.floor(Math.random()*3)+1,dotR);
+    ctx.restore();
+  }
+  drawDots(cx,cy,n,r){
+    const positions=[[0,0],[-3,-3],[3,3],[-3,3],[3,-3],[0,-3],[0,3]];
+    for(let i=0;i<Math.min(n,6);i++){
+      ctx.beginPath();ctx.arc(cx+positions[i][0],cy+positions[i][1],r,0,Math.PI*2);ctx.fill();
+    }
+  }
+  topOf(){return{x:this.x+Math.sin(this.angle)*this.h,y:this.y-Math.cos(this.angle)*this.h}}
+}
+
+function initLevel(){
+  dominoes=[];particles=[];
+  state='placing';
+  toppleIndex=-1;toppleTimer=0;
+  groundY=H*0.75;
+  maxPlaces=8+level*2;
+  placesLeft=maxPlaces;
+  // target domino at right side
+  targetX=W*0.85;targetY=groundY;
+  const target=new Domino(targetX,targetY);
+  target.isTarget=true;
+  target.h=60;
+  dominoes.push(target);
+  pushBtnX=60;pushBtnY=H-60;pushBtnR=35;
+}
+
+function startTopple(){
+  if(dominoes.length<2)return;
+  state='toppling';
+  // find leftmost non-target domino
+  let leftmost=null,leftIdx=-1;
+  for(let i=0;i<dominoes.length;i++){
+    if(!dominoes[i].isTarget){
+      if(!leftmost||dominoes[i].x<leftmost.x){leftmost=dominoes[i];leftIdx=i;}
+    }
+  }
+  if(leftmost){
+    leftmost.falling=true;leftmost.fallDir=1;leftmost.fallSpeed=2;
+    toppleIndex=leftIdx;toppleTimer=0;
+  }
+}
+
+function updateTopple(){
+  toppleTimer++;
+  // check chain reactions
+  for(let i=0;i<dominoes.length;i++){
+    const d=dominoes[i];
+    if(!d.standing)continue;
+    if(d.falling)continue;
+    // check if any fallen domino is close enough
+    for(let j=0;j<dominoes.length;j++){
+      if(i===j)continue;
+      const o=dominoes[j];
+      if(o.standing||o.angle===0)continue;
+      const top=o.topOf();
+      const dist=Math.abs(top.x-d.x);
+      const reach=o.h*0.9;
+      if(dist<d.w+15&&o.fallDir>0&&o.x<d.x){
+        d.falling=true;d.fallDir=1;d.fallSpeed=1.5;
+      } else if(dist<d.w+15&&o.fallDir<0&&o.x>d.x){
+        d.falling=true;d.fallDir=-1;d.fallSpeed=1.5;
+      }
+    }
+  }
+  // check win/fail
+  const target=dominoes[0];
+  if(!target.standing){
+    state='win';
+    let knocked=dominoes.filter(d=>!d.standing).length;
+    score=knocked*10+level*25;
+    totalScore+=score;
+    playWin();
+    for(let i=0;i<30;i++){
+      particles.push({x:target.x,y:target.y-40,vx:(Math.random()-0.5)*8,vy:-Math.random()*8,life:60,color:`hsl(${Math.random()*360},100%,60%)`});
+    }
+  }
+  // fail if all stopped and target still standing
+  let allStopped=true;
+  for(const d of dominoes){if(d.falling)allStopped=false;}
+  if(allStopped&&target.standing&&toppleTimer>30){
+    state='fail';playFail();
+  }
+}
+
+function drawBackground(){
+  // sky gradient
+  const grad=ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,'#1a1a2e');grad.addColorStop(0.5,'#16213e');grad.addColorStop(1,'#0f3460');
+  ctx.fillStyle=grad;ctx.fillRect(0,0,W,H);
+  // floor
+  ctx.fillStyle='#2a1a0a';ctx.fillRect(0,groundY,W,H-groundY);
+  // wood grain
+  ctx.strokeStyle='rgba(60,40,20,0.5)';ctx.lineWidth=1;
+  for(let i=0;i<10;i++){
+    ctx.beginPath();ctx.moveTo(0,groundY+i*((H-groundY)/10));
+    ctx.lineTo(W,groundY+i*((H-groundY)/10)+5);ctx.stroke();
+  }
+  // stars
+  ctx.fillStyle='#fff';
+  for(let i=0;i<30;i++){
+    const sx=(i*137.5)%W,sy=(i*97.3)%(groundY*0.6);
+    ctx.globalAlpha=0.3+Math.sin(Date.now()*0.002+i)*0.3;
+    ctx.fillRect(sx,sy,2,2);
+  }
+  ctx.globalAlpha=1;
+}
+
+function drawUI(){
+  // level & score
+  ctx.fillStyle='#fff';ctx.font='bold 18px monospace';ctx.textAlign='left';
+  ctx.fillText(`Level: ${level}`,15,30);
+  ctx.fillText(`Score: ${totalScore}`,15,55);
+  if(state==='placing'){
+    ctx.fillText(`Pieces: ${placesLeft}`,15,80);
+    // push button
+    ctx.beginPath();ctx.arc(pushBtnX,pushBtnY,pushBtnR,0,Math.PI*2);
+    const grad=ctx.createRadialGradient(pushBtnX,pushBtnY,0,pushBtnX,pushBtnY,pushBtnR);
+    grad.addColorStop(0,'#4CAF50');grad.addColorStop(1,'#2E7D32');
+    ctx.fillStyle=grad;ctx.fill();
+    ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();
+    ctx.fillStyle='#fff';ctx.font='bold 14px monospace';ctx.textAlign='center';
+    ctx.fillText('PUSH',pushBtnX,pushBtnY+5);
+    // hint
+    ctx.fillStyle='rgba(255,255,255,0.5)';ctx.font='14px monospace';
+    ctx.fillText('Tap to place dominoes, then PUSH!',W/2,35);
+  }
+  // target marker
+  if(dominoes.length>0){
+    const t=dominoes[0];
+    ctx.fillStyle='#ff4444';ctx.font='bold 12px monospace';ctx.textAlign='center';
+    ctx.fillText('TARGET',t.x,t.y-t.h-15);
+    ctx.beginPath();ctx.moveTo(t.x,t.y-t.h-10);ctx.lineTo(t.x-5,t.y-t.h-5);ctx.lineTo(t.x+5,t.y-t.h-5);ctx.fill();
+  }
+}
+
+function drawParticles(){
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];
+    p.x+=p.vx;p.y+=p.vy;p.vy+=0.15;p.life--;
+    ctx.globalAlpha=p.life/60;
+    ctx.fillStyle=p.color;
+    ctx.fillRect(p.x-2,p.y-2,4,4);
+    if(p.life<=0)particles.splice(i,1);
+  }
+  ctx.globalAlpha=1;
+}
+
+function drawMenu(){
+  const grad=ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,'#1a1a2e');grad.addColorStop(1,'#0f3460');
+  ctx.fillStyle=grad;ctx.fillRect(0,0,W,H);
+  // animated dominoes in background
+  const t=Date.now()*0.001;
+  for(let i=0;i<7;i++){
+    ctx.save();
+    const dx=W*0.2+i*(W*0.1);
+    const dy=H*0.65;
+    const angle=Math.max(0,Math.min(Math.PI/2.2,t*2-i*0.4));
+    ctx.translate(dx,dy);ctx.rotate(angle);
+    ctx.fillStyle=i===6?'#ff4444':'#ddd';
+    ctx.fillRect(-8,-50,16,50);
+    ctx.strokeStyle='#333';ctx.strokeRect(-8,-50,16,50);
+    ctx.restore();
+  }
+  ctx.fillStyle='#fff';ctx.font=`bold ${Math.min(60,W*0.12)}px monospace`;ctx.textAlign='center';
+  ctx.fillText('DOMINO',W/2,H*0.25);
+  ctx.font=`${Math.min(22,W*0.04)}px monospace`;
+  ctx.fillStyle='#aaa';
+  ctx.fillText('Place dominoes to create a chain reaction',W/2,H*0.33);
+  ctx.fillText('Knock down the red target!',W/2,H*0.38);
+  ctx.fillStyle='#4CAF50';ctx.font=`bold ${Math.min(28,W*0.05)}px monospace`;
+  const pulse=Math.sin(Date.now()*0.005)*0.2+0.8;
+  ctx.globalAlpha=pulse;
+  ctx.fillText('TAP TO START',W/2,H*0.85);
+  ctx.globalAlpha=1;
+}
+
+function drawWin(){
+  ctx.fillStyle='rgba(0,50,0,0.7)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#4CAF50';ctx.font=`bold ${Math.min(50,W*0.1)}px monospace`;ctx.textAlign='center';
+  ctx.fillText('CHAIN COMPLETE!',W/2,H*0.3);
+  ctx.fillStyle='#fff';ctx.font=`bold ${Math.min(30,W*0.06)}px monospace`;
+  let knocked=dominoes.filter(d=>!d.standing).length;
+  ctx.fillText(`Dominoes Toppled: ${knocked}`,W/2,H*0.45);
+  ctx.fillText(`Level Bonus: ${level*25}`,W/2,H*0.52);
+  ctx.fillStyle='#FFD700';ctx.font=`bold ${Math.min(36,W*0.07)}px monospace`;
+  ctx.fillText(`+${score} pts`,W/2,H*0.62);
+  ctx.fillStyle='#aaa';ctx.font=`${Math.min(20,W*0.04)}px monospace`;
+  const pulse=Math.sin(Date.now()*0.005)*0.2+0.8;ctx.globalAlpha=pulse;
+  ctx.fillText('TAP FOR NEXT LEVEL',W/2,H*0.8);ctx.globalAlpha=1;
+}
+
+function drawFail(){
+  ctx.fillStyle='rgba(50,0,0,0.7)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#ff4444';ctx.font=`bold ${Math.min(50,W*0.1)}px monospace`;ctx.textAlign='center';
+  ctx.fillText('CHAIN FAILED!',W/2,H*0.3);
+  ctx.fillStyle='#fff';ctx.font=`${Math.min(24,W*0.05)}px monospace`;
+  ctx.fillText('The target was not reached',W/2,H*0.45);
+  ctx.fillText(`Total Score: ${totalScore}`,W/2,H*0.55);
+  ctx.fillStyle='#aaa';ctx.font=`${Math.min(20,W*0.04)}px monospace`;
+  const pulse=Math.sin(Date.now()*0.005)*0.2+0.8;ctx.globalAlpha=pulse;
+  ctx.fillText('TAP TO RETRY',W/2,H*0.75);ctx.globalAlpha=1;
+}
+
+function gameLoop(){
+  ctx.clearRect(0,0,W,H);
+  if(state==='menu'){
+    drawMenu();
+  } else if(state==='placing'||state==='toppling'){
+    drawBackground();
+    // path line hint
+    if(state==='placing'){
+      ctx.setLineDash([5,10]);ctx.strokeStyle='rgba(255,255,255,0.15)';ctx.lineWidth=2;
+      ctx.beginPath();ctx.moveTo(W*0.1,groundY);ctx.lineTo(W*0.85,groundY);ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    for(const d of dominoes)d.update();
+    for(const d of dominoes)d.draw();
+    drawParticles();
+    drawUI();
+    if(state==='toppling')updateTopple();
+  } else if(state==='win'){
+    drawBackground();
+    for(const d of dominoes)d.draw();
+    drawParticles();
+    drawWin();
+  } else if(state==='fail'){
+    drawBackground();
+    for(const d of dominoes)d.draw();
+    drawParticles();
+    drawFail();
+  }
+  requestAnimationFrame(gameLoop);
+}
+
+function handleInput(x,y){
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  if(state==='menu'){
+    state='placing';level=1;totalScore=0;
+    initLevel();playClick();return;
+  }
+  if(state==='placing'){
+    // check push button
+    const dx=x-pushBtnX,dy=y-pushBtnY;
+    if(Math.sqrt(dx*dx+dy*dy)<pushBtnR){
+      if(dominoes.length>1){startTopple();playClick();}
+      return;
+    }
+    // place domino
+    if(placesLeft>0&&y>groundY-80&&y<groundY+10&&x>W*0.05&&x<W*0.82){
+      // don't place on top of existing
+      let tooClose=false;
+      for(const d of dominoes){if(Math.abs(d.x-x)<20)tooClose=true;}
+      if(!tooClose){
+        const d=new Domino(x,groundY);
+        dominoes.push(d);placesLeft--;playClick();
+        particles.push({x,y:groundY-25,vx:0,vy:-2,life:20,color:'#4CAF50'});
+      }
+    }
+    return;
+  }
+  if(state==='win'){
+    level++;initLevel();playClick();return;
+  }
+  if(state==='fail'){
+    initLevel();playClick();return;
+  }
+}
+
+canvas.addEventListener('mousedown',e=>{e.preventDefault();handleInput(e.clientX,e.clientY)});
+canvas.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];handleInput(t.clientX,t.clientY)},{passive:false});
+
+gameLoop();
+</script>
+</body>
+</html>

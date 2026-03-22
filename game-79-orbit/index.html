@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>ORBIT</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W, H, CX, CY;
+function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+    CX = W / 2;
+    CY = H / 2;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Audio
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playSound(freq, dur, type = 'sine', vol = 0.3) {
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(vol, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    o.connect(g);
+    g.connect(audioCtx.destination);
+    o.start();
+    o.stop(audioCtx.currentTime + dur);
+}
+
+// Constants
+const PLANET_RADIUS = 35;
+const GRAVITY = 800;
+const MIN_ORBIT = PLANET_RADIUS + 30;
+const MAX_ORBIT = Math.min(W, H) * 0.45;
+
+// State
+let state = 'menu';
+let score = 0;
+let bestScore = 0;
+let level = 1;
+let satellites = [];
+let orbiters = []; // successfully orbiting
+let incoming = []; // approaching satellites
+let trails = [];
+let particles = [];
+let starField = [];
+let planetPulse = 0;
+let spawnTimer = 0;
+let spawnInterval = 180;
+let failCount = 0;
+let maxFails = 3;
+
+// Generate star field
+function genStars() {
+    starField = [];
+    for (let i = 0; i < 120; i++) {
+        starField.push({
+            x: Math.random() * W,
+            y: Math.random() * H,
+            size: Math.random() * 2 + 0.5,
+            bright: Math.random()
+        });
+    }
+}
+genStars();
+
+// Satellite approach
+function spawnIncoming() {
+    const edge = Math.random() * 4;
+    let sx, sy, angle;
+
+    // Spawn from random edge
+    const side = Math.floor(Math.random() * 4);
+    if (side === 0) { sx = -20; sy = Math.random() * H; }
+    else if (side === 1) { sx = W + 20; sy = Math.random() * H; }
+    else if (side === 2) { sx = Math.random() * W; sy = -20; }
+    else { sx = Math.random() * W; sy = H + 20; }
+
+    // Aim roughly toward planet center with some offset
+    const toDirX = CX - sx;
+    const toDirY = CY - sy;
+    const dist = Math.sqrt(toDirX * toDirX + toDirY * toDirY);
+    const baseAngle = Math.atan2(toDirY, toDirX);
+    // Add slight offset so it doesn't head straight for center
+    const offsetAngle = baseAngle + (Math.random() - 0.5) * 0.6;
+    const speed = 1.5 + Math.random() * 1;
+
+    const hue = Math.floor(Math.random() * 360);
+
+    incoming.push({
+        x: sx,
+        y: sy,
+        vx: Math.cos(offsetAngle) * speed,
+        vy: Math.sin(offsetAngle) * speed,
+        released: false,
+        hue,
+        size: 6,
+        trail: [],
+        alive: true,
+        approaching: true // on the guided path
+    });
+}
+
+function initGame() {
+    score = 0;
+    level = 1;
+    orbiters = [];
+    incoming = [];
+    particles = [];
+    trails = [];
+    failCount = 0;
+    spawnTimer = 0;
+    spawnInterval = 180;
+    planetPulse = 0;
+}
+
+function spawnParticles(x, y, color, count) {
+    for (let i = 0; i < count; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = Math.random() * 4 + 1;
+        particles.push({
+            x, y,
+            vx: Math.cos(a) * s,
+            vy: Math.sin(a) * s,
+            life: 1,
+            color,
+            size: Math.random() * 3 + 1
+        });
+    }
+}
+
+function releaseNearest(tapX, tapY) {
+    let closest = null;
+    let closestDist = 60; // tap radius
+
+    incoming.forEach(sat => {
+        if (!sat.approaching) return;
+        const dx = sat.x - tapX;
+        const dy = sat.y - tapY;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < closestDist) {
+            closestDist = d;
+            closest = sat;
+        }
+    });
+
+    if (closest) {
+        closest.approaching = false;
+        closest.released = true;
+        playSound(500, 0.1, 'triangle', 0.2);
+        return;
+    }
+
+    // If no incoming close, check if any incoming exists and release the frontmost
+    if (incoming.length > 0) {
+        // Release the one closest to the planet
+        let minDist = Infinity;
+        incoming.forEach(sat => {
+            if (!sat.approaching) return;
+            const dx = sat.x - CX;
+            const dy = sat.y - CY;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            if (d < minDist) {
+                minDist = d;
+                closest = sat;
+            }
+        });
+        if (closest) {
+            closest.approaching = false;
+            closest.released = true;
+            playSound(500, 0.1, 'triangle', 0.2);
+        }
+    }
+}
+
+function update() {
+    if (state !== 'play') return;
+
+    const dt = 1 / 60;
+
+    // Spawn timer
+    spawnTimer++;
+    if (spawnTimer >= spawnInterval) {
+        spawnTimer = 0;
+        spawnIncoming();
+        // Increase difficulty
+        if (incoming.length + orbiters.length > level * 2) {
+            level++;
+            spawnInterval = Math.max(60, spawnInterval - 15);
+        }
+    }
+
+    // Ensure there's always at least one incoming
+    const hasApproaching = incoming.some(s => s.approaching);
+    if (!hasApproaching && incoming.length === 0) {
+        spawnIncoming();
+    }
+
+    // Update incoming satellites
+    incoming.forEach(sat => {
+        if (sat.approaching) {
+            // Move toward planet on guided path
+            sat.x += sat.vx;
+            sat.y += sat.vy;
+        } else {
+            // Released - apply gravity
+            const dx = CX - sat.x;
+            const dy = CY - sat.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const gForce = GRAVITY / (dist * dist) * 60;
+            const ax = (dx / dist) * gForce;
+            const ay = (dy / dist) * gForce;
+            sat.vx += ax * dt;
+            sat.vy += ay * dt;
+            sat.x += sat.vx;
+            sat.y += sat.vy;
+
+            // Check for stable orbit
+            const speed = Math.sqrt(sat.vx * sat.vx + sat.vy * sat.vy);
+            const orbitalSpeed = Math.sqrt(GRAVITY * 60 / dist);
+            const speedRatio = speed / orbitalSpeed;
+
+            // Trail
+            sat.trail.push({ x: sat.x, y: sat.y, life: 1 });
+            if (sat.trail.length > 80) sat.trail.shift();
+            sat.trail.forEach(t => t.life -= 0.015);
+
+            // Check for orbit achievement - needs to be in a reasonable range and speed
+            if (dist > MIN_ORBIT && dist < MAX_ORBIT && speedRatio > 0.7 && speedRatio < 1.4) {
+                if (!sat.orbitTicks) sat.orbitTicks = 0;
+                sat.orbitTicks++;
+                if (sat.orbitTicks > 90) { // ~1.5 seconds of stable orbit
+                    // Success!
+                    orbiters.push({
+                        x: sat.x, y: sat.y,
+                        vx: sat.vx, vy: sat.vy,
+                        hue: sat.hue,
+                        size: sat.size,
+                        trail: sat.trail,
+                        orbitDist: dist
+                    });
+                    sat.alive = false;
+                    score += 100 + level * 25;
+                    planetPulse = 1;
+                    playSound(660, 0.2, 'sine', 0.25);
+                    setTimeout(() => playSound(880, 0.15, 'sine', 0.2), 100);
+                    spawnParticles(sat.x, sat.y, `hsl(${sat.hue},80%,60%)`, 15);
+                }
+            } else {
+                sat.orbitTicks = 0;
+            }
+
+            // Crashed into planet
+            if (dist < PLANET_RADIUS) {
+                sat.alive = false;
+                failCount++;
+                planetPulse = 1;
+                playSound(150, 0.3, 'sawtooth', 0.3);
+                spawnParticles(sat.x, sat.y, '#ff4444', 20);
+                if (failCount >= maxFails) {
+                    state = 'over';
+                    bestScore = Math.max(bestScore, score);
+                }
+            }
+
+            // Flew away
+            if (dist > Math.max(W, H)) {
+                sat.alive = false;
+                failCount++;
+                playSound(200, 0.2, 'triangle', 0.2);
+                if (failCount >= maxFails) {
+                    state = 'over';
+                    bestScore = Math.max(bestScore, score);
+                }
+            }
+        }
+
+        // Check if approaching satellite went off screen without being released
+        if (sat.approaching) {
+            const dx = CX - sat.x;
+            const dy = CY - sat.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            // If it's passed through and going away
+            if (dist > Math.max(W, H) * 0.6 && sat.trail && sat.trail.length > 10) {
+                sat.alive = false;
+            }
+        }
+    });
+
+    incoming = incoming.filter(s => s.alive);
+
+    // Update orbiters
+    orbiters.forEach(orb => {
+        const dx = CX - orb.x;
+        const dy = CY - orb.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const gForce = GRAVITY / (dist * dist) * 60;
+        const ax = (dx / dist) * gForce;
+        const ay = (dy / dist) * gForce;
+        orb.vx += ax * dt;
+        orb.vy += ay * dt;
+        orb.x += orb.vx;
+        orb.y += orb.vy;
+
+        orb.trail.push({ x: orb.x, y: orb.y, life: 1 });
+        if (orb.trail.length > 120) orb.trail.shift();
+        orb.trail.forEach(t => t.life -= 0.01);
+    });
+
+    // Planet pulse
+    planetPulse *= 0.95;
+
+    // Particles
+    particles.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= 0.02;
+    });
+    particles = particles.filter(p => p.life > 0);
+}
+
+function draw() {
+    ctx.fillStyle = '#050510';
+    ctx.fillRect(0, 0, W, H);
+
+    // Stars
+    starField.forEach(s => {
+        const twinkle = 0.4 + Math.sin(Date.now() * 0.003 + s.bright * 100) * 0.3;
+        ctx.fillStyle = `rgba(255,255,255,${twinkle})`;
+        ctx.fillRect(s.x, s.y, s.size, s.size);
+    });
+
+    if (state === 'menu') { drawMenu(); return; }
+
+    drawGame();
+
+    if (state === 'over') drawGameOver();
+}
+
+function drawGame() {
+    // Orbit guide rings
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.lineWidth = 1;
+    for (let r = MIN_ORBIT; r < MAX_ORBIT; r += 40) {
+        ctx.beginPath();
+        ctx.arc(CX, CY, r, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    // Orbit zone indicators
+    ctx.strokeStyle = 'rgba(0,255,150,0.1)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 10]);
+    ctx.beginPath();
+    ctx.arc(CX, CY, MIN_ORBIT, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(CX, CY, MAX_ORBIT, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Orbiter trails
+    orbiters.forEach(orb => {
+        if (orb.trail.length < 2) return;
+        ctx.beginPath();
+        ctx.moveTo(orb.trail[0].x, orb.trail[0].y);
+        for (let i = 1; i < orb.trail.length; i++) {
+            ctx.lineTo(orb.trail[i].x, orb.trail[i].y);
+        }
+        ctx.strokeStyle = `hsla(${orb.hue},70%,50%,0.3)`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    });
+
+    // Incoming trails
+    incoming.forEach(sat => {
+        if (!sat.released || !sat.trail || sat.trail.length < 2) return;
+        ctx.beginPath();
+        ctx.moveTo(sat.trail[0].x, sat.trail[0].y);
+        for (let i = 1; i < sat.trail.length; i++) {
+            ctx.lineTo(sat.trail[i].x, sat.trail[i].y);
+        }
+        ctx.strokeStyle = `hsla(${sat.hue},70%,50%,0.2)`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+    });
+
+    // Planet
+    const pGlow = PLANET_RADIUS + 15 + planetPulse * 20;
+    const grd = ctx.createRadialGradient(CX, CY, PLANET_RADIUS * 0.5, CX, CY, pGlow);
+    grd.addColorStop(0, 'rgba(50,100,255,0.4)');
+    grd.addColorStop(0.6, 'rgba(30,60,200,0.15)');
+    grd.addColorStop(1, 'rgba(20,40,150,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(CX, CY, pGlow, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Planet surface
+    const pGrd = ctx.createRadialGradient(CX - 8, CY - 8, 5, CX, CY, PLANET_RADIUS);
+    pGrd.addColorStop(0, '#6688ff');
+    pGrd.addColorStop(0.5, '#3355cc');
+    pGrd.addColorStop(1, '#1a2266');
+    ctx.beginPath();
+    ctx.arc(CX, CY, PLANET_RADIUS, 0, Math.PI * 2);
+    ctx.fillStyle = pGrd;
+    ctx.fill();
+
+    // Planet highlight
+    ctx.beginPath();
+    ctx.arc(CX - 10, CY - 10, PLANET_RADIUS * 0.4, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.fill();
+
+    // Draw orbiters
+    orbiters.forEach(orb => {
+        ctx.beginPath();
+        ctx.arc(orb.x, orb.y, orb.size, 0, Math.PI * 2);
+        ctx.fillStyle = `hsl(${orb.hue},80%,60%)`;
+        ctx.fill();
+        ctx.strokeStyle = `hsl(${orb.hue},80%,80%)`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+    });
+
+    // Draw incoming
+    incoming.forEach(sat => {
+        // Approach indicator
+        if (sat.approaching) {
+            ctx.beginPath();
+            ctx.arc(sat.x, sat.y, 14 + Math.sin(Date.now() * 0.006) * 3, 0, Math.PI * 2);
+            ctx.strokeStyle = `hsla(${sat.hue},80%,60%,0.4)`;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // Direction indicator
+            const dx = CX - sat.x;
+            const dy = CY - sat.y;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            ctx.beginPath();
+            ctx.moveTo(sat.x + (dx / d) * 18, sat.y + (dy / d) * 18);
+            ctx.lineTo(sat.x + (dx / d) * 28, sat.y + (dy / d) * 28);
+            ctx.strokeStyle = `hsla(${sat.hue},80%,60%,0.5)`;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+
+        ctx.beginPath();
+        ctx.arc(sat.x, sat.y, sat.size, 0, Math.PI * 2);
+        ctx.fillStyle = `hsl(${sat.hue},80%,${sat.approaching ? 60 : 50}%)`;
+        ctx.fill();
+        ctx.strokeStyle = `hsl(${sat.hue},80%,80%)`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Orbit progress indicator
+        if (sat.orbitTicks && sat.orbitTicks > 0) {
+            const progress = sat.orbitTicks / 90;
+            ctx.beginPath();
+            ctx.arc(sat.x, sat.y, 12, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
+            ctx.strokeStyle = '#00ff88';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+    });
+
+    // Particles
+    particles.forEach(p => {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.life;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+    });
+
+    // HUD
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 26px monospace';
+    ctx.fillText(`SCORE: ${score}`, CX, 35);
+
+    ctx.font = '16px monospace';
+    ctx.fillStyle = '#aaa';
+    ctx.fillText(`LEVEL ${level}  |  ORBITING: ${orbiters.length}`, CX, 58);
+
+    // Fails
+    ctx.textAlign = 'left';
+    ctx.font = '20px monospace';
+    for (let i = 0; i < maxFails; i++) {
+        ctx.fillStyle = i < (maxFails - failCount) ? '#4488ff' : '#333';
+        ctx.fillText('\u25CF', 15 + i * 25, 35);
+    }
+
+    // Hint
+    if (score === 0 && incoming.length > 0) {
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        ctx.font = '15px monospace';
+        ctx.fillText('TAP satellite to release into orbit', CX, H - 30);
+    }
+}
+
+function drawMenu() {
+    ctx.textAlign = 'center';
+
+    // Planet in center
+    const pGrd = ctx.createRadialGradient(CX - 8, CY * 0.6 - 8, 5, CX, CY * 0.6, 40);
+    pGrd.addColorStop(0, '#6688ff');
+    pGrd.addColorStop(1, '#1a2266');
+    ctx.beginPath();
+    ctx.arc(CX, CY * 0.6, 40, 0, Math.PI * 2);
+    ctx.fillStyle = pGrd;
+    ctx.fill();
+
+    // Animated orbit
+    const t = Date.now() * 0.002;
+    const orbX = CX + Math.cos(t) * 80;
+    const orbY = CY * 0.6 + Math.sin(t) * 80;
+    ctx.beginPath();
+    ctx.arc(CX, CY * 0.6, 80, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,200,0,0.2)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(orbX, orbY, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffcc00';
+    ctx.fill();
+
+    ctx.fillStyle = '#4488ff';
+    ctx.font = 'bold 52px monospace';
+    ctx.fillText('ORBIT', CX, CY * 0.6 + 100);
+
+    ctx.fillStyle = '#aaa';
+    ctx.font = '18px monospace';
+    ctx.fillText('Tap to release satellites', CX, CY * 0.6 + 135);
+    ctx.fillText('into stable orbit', CX, CY * 0.6 + 160);
+
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.5 + Math.sin(Date.now() * 0.004) * 0.3) + ')';
+    ctx.font = '22px monospace';
+    ctx.fillText('TAP TO START', CX, H * 0.82);
+}
+
+function drawGameOver() {
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+
+    ctx.fillStyle = '#ff4466';
+    ctx.font = 'bold 44px monospace';
+    ctx.fillText('GAME OVER', CX, H * 0.25);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 32px monospace';
+    ctx.fillText(`SCORE: ${score}`, CX, H * 0.4);
+
+    ctx.fillStyle = '#4488ff';
+    ctx.font = '22px monospace';
+    ctx.fillText(`ORBITING: ${orbiters.length}`, CX, H * 0.5);
+    ctx.fillText(`LEVEL: ${level}`, CX, H * 0.57);
+
+    ctx.fillStyle = '#ffcc00';
+    ctx.font = '20px monospace';
+    ctx.fillText(`BEST: ${bestScore}`, CX, H * 0.65);
+
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.5 + Math.sin(Date.now() * 0.004) * 0.3) + ')';
+    ctx.font = '20px monospace';
+    ctx.fillText('TAP TO RETRY', CX, H * 0.78);
+}
+
+function handleTap(x, y) {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+
+    if (state === 'menu') {
+        state = 'play';
+        initGame();
+        spawnIncoming();
+        return;
+    }
+    if (state === 'over') {
+        state = 'play';
+        initGame();
+        spawnIncoming();
+        return;
+    }
+    if (state === 'play') {
+        releaseNearest(x, y);
+    }
+}
+
+canvas.addEventListener('mousedown', e => handleTap(e.clientX, e.clientY));
+canvas.addEventListener('touchstart', e => {
+    e.preventDefault();
+    handleTap(e.touches[0].clientX, e.touches[0].clientY);
+});
+
+function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
