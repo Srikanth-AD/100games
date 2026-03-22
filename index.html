@@ -75,6 +75,38 @@ header p {
   font-weight: 400;
 }
 
+/* Scroll hint */
+.scroll-hint {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  padding-bottom: 1rem;
+  animation: fadeHint 3s ease-in-out forwards;
+}
+.scroll-hint span {
+  display: inline-block;
+  color: rgba(255,255,255,0.35);
+  font-size: 0.75rem;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  font-weight: 400;
+}
+.scroll-hint .arrow {
+  display: block;
+  margin: 0.4rem auto 0;
+  font-size: 1.2rem;
+  color: rgba(255,255,255,0.3);
+  animation: bounce 1.5s ease-in-out infinite;
+}
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(6px); }
+}
+@keyframes fadeHint {
+  0%, 70% { opacity: 1; }
+  100% { opacity: 0; pointer-events: none; }
+}
+
 /* Grid */
 .grid {
   position: relative;
@@ -215,6 +247,11 @@ header p {
   <h1>100 GAMES</h1>
   <p>Pick a game &amp; play</p>
 </header>
+
+<div class="scroll-hint" id="scroll-hint">
+  <span>Scroll to explore all 100 games</span>
+  <div class="arrow">&#8595;</div>
+</div>
 
 <div class="grid" id="grid"></div>
 
@@ -401,6 +438,12 @@ scaleIframes();
 window.addEventListener('resize', scaleIframes);
 // Small delay so layout is stable before loading
 setTimeout(loadIframes, 200);
+
+// Hide scroll hint on scroll
+const scrollHint = document.getElementById('scroll-hint');
+window.addEventListener('scroll', () => {
+  if (window.scrollY > 50 && scrollHint) scrollHint.style.display = 'none';
+}, { passive: true });
 
 // Generate stars
 const starsEl = document.getElementById('stars');
