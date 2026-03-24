@@ -1,1 +1,9 @@
 .DS_Store
+node_modules/
+
+# Test artifacts
+scripts/screenshots/
+scripts/screenshots-gameplay/
+scripts/screenshots-responsive/
+scripts/test-report.html
+scripts/test-gameplay-report.html

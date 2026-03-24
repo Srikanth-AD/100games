@@ -1,0 +1,15 @@
+{
+  "name": "100games",
+  "version": "1.0.0",
+  "description": "100 small, addictive, creative games — built with vanilla JavaScript and HTML5 Canvas. No frameworks, no dependencies. Mobile-friendly. All playable in your browser.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "playwright": "^1.58.2"
+  }
+}

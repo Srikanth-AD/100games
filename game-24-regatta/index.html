@@ -215,7 +215,7 @@ function draw(){
   const nLanes=3;
   for(let i=1;i<nLanes;i++){
     const lx=tx+tw*i/nLanes;const dashOff=(cameraY*0.3)%(20*scl);
-    ctx.setLineDashOffset(dashOff);
+    ctx.lineDashOffset = dashOff;
     ctx.beginPath();ctx.moveTo(lx,0);ctx.lineTo(lx,H);ctx.stroke();
   }
   ctx.setLineDash([]);

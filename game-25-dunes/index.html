@@ -235,7 +235,7 @@ function draw(){
   if(gs==='play'||gs==='over'){
     // Dashed center line
     ctx.strokeStyle='rgba(255,255,255,0.2)';ctx.lineWidth=2;ctx.setLineDash([12*scl,8*scl]);
-    const dashOff=(cameraY*0.5)%(20*scl);ctx.setLineDashOffset(dashOff);
+    const dashOff=(cameraY*0.5)%(20*scl);ctx.lineDashOffset=dashOff;
     ctx.beginPath();ctx.moveTo(W/2,0);ctx.lineTo(W/2,H);ctx.stroke();ctx.setLineDash([]);
 
     // Obstacles

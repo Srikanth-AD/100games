@@ -166,6 +166,61 @@ Push to GitHub and enable **GitHub Pages** (Settings → Pages → Deploy from `
 
 ---
 
+## Testing
+
+The project includes two automated test suites powered by [Playwright](https://playwright.dev/).
+
+### Prerequisites
+
+```bash
+npm install    # (no package.json needed — Playwright is used via npx)
+npx playwright install chromium
+```
+
+### Test 1: Smoke Test (load + interaction)
+
+Verifies all 100 games load without errors, render a canvas, and respond to a click.
+
+```bash
+node scripts/test-all-games.js
+```
+
+- Loads each game in a headless browser
+- Checks for JS console errors, canvas presence, and non-zero dimensions
+- Simulates a click and checks for errors after interaction
+- Generates `scripts/test-report.html` with before/after screenshots
+
+### Test 2: Gameplay + Responsive Test
+
+Simulates 10 seconds of actual gameplay per game and tests rendering at 3 viewport sizes.
+
+```bash
+node scripts/test-gameplay.js
+```
+
+- Simulates realistic input: clicks, drags, keyboard events across the canvas
+- Verifies the game animates (pixel change detection between before/after)
+- Tests responsive rendering at 3 sizes:
+  - **Mobile** — 375 × 667 (iPhone SE)
+  - **Tablet** — 768 × 1024 (iPad)
+  - **Desktop** — 1440 × 900
+- Generates `scripts/test-gameplay-report.html` with 500 screenshots
+
+### Test output
+
+```
+scripts/
+├── test-all-games.js              # Smoke test suite
+├── test-gameplay.js               # Gameplay + responsive test suite
+├── test-report.html               # Smoke test visual report
+├── test-gameplay-report.html      # Gameplay test visual report
+├── screenshots/                   # Smoke test screenshots (200 images)
+├── screenshots-gameplay/          # Before/after gameplay screenshots (200 images)
+└── screenshots-responsive/        # Mobile/tablet/desktop screenshots (300 images)
+```
+
+---
+
 ## Tech
 
 - **Vanilla JavaScript** — no frameworks, no libraries
@@ -174,6 +229,7 @@ Push to GitHub and enable **GitHub Pages** (Settings → Pages → Deploy from `
 - **Single-file games** — each game is one self-contained `index.html`
 - **Mobile-first** — touch + mouse input, responsive sizing, iOS Safari compatible
 - **Google Analytics** — tracks page views and game popularity
+- **Playwright** — automated testing across all 100 games (dev only)
 
 ## License
 
